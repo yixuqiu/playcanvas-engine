@@ -12,7 +12,7 @@ import { visualizer } from 'rollup-plugin-visualizer';
 import { shaderChunks } from './plugins/rollup-shader-chunks.mjs';
 import { engineLayerImportValidation } from './plugins/rollup-import-validation.mjs';
 import { spacesToTabs } from './plugins/rollup-spaces-to-tabs.mjs';
-import { dynamicImportLegacyBrowserSupport, dynamicImportViteSupress } from './plugins/rollup-dynamic.mjs';
+import { dynamicImportLegacyBrowserSupport, dynamicImportBundlerSuppress } from './plugins/rollup-dynamic.mjs';
 import { treeshakeIgnore } from './plugins/rollup-treeshake-ignore.mjs';
 
 import { version, revision } from './rollup-version-revision.mjs';
@@ -224,7 +224,8 @@ function buildTarget({ moduleFormat, buildType, bundleState, input = 'src/index.
             name: 'pc',
             preserveModules: !bundled,
             file: bundled ? `${dir}/${OUT_PREFIX[buildType]}${isUMD ? '.js' : '.mjs'}` : undefined,
-            dir: !bundled ? `${dir}/${OUT_PREFIX[buildType]}` : undefined
+            dir: !bundled ? `${dir}/${OUT_PREFIX[buildType]}` : undefined,
+            entryFileNames: chunkInfo => `${chunkInfo.name.replace(/node_modules/g, 'modules')}.js`
         },
         plugins: [
             resolve(),
@@ -235,7 +236,7 @@ function buildTarget({ moduleFormat, buildType, bundleState, input = 'src/index.
             isDebug ? engineLayerImportValidation(input) : undefined,
             !isDebug ? strip({ functions: STRIP_FUNCTIONS }) : undefined,
             babel(babelOptions(isDebug, isUMD)),
-            !isUMD ? dynamicImportViteSupress() : undefined,
+            !isUMD ? dynamicImportBundlerSuppress() : undefined,
             !isDebug ? spacesToTabs() : undefined
         ]
     };

@@ -527,28 +527,8 @@ export const INDEXFORMAT_UINT16 = 1;
  */
 export const INDEXFORMAT_UINT32 = 2;
 
-/**
- * 8-bit alpha.
- *
- * @type {number}
- * @category Graphics
- */
 export const PIXELFORMAT_A8 = 0;
-
-/**
- * 8-bit luminance.
- *
- * @type {number}
- * @category Graphics
- */
 export const PIXELFORMAT_L8 = 1;
-
-/**
- * 8-bit luminance with 8-bit alpha.
- *
- * @type {number}
- * @category Graphics
- */
 export const PIXELFORMAT_LA8 = 2;
 
 /**
@@ -691,7 +671,7 @@ export const PIXELFORMAT_111110F = 18;
  * @type {number}
  * @category Graphics
  */
-export const PIXELFORMAT_SRGB = 19;
+export const PIXELFORMAT_SRGB8 = 19;
 
 /**
  * Color sRGB format with additional alpha channel.
@@ -699,7 +679,7 @@ export const PIXELFORMAT_SRGB = 19;
  * @type {number}
  * @category Graphics
  */
-export const PIXELFORMAT_SRGBA = 20;
+export const PIXELFORMAT_SRGBA8 = 20;
 
 /**
  * ETC1 compressed format.
@@ -950,18 +930,125 @@ export const PIXELFORMAT_R16F = 50;
  */
 export const PIXELFORMAT_RG16F = 51;
 
-// map of engine PIXELFORMAT_*** enums to information about the format
+/**
+ * 8-bit per-channel unsigned integer (R) format.
+ *
+ * @type {number}
+ * @category Graphics
+ */
+export const PIXELFORMAT_R8 = 52;
+
+/**
+ * 8-bit per-channel unsigned integer (RG) format.
+ *
+ * @type {number}
+ * @category Graphics
+ */
+export const PIXELFORMAT_RG8 = 53;
+
+/**
+ * Format equivalent to {@link PIXELFORMAT_DXT1} but sampled in linear color space.
+ *
+ * @type {number}
+ * @category Graphics
+ */
+export const PIXELFORMAT_DXT1_SRGB = 54;
+
+/**
+ * Format equivalent to {@link PIXELFORMAT_DXT3} but sampled in linear color space.
+ *
+ * @type {number}
+ * @category Graphics
+ */
+export const PIXELFORMAT_DXT3_SRGB = 55;
+
+/**
+ * Format equivalent to {@link PIXELFORMAT_DXT5} but sampled in linear color space.
+ *
+ * @type {number}
+ * @category Graphics
+ */
+export const PIXELFORMAT_DXT5_SRGB = 56;
+
+/**
+ * Format equivalent to {@link PIXELFORMAT_PVRTC_2BPP_RGB_1} but sampled in linear color space.
+ *
+ * @type {number}
+ * @category Graphics
+ */
+export const PIXELFORMAT_PVRTC_2BPP_SRGB_1 = 57;
+
+/**
+ * Format equivalent to {@link PIXELFORMAT_PVRTC_2BPP_RGBA_1} but sampled in linear color space.
+ *
+ * @type {number}
+ * @category Graphics
+ */
+export const PIXELFORMAT_PVRTC_2BPP_SRGBA_1 = 58;
+
+/**
+ * Format equivalent to {@link PIXELFORMAT_PVRTC_4BPP_RGB_1} but sampled in linear color space.
+ *
+ * @type {number}
+ * @category Graphics
+ */
+export const PIXELFORMAT_PVRTC_4BPP_SRGB_1 = 59;
+
+/**
+ * Format equivalent to {@link PIXELFORMAT_PVRTC_4BPP_RGBA_1} but sampled in linear color space.
+ *
+ * @type {number}
+ * @category Graphics
+ */
+export const PIXELFORMAT_PVRTC_4BPP_SRGBA_1 = 60;
+
+/**
+ * Format equivalent to {@link PIXELFORMAT_ETC2_RGB} but sampled in linear color space.
+ *
+ * @type {number}
+ * @category Graphics
+ */
+export const PIXELFORMAT_ETC2_SRGB = 61;
+
+/**
+ * Format equivalent to {@link PIXELFORMAT_ETC2_RGBA} but sampled in linear color space.
+ *
+ * @type {number}
+ * @category Graphics
+ */
+export const PIXELFORMAT_ETC2_SRGBA = 62;
+
+/**
+ * Format equivalent to {@link PIXELFORMAT_ASTC_4x4} but sampled in linear color space.
+ *
+ * @type {number}
+ * @category Graphics
+ */
+export const PIXELFORMAT_ASTC_4x4_SRGB = 63;
+
+/**
+ * Information about pixel formats.
+ *
+ * ldr: whether the format is low dynamic range (LDR), which typically means it's not HDR, and uses
+ * sRGB color space to store the color values
+ * srgbFormat: the corresponding sRGB format (which automatically converts the sRGB value to linear)
+ *
+ * @type {Map<number, { name: string, size?: number, blockSize?: number, ldr?: boolean, srgb?: boolean, srgbFormat?: number, isInt?: boolean }>}
+ * @ignore
+ */
 export const pixelFormatInfo = new Map([
 
     // float formats
-    [PIXELFORMAT_A8,            { name: 'A8', size: 1 }],
-    [PIXELFORMAT_L8,            { name: 'L8', size: 1 }],
-    [PIXELFORMAT_LA8,           { name: 'LA8', size: 2 }],
-    [PIXELFORMAT_RGB565,        { name: 'RGB565', size: 2 }],
-    [PIXELFORMAT_RGBA5551,      { name: 'RGBA5551', size: 2 }],
-    [PIXELFORMAT_RGBA4,         { name: 'RGBA4', size: 2 }],
-    [PIXELFORMAT_RGB8,          { name: 'RGB8', size: 4 }],
-    [PIXELFORMAT_RGBA8,         { name: 'RGBA8', size: 4 }],
+    [PIXELFORMAT_A8,            { name: 'A8', size: 1, ldr: true }],
+    [PIXELFORMAT_R8,            { name: 'R8', size: 1, ldr: true }],
+    [PIXELFORMAT_L8,            { name: 'L8', size: 1, ldr: true }],
+    [PIXELFORMAT_LA8,           { name: 'LA8', size: 2, ldr: true }],
+    [PIXELFORMAT_RG8,           { name: 'RG8', size: 2, ldr: true }],
+    [PIXELFORMAT_RGB565,        { name: 'RGB565', size: 2, ldr: true }],
+    [PIXELFORMAT_RGBA5551,      { name: 'RGBA5551', size: 2, ldr: true }],
+    [PIXELFORMAT_RGBA4,         { name: 'RGBA4', size: 2, ldr: true }],
+    [PIXELFORMAT_RGB8,          { name: 'RGB8', size: 4, ldr: true }],
+    [PIXELFORMAT_RGBA8,         { name: 'RGBA8', size: 4, ldr: true, srgbFormat: PIXELFORMAT_SRGBA8 }],
     [PIXELFORMAT_R16F,          { name: 'R16F', size: 2 }],
     [PIXELFORMAT_RG16F,         { name: 'RG16F', size: 4 }],
     [PIXELFORMAT_RGB16F,        { name: 'RGB16F', size: 8 }],
@@ -972,24 +1059,36 @@ export const pixelFormatInfo = new Map([
     [PIXELFORMAT_DEPTH,         { name: 'DEPTH', size: 4 }],
     [PIXELFORMAT_DEPTHSTENCIL,  { name: 'DEPTHSTENCIL', size: 4 }],
     [PIXELFORMAT_111110F,       { name: '111110F', size: 4 }],
-    [PIXELFORMAT_SRGB,          { name: 'SRGB', size: 4 }],
-    [PIXELFORMAT_SRGBA,         { name: 'SRGBA', size: 4 }],
-    [PIXELFORMAT_BGRA8,         { name: 'BGRA8', size: 4 }],
+    [PIXELFORMAT_SRGB8,         { name: 'SRGB8', size: 4, ldr: true, srgb: true }],
+    [PIXELFORMAT_SRGBA8,        { name: 'SRGBA8', size: 4, ldr: true, srgb: true }],
+    [PIXELFORMAT_BGRA8,         { name: 'BGRA8', size: 4, ldr: true }],
 
     // compressed formats
-    [PIXELFORMAT_DXT1, { name: 'DXT1', blockSize: 8 }],
-    [PIXELFORMAT_DXT3, { name: 'DXT3', blockSize: 16 }],
-    [PIXELFORMAT_DXT5, { name: 'DXT5', blockSize: 16 }],
-    [PIXELFORMAT_ETC1, { name: 'ETC1', blockSize: 8 }],
-    [PIXELFORMAT_ETC2_RGB, { name: 'ETC2_RGB', blockSize: 8 }],
-    [PIXELFORMAT_ETC2_RGBA, { name: 'ETC2_RGBA', blockSize: 16 }],
-    [PIXELFORMAT_PVRTC_2BPP_RGB_1, { name: 'PVRTC_2BPP_RGB_1', blockSize: 8 }],
-    [PIXELFORMAT_PVRTC_2BPP_RGBA_1, { name: 'PVRTC_2BPP_RGBA_1', blockSize: 8 }],
-    [PIXELFORMAT_PVRTC_4BPP_RGB_1, { name: 'PVRTC_4BPP_RGB_1', blockSize: 8 }],
-    [PIXELFORMAT_PVRTC_4BPP_RGBA_1, { name: 'PVRTC_4BPP_RGBA_1', blockSize: 8 }],
-    [PIXELFORMAT_ASTC_4x4, { name: 'ASTC_4x4', blockSize: 16 }],
-    [PIXELFORMAT_ATC_RGB, { name: 'ATC_RGB', blockSize: 8 }],
-    [PIXELFORMAT_ATC_RGBA, { name: 'ATC_RGBA', blockSize: 16 }],
+    [PIXELFORMAT_DXT1,              { name: 'DXT1', blockSize: 8, ldr: true, srgbFormat: PIXELFORMAT_DXT1_SRGB }],
+    [PIXELFORMAT_DXT3,              { name: 'DXT3', blockSize: 16, ldr: true, srgbFormat: PIXELFORMAT_DXT3_SRGB }],
+    [PIXELFORMAT_DXT5,              { name: 'DXT5', blockSize: 16, ldr: true, srgbFormat: PIXELFORMAT_DXT5_SRGB }],
+    [PIXELFORMAT_ETC1,              { name: 'ETC1', blockSize: 8, ldr: true }],
+    [PIXELFORMAT_ETC2_RGB,          { name: 'ETC2_RGB', blockSize: 8, ldr: true, srgbFormat: PIXELFORMAT_ETC2_SRGB }],
+    [PIXELFORMAT_ETC2_RGBA,         { name: 'ETC2_RGBA', blockSize: 16, ldr: true, srgbFormat: PIXELFORMAT_ETC2_SRGBA }],
+    [PIXELFORMAT_PVRTC_2BPP_RGB_1,  { name: 'PVRTC_2BPP_RGB_1', ldr: true, blockSize: 8, srgbFormat: PIXELFORMAT_PVRTC_2BPP_SRGB_1 }],
+    [PIXELFORMAT_PVRTC_2BPP_RGBA_1, { name: 'PVRTC_2BPP_RGBA_1', ldr: true, blockSize: 8, srgbFormat: PIXELFORMAT_PVRTC_2BPP_SRGBA_1 }],
+    [PIXELFORMAT_PVRTC_4BPP_RGB_1,  { name: 'PVRTC_4BPP_RGB_1', ldr: true, blockSize: 8, srgbFormat: PIXELFORMAT_PVRTC_4BPP_SRGB_1 }],
+    [PIXELFORMAT_PVRTC_4BPP_RGBA_1, { name: 'PVRTC_4BPP_RGBA_1', ldr: true, blockSize: 8, srgbFormat: PIXELFORMAT_PVRTC_4BPP_SRGBA_1 }],
+    [PIXELFORMAT_ASTC_4x4,          { name: 'ASTC_4x4', blockSize: 16, ldr: true, srgbFormat: PIXELFORMAT_ASTC_4x4_SRGB }],
+    [PIXELFORMAT_ATC_RGB,           { name: 'ATC_RGB', blockSize: 8, ldr: true }],
+    [PIXELFORMAT_ATC_RGBA,          { name: 'ATC_RGBA', blockSize: 16, ldr: true }],
+
+    // compressed sRGB formats
+    [PIXELFORMAT_DXT1_SRGB,          { name: 'DXT1_SRGB', blockSize: 8, ldr: true, srgb: true }],
+    [PIXELFORMAT_DXT3_SRGB,          { name: 'DXT3_SRGB', blockSize: 16, ldr: true, srgb: true }],
+    [PIXELFORMAT_DXT5_SRGB,          { name: 'DXT5_SRGB', blockSize: 16, ldr: true, srgb: true }],
+    [PIXELFORMAT_PVRTC_2BPP_SRGB_1,  { name: 'PVRTC_2BPP_SRGB_1', blockSize: 8, ldr: true, srgb: true }],
+    [PIXELFORMAT_PVRTC_2BPP_SRGBA_1, { name: 'PVRTC_2BPP_SRGBA_1', blockSize: 8, ldr: true, srgb: true }],
+    [PIXELFORMAT_PVRTC_4BPP_SRGB_1,  { name: 'PVRTC_4BPP_SRGB_1', blockSize: 8, ldr: true, srgb: true }],
+    [PIXELFORMAT_PVRTC_4BPP_SRGBA_1, { name: 'PVRTC_4BPP_SRGBA_1', blockSize: 8, ldr: true, srgb: true }],
+    [PIXELFORMAT_ETC2_SRGB,          { name: 'ETC2_SRGB', blockSize: 8, ldr: true, srgb: true }],
+    [PIXELFORMAT_ETC2_SRGBA,         { name: 'ETC2_SRGBA', blockSize: 16, ldr: true, srgb: true }],
+    [PIXELFORMAT_ASTC_4x4_SRGB,      { name: 'ASTC_4x4_SRGB', blockSize: 16, ldr: true, srgb: true }],
 
     // integer formats
     [PIXELFORMAT_R8I,      { name: 'R8I', size: 1, isInt: true }],
@@ -1021,6 +1120,32 @@ export const isIntegerPixelFormat = (format) => {
     return pixelFormatInfo.get(format)?.isInt === true;
 };
 
+/**
+ * Returns the srgb equivalent format for the supplied linear format. If it does not exist, the input
+ * format is returned. For example for {@link PIXELFORMAT_RGBA8} the return value is
+ * {@link PIXELFORMAT_SRGBA8}.
+ *
+ * @param {number} format - The texture format.
+ * @returns {number} The format allowing linear sampling of the texture.
+ * @ignore
+ */
+export const pixelFormatLinearToGamma = (format) => {
+    return pixelFormatInfo.get(format)?.srgbFormat || format;
+};
+
+/**
+ * For a pixel format that stores color information, this function returns true if the texture
+ * sample is in sRGB space and needs to be decoded to linear space.
+ *
+ * @param {number} format - The texture format.
+ * @returns {boolean} Whether sampling the texture with this format returns a sRGB value.
+ * @ignore
+ */
+export const requiresManualGamma = (format) => {
+    const info = pixelFormatInfo.get(format);
+    return !!(info?.ldr && !info?.srgb);
+};
+
 // get the pixel format array type
 export const getPixelFormatArrayType = (format) => {
     switch (format) {
@@ -1040,6 +1165,7 @@ export const getPixelFormatArrayType = (format) => {
         case PIXELFORMAT_RG16I:
         case PIXELFORMAT_RGBA16I:
             return Int16Array;
+        case PIXELFORMAT_RG8:
         case PIXELFORMAT_R16U:
         case PIXELFORMAT_RG16U:
         case PIXELFORMAT_RGBA16U:
@@ -2054,13 +2180,13 @@ export const SHADERSTAGE_FRAGMENT = 2;
  */
 export const SHADERSTAGE_COMPUTE = 4;
 
-// indices of commonly used bind groups
-// sorted in a way that any trailing bind groups can be unused in any render pass
-export const BINDGROUP_MESH = 0;
-export const BINDGROUP_VIEW = 1;
+// indices of commonly used bind groups, sorted from the least commonly changing to avoid internal rebinding
+export const BINDGROUP_VIEW = 0;        // view bind group, textures, samplers and uniforms
+export const BINDGROUP_MESH = 1;        // mesh bind group - textures and samplers
+export const BINDGROUP_MESH_UB = 2;     // mesh bind group - a single uniform buffer
 
 // names of bind groups
-export const bindGroupNames = ['mesh', 'view'];
+export const bindGroupNames = ['view', 'mesh', 'mesh_ub'];
 
 // name of the default uniform buffer slot in a bind group
 export const UNIFORM_BUFFER_DEFAULT_SLOT_NAME = 'default';

@@ -4,7 +4,7 @@ const GREEN_OUT = '\x1b[32m';
 const BOLD_OUT = `\x1b[1m`;
 const REGULAR_OUT = `\x1b[22m`;
 
-const TYPES_PATH = './build/playcanvas';
+const TYPES_PATH = './build/playcanvas/src';
 
 const STANDARD_MAT_PROPS = [
     ['alphaFade', 'boolean'],
@@ -52,7 +52,6 @@ const STANDARD_MAT_PROPS = [
     ['clearCoatNormalMapUv', 'number'],
     ['clearCoatVertexColor', 'boolean'],
     ['clearCoatVertexColorChannel', 'string'],
-    ['conserveEnergy', 'boolean'],
     ['cubeMap', 'Texture|null'],
     ['cubeMapProjection', 'number'],
     ['cubeMapProjectionBox', 'BoundingBox'],
@@ -70,7 +69,6 @@ const STANDARD_MAT_PROPS = [
     ['diffuseMapRotation', 'number'],
     ['diffuseMapTiling', 'Vec2'],
     ['diffuseMapUv', 'number'],
-    ['diffuseTint', 'boolean'],
     ['diffuseVertexColor', 'boolean'],
     ['diffuseVertexColorChannel', 'string'],
     ['emissive', 'Color'],
@@ -153,7 +151,6 @@ const STANDARD_MAT_PROPS = [
     ['refraction', 'number'],
     ['refractionIndex', 'number'],
     ['dispersion', 'number'],
-    ['shadingModel', 'number'],
     ['specular', 'Color'],
     ['specularMap', 'Texture|null'],
     ['specularMapChannel', 'string'],
@@ -185,7 +182,7 @@ const STANDARD_MAT_PROPS = [
     ['sphereMap', 'Texture|null'],
     ['twoSidedLighting', 'boolean'],
     ['useFog', 'boolean'],
-    ['useGammaTonemap', 'boolean'],
+    ['useTonemap', 'boolean'],
     ['useLighting', 'boolean'],
     ['useMetalness', 'boolean'],
     ['useMetalnessSpecularColor', 'boolean'],
@@ -209,7 +206,7 @@ import { Texture } from '../../platform/graphics/texture.js';
 `
     }
 }, {
-    path: `${TYPES_PATH}/framework/script/script.d.ts`,
+    path: `${TYPES_PATH}/framework/script/script-type.d.ts`,
     replacement: {
         from: 'get enabled(): boolean;',
         to: `get enabled(): boolean;
@@ -232,12 +229,12 @@ import { Texture } from '../../platform/graphics/texture.js';
      */
     postUpdate?(dt: number): void;
     /**
-     * Called when a Script that already exists in the registry gets redefined. If the new
-     * Script has a \`swap\` method in its prototype, then it will be executed to perform
+     * Called when a ScriptType that already exists in the registry gets redefined. If the new
+     * ScriptType has a \`swap\` method in its prototype, then it will be executed to perform
      * hot-reload at runtime.
-     * @param old - Old instance of the script to copy data to the new instance.
+     * @param old - Old instance of the scriptType to copy data to the new instance.
      */
-    swap?(old: Script): void;
+    swap?(old: ScriptType): void;
 `
     }
 }];

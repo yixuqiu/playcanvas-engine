@@ -1,6 +1,6 @@
 import {
     ADDRESS_CLAMP_TO_EDGE, PIXELFORMAT_RGB8, PIXELFORMAT_RGBA8,
-    TEXTURETYPE_DEFAULT, TEXTURETYPE_RGBM, TEXTURETYPE_RGBP
+    TEXTURETYPE_DEFAULT, TEXTURETYPE_RGBM
 } from '../../platform/graphics/constants.js';
 import { Texture } from '../../platform/graphics/texture.js';
 
@@ -121,7 +121,6 @@ class CubemapHandler extends ResourceHandler {
                             height: tex.height >> i,
                             format: tex.format,
                             levels: [tex._levels[i]],
-                            fixCubemapSeams: true,
                             addressU: ADDRESS_CLAMP_TO_EDGE,
                             addressV: ADDRESS_CLAMP_TO_EDGE,
                             // generate cubemaps on the top level only
@@ -130,10 +129,6 @@ class CubemapHandler extends ResourceHandler {
                     }
                 } else {
                     // prefiltered data is an env atlas
-                    tex.type = TEXTURETYPE_RGBP;
-                    tex.addressU = ADDRESS_CLAMP_TO_EDGE;
-                    tex.addressV = ADDRESS_CLAMP_TO_EDGE;
-                    tex.mipmaps = false;
                     resources[1] = tex;
                 }
             }
@@ -180,8 +175,7 @@ class CubemapHandler extends ResourceHandler {
                     magFilter: assetData.hasOwnProperty('magFilter') ? assetData.magFilter : faceTextures[0].magFilter,
                     anisotropy: assetData.hasOwnProperty('anisotropy') ? assetData.anisotropy : 1,
                     addressU: ADDRESS_CLAMP_TO_EDGE,
-                    addressV: ADDRESS_CLAMP_TO_EDGE,
-                    fixCubemapSeams: !!assets[0]
+                    addressV: ADDRESS_CLAMP_TO_EDGE
                 });
 
                 resources[0] = faces;
@@ -293,7 +287,7 @@ class CubemapHandler extends ResourceHandler {
                 onLoad(i, null);
             } else if (self.compareAssetIds(assetId, loadedAssetIds[i])) {
                 // asset id hasn't changed from what is currently set
-                onLoad(i, loadedAssets[i]);
+                processTexAsset(i, loadedAssets[i]);
             } else if (parseInt(assetId, 10) === assetId) {
                 // assetId is an asset id
                 texAsset = registry.get(assetId);
@@ -319,11 +313,19 @@ class CubemapHandler extends ResourceHandler {
                     url: assetId,
                     filename: assetId
                 } : assetId;
-                texAsset = new Asset(cubemapAsset.name + '_part_' + i, 'texture', file);
+
+                // if the referenced prefiltered texture is not a dds file, then we're loading an
+                // envAtlas. In this case we must specify the correct texture state.
+                const data = file.url.search('.dds') === -1 ? {
+                    type: 'rgbp',
+                    addressu: 'clamp',
+                    addressv: 'clamp',
+                    mipmaps: false
+                } : null;
+
+                texAsset = new Asset(cubemapAsset.name + '_part_' + i, 'texture', file, data);
                 registry.add(texAsset);
-                registry.once('load:' + texAsset.id, onLoad.bind(self, i));
-                registry.once('error:' + texAsset.id, onError.bind(self, i));
-                registry.load(texAsset);
+                processTexAsset(i, texAsset);
             }
         }
     }

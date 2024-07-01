@@ -129,26 +129,13 @@ class RenderTarget {
      * camera.renderTarget = null;
      */
     constructor(options = {}) {
+        Debug.assert(!(options instanceof GraphicsDevice), 'pc.RenderTarget constructor no longer accepts GraphicsDevice parameter.');
         this.id = id++;
 
-        const _arg2 = arguments[1];
-        const _arg3 = arguments[2];
-
-        if (options instanceof GraphicsDevice) {
-            // old constructor
-            this._colorBuffer = _arg2;
-            options = _arg3;
-
-            Debug.deprecated('pc.RenderTarget constructor no longer accepts GraphicsDevice parameter.');
-
-        } else {
-            // new constructor
-            this._colorBuffer = options.colorBuffer;
-        }
-
         // Use the single colorBuffer in the colorBuffers array. This allows us to always just use the array internally.
-        if (this._colorBuffer) {
-            this._colorBuffers = [this._colorBuffer];
+        this._colorBuffer = options.colorBuffer;
+        if (options.colorBuffer) {
+            this._colorBuffers = [options.colorBuffer];
         }
 
         // Process optional arguments
@@ -381,8 +368,8 @@ class RenderTarget {
      * anti-aliasing samples must match. Depth buffer can only be copied on WebGL 2.0.
      *
      * @param {RenderTarget} source - Source render target to copy from.
-     * @param {boolean} [color] - If true will copy the color buffer. Defaults to false.
-     * @param {boolean} [depth] - If true will copy the depth buffer. Defaults to false.
+     * @param {boolean} [color] - If true, will copy the color buffer. Defaults to false.
+     * @param {boolean} [depth] - If true, will copy the depth buffer. Defaults to false.
      * @returns {boolean} True if the copy was successful, false otherwise.
      */
     copy(source, color, depth) {

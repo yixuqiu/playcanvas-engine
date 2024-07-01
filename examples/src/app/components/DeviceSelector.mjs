@@ -1,21 +1,20 @@
-// Don't include all of 'playcanvas' for these defines, it just
-// causes bigger bundles and prolongs the build time by ~3s.
-import {
-    DEVICETYPE_WEBGL2,
-    DEVICETYPE_WEBGPU,
-    DEVICETYPE_NULL
-} from 'playcanvas';
 import { Component } from 'react';
 import { SelectInput } from '@playcanvas/pcui/react';
 
 import { jsx } from '../jsx.mjs';
-import '../events.js';
+import {
+    DEVICETYPE_WEBGPU,
+    DEVICETYPE_WEBGL2,
+    DEVICETYPE_NULL
+} from '../constants.mjs';
 
 const deviceTypeNames = {
     [DEVICETYPE_WEBGPU]: 'WebGPU',
     [DEVICETYPE_WEBGL2]: 'WebGL 2',
     [DEVICETYPE_NULL]: 'Null'
 };
+
+/** @typedef {import('../events.js').DeviceEvent} DeviceEvent */
 
 /**
  * @typedef {object} Props
@@ -89,26 +88,27 @@ class DeviceSelector extends TypedComponent {
     /**
      * If our preferred device was e.g. WebGPU, but our active device is suddenly e.g. WebGL 2,
      * then we basically infer that WebGPU wasn't supported and mark it like that.
-     * @param {DEVICETYPE_WEBGPU | DEVICETYPE_WEBGL2} preferredDevice - The preferred device.
-     * @param {DEVICETYPE_WEBGPU | DEVICETYPE_WEBGL2} activeDevice - The active device reported from
+     * @param {DEVICETYPE_WEBGPU | DEVICETYPE_WEBGL2 | DEVICETYPE_NULL} preferredDevice - The preferred device.
+     * @param {DEVICETYPE_WEBGPU | DEVICETYPE_WEBGL2 | DEVICETYPE_NULL} activeDevice - The active device reported from
      * the example iframe.
      */
     setDisabledOptions(preferredDevice = DEVICETYPE_WEBGPU, activeDevice) {
         if (preferredDevice === DEVICETYPE_WEBGL2 && activeDevice !== DEVICETYPE_WEBGL2) {
-            const fallbackOrder = [DEVICETYPE_WEBGL2];
+            const fallbackOrder = [DEVICETYPE_WEBGPU];
             const disabledOptions = {
                 [DEVICETYPE_WEBGL2]: 'WebGL 2 (not supported)'
             };
             this.mergeState({ fallbackOrder, disabledOptions, activeDevice });
         } else if (preferredDevice === DEVICETYPE_WEBGPU && activeDevice !== DEVICETYPE_WEBGPU) {
-            const fallbackOrder = [DEVICETYPE_WEBGPU, DEVICETYPE_WEBGL2];
+            const fallbackOrder = [DEVICETYPE_WEBGL2];
             const disabledOptions = {
                 [DEVICETYPE_WEBGPU]: 'WebGPU (not supported)'
             };
             this.mergeState({ fallbackOrder, disabledOptions, activeDevice });
         } else {
+            const fallbackOrder = null;
             const disabledOptions = null;
-            this.mergeState({ disabledOptions, activeDevice });
+            this.mergeState({ fallbackOrder, disabledOptions, activeDevice });
         }
     }
 
@@ -125,7 +125,8 @@ class DeviceSelector extends TypedComponent {
     }
 
     /**
-     * @param {string} value - Is graphics device active
+     * @param {DEVICETYPE_WEBGPU | DEVICETYPE_WEBGL2 | DEVICETYPE_NULL} value - Is graphics device
+     * active
      */
     onSetActiveGraphicsDevice(value) {
         if (!this.preferredGraphicsDevice) {
@@ -136,7 +137,8 @@ class DeviceSelector extends TypedComponent {
     }
 
     /**
-     * @param {string} value - The newly picked graphics device.
+     * @param {DEVICETYPE_WEBGPU | DEVICETYPE_WEBGL2 | DEVICETYPE_NULL} value - The newly picked
+     * graphics device.
      */
     onSetPreferredGraphicsDevice(value) {
         this.mergeState({ disabledOptions: null, activeDevice: value });

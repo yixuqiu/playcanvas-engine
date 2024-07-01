@@ -1,82 +1,96 @@
 import { hashCode } from "../../core/hash.js";
-import { SEMANTIC_POSITION } from "../../platform/graphics/constants.js";
+import { SEMANTIC_ATTR13, SEMANTIC_POSITION } from "../../platform/graphics/constants.js";
 import { ShaderUtils } from "../../platform/graphics/shader-utils.js";
-import { DITHER_NONE } from "../constants.js";
+import { DITHER_NONE, TONEMAP_LINEAR } from "../constants.js";
 import { shaderChunks } from "../shader-lib/chunks/chunks.js";
 import { ShaderGenerator } from "../shader-lib/programs/shader-generator.js";
 import { ShaderPass } from "../shader-pass.js";
 
-const splatCoreVS = `
+const splatCoreVS = /* glsl */ `
     uniform mat4 matrix_model;
     uniform mat4 matrix_view;
     uniform mat4 matrix_projection;
-    uniform mat4 matrix_viewProjection;
 
     uniform vec2 viewport;
+    uniform vec4 tex_params;            // num splats, texture width
 
-    varying vec2 texCoord;
-    varying vec4 color;
-    varying float id;
-
-    uniform vec4 tex_params;
-    uniform sampler2D splatColor;
-
+    uniform highp usampler2D splatOrder;
     uniform highp sampler2D transformA;
     uniform highp sampler2D transformB;
     uniform highp sampler2D transformC;
+    uniform sampler2D splatColor;
+
+    attribute vec3 vertex_position;
+    attribute uint vertex_id_attrib;
+
+    varying vec2 texCoord;
+    varying vec4 color;
+
+    #ifndef DITHER_NONE
+        varying float id;
+    #endif
+
+    uint orderId;
+    uint splatId;
+    ivec2 splatUV;
 
     vec3 center;
     vec3 covA;
     vec3 covB;
 
-    attribute uint vertex_id;
-    ivec2 dataUV;
-    void evalDataUV() {
+    // calculate the current splat index and uv
+    bool calcSplatUV() {
+        uint numSplats = uint(tex_params.x);
+        uint textureWidth = uint(tex_params.y);
 
-        // turn vertex_id into int grid coordinates
-        ivec2 textureSize = ivec2(tex_params.xy);
-        vec2 invTextureSize = tex_params.zw;
+        // calculate splat index
+        orderId = vertex_id_attrib + uint(vertex_position.z);
 
-        int gridV = int(float(vertex_id) * invTextureSize.x);
-        int gridU = int(vertex_id) - gridV * textureSize.x;
-        dataUV = ivec2(gridU, gridV);
+        if (orderId > numSplats) {
+            return false;
+        }
+
+        ivec2 orderUV = ivec2(
+            int(orderId % textureWidth),
+            int(orderId / textureWidth)
+        );
+
+        // calculate splatUV
+        splatId = texelFetch(splatOrder, orderUV, 0).r;
+        splatUV = ivec2(
+            int(splatId % textureWidth),
+            int(splatId / textureWidth)
+        );
+
+        return true;
     }
 
-    vec4 getColor() {
-        return texelFetch(splatColor, dataUV, 0);
-    }
-
-    void getTransform() {
-        vec4 tA = texelFetch(transformA, dataUV, 0);
-        vec4 tB = texelFetch(transformB, dataUV, 0);
-        vec4 tC = texelFetch(transformC, dataUV, 0);
+    // read chunk and packed data from textures
+    void readData() {
+        vec4 tA = texelFetch(transformA, splatUV, 0);
+        vec4 tB = texelFetch(transformB, splatUV, 0);
+        vec4 tC = texelFetch(transformC, splatUV, 0);
 
         center = tA.xyz;
         covA = tB.xyz;
         covB = vec3(tA.w, tB.w, tC.x);
     }
 
-    vec3 evalCenter() {
-        evalDataUV();
-
-        // get data
-        getTransform();
-
-        return center;
+    vec4 getColor() {
+        return texelFetch(splatColor, splatUV, 0);
     }
 
-    vec4 evalSplat(vec4 centerWorld)
+    // evaluate the splat position
+    bool evalSplat(out vec4 result)
     {
+        vec4 centerWorld = matrix_model * vec4(center, 1.0);
         vec4 splat_cam = matrix_view * centerWorld;
         vec4 splat_proj = matrix_projection * splat_cam;
 
         // cull behind camera
         if (splat_proj.z < -splat_proj.w) {
-            return vec4(0.0, 0.0, 2.0, 1.0);
+            return false;
         }
-
-        id = float(vertex_id);
-        color = getColor();
 
         mat3 Vrk = mat3(
             covA.x, covA.y, covA.z, 
@@ -115,69 +129,54 @@ const splatCoreVS = `
         // TODO: figure out length units and expose as uniform parameter
         // TODO: perhaps make this a shader compile-time option
         if (dot(v1, v1) < 4.0 && dot(v2, v2) < 4.0) {
-            return vec4(0.0, 0.0, 2.0, 1.0);
+            return false;
         }
 
-        int vertexIndex = int(gl_VertexID) % 4;
-        texCoord = vec2(
-            float((vertexIndex == 0 || vertexIndex == 3) ? -2 : 2),
-            float((vertexIndex == 0 || vertexIndex == 1) ? -2 : 2)
-        );
+        result = splat_proj + vec4((vertex_position.x * v1 + vertex_position.y * v2) / viewport * splat_proj.w, 0, 0);
 
-        splat_proj.xy += (texCoord.x * v1 + texCoord.y * v2) / viewport * splat_proj.w;
-        return splat_proj;
+        return true;
     }
 `;
 
-const splatCoreFS = /* glsl_ */ `
+const splatCoreFS = /* glsl */ `
     varying vec2 texCoord;
     varying vec4 color;
-    varying float id;
+
+    #ifndef DITHER_NONE
+        varying float id;
+    #endif
 
     #ifdef PICK_PASS
         uniform vec4 uColor;
     #endif
 
     vec4 evalSplat() {
+        float A = -dot(texCoord, texCoord);
+        if (A < -4.0) discard;
+        float B = exp(A) * color.a;
 
-        #ifdef DEBUG_RENDER
+        #ifdef PICK_PASS
+            if (B < 0.3) discard;
+            return(uColor);
+        #endif
 
-            if (color.a < 0.2) discard;
-            return color;
+        #ifndef DITHER_NONE
+            opacityDither(B, id * 0.013);
+        #endif
 
+        #ifdef TONEMAP_ENABLED
+            return vec4(gammaCorrectOutput(toneMap(decodeGamma(color.rgb))), B);
         #else
-
-            float A = -dot(texCoord, texCoord);
-            if (A < -4.0) discard;
-            float B = exp(A) * color.a;
-
-            #ifdef PICK_PASS
-                if (B < 0.3) discard;
-                return(uColor);
-            #endif
-
-            #ifndef DITHER_NONE
-                opacityDither(B, id * 0.013);
-            #endif
-
-            // the color here is in gamma space, so bring it to linear
-            vec3 diffuse = decodeGamma(color.rgb);
-
-            // apply tone-mapping and gamma correction as needed
-            diffuse = toneMap(diffuse);
-            diffuse = gammaCorrectOutput(diffuse);
-
-            return vec4(diffuse, B);
-
+            return vec4(color.rgb, B);
         #endif
     }
 `;
 
-class GShaderGeneratorSplat {
+class GSplatShaderGenerator {
     generateKey(options) {
         const vsHash = hashCode(options.vertex);
         const fsHash = hashCode(options.fragment);
-        return `splat-${options.pass}-${options.gamma}-${options.toneMapping}-${vsHash}-${fsHash}-${options.debugRender}-${options.dither}}`;
+        return `splat-${options.pass}-${options.gamma}-${options.toneMapping}-${vsHash}-${fsHash}-${options.dither}}`;
     }
 
     createShaderDefinition(device, options) {
@@ -187,8 +186,8 @@ class GShaderGeneratorSplat {
 
         const defines =
             shaderPassDefines +
-            (options.debugRender ? '#define DEBUG_RENDER\n' : '') +
-            `#define DITHER_${options.dither.toUpperCase()}\n`;
+            `#define DITHER_${options.dither.toUpperCase()}\n` +
+            `#define TONEMAP_${options.toneMapping === TONEMAP_LINEAR ? 'DISABLED' : 'ENABLED'}\n`;
 
         const vs = defines + splatCoreVS + options.vertex;
         const fs = defines + shaderChunks.decodePS +
@@ -200,7 +199,8 @@ class GShaderGeneratorSplat {
         return ShaderUtils.createDefinition(device, {
             name: 'SplatShader',
             attributes: {
-                vertex_id: SEMANTIC_POSITION
+                vertex_position: SEMANTIC_POSITION,
+                vertex_id_attrib: SEMANTIC_ATTR13
             },
             vertexCode: vs,
             fragmentCode: fs
@@ -208,6 +208,6 @@ class GShaderGeneratorSplat {
     }
 }
 
-const gsplat = new GShaderGeneratorSplat();
+const gsplat = new GSplatShaderGenerator();
 
 export { gsplat };

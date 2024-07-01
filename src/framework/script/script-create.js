@@ -1,11 +1,9 @@
-import { Debug } from '../../core/debug.js';
-
-import { script } from '../script.js';
+import { EventHandler } from '../../core/event-handler.js';
 import { AppBase } from '../app-base.js';
-
 import { ScriptAttributes } from './script-attributes.js';
-import { Script } from './script.js';
+import { ScriptType } from './script-type.js';
 import { ScriptTypes } from './script-types.js';
+import { Script } from './script.js';
 
 const reservedScriptNames = new Set([
     'system', 'entity', 'create', 'destroy', 'swap', 'move', 'data',
@@ -22,7 +20,7 @@ function getReservedScriptNames() {
 }
 
 /**
- * Create and register a new {@link Script}. It returns new class type (constructor function),
+ * Create and register a new {@link ScriptType}. It returns new class type (constructor function),
  * which is auto-registered to {@link ScriptRegistry} using its name. This is the main interface to
  * create Script Types, to define custom logic using JavaScript, that is used to create interaction
  * for entities.
@@ -36,7 +34,7 @@ function getReservedScriptNames() {
  * @param {AppBase} [app] - Optional application handler, to choose which {@link ScriptRegistry}
  * to add a script to. By default it will use `Application.getApplication()` to get current
  * {@link AppBase}.
- * @returns {typeof Script|null} A class type (constructor function) that inherits {@link Script},
+ * @returns {typeof ScriptType|null} A class type (constructor function) that inherits {@link ScriptType},
  * which the developer is meant to further extend by adding attributes and prototype methods.
  * Returns null if there was an error.
  * @example
@@ -56,20 +54,22 @@ function getReservedScriptNames() {
  * @category Script
  */
 function createScript(name, app) {
-    if (script.legacy) {
-        Debug.error('This project is using the legacy script system. You cannot call pc.createScript().');
-        return null;
-    }
-
     if (reservedScriptNames.has(name))
         throw new Error(`Script name '${name}' is reserved, please rename the script`);
 
-    class ScriptWithAttributes extends Script {
-        attributes = new ScriptAttributes(ScriptWithAttributes);
-    }
+    const scriptType = function (args) {
+        EventHandler.prototype.initEventHandler.call(this);
+        ScriptType.prototype.initScriptType.call(this, args);
+    };
 
-    registerScript(ScriptWithAttributes, name, app);
-    return ScriptWithAttributes;
+    scriptType.prototype = Object.create(ScriptType.prototype);
+    scriptType.prototype.constructor = scriptType;
+
+    scriptType.extend = ScriptType.extend;
+    scriptType.attributes = new ScriptAttributes(scriptType);
+
+    registerScript(scriptType, name, app);
+    return scriptType;
 }
 
 // Editor uses this - migrate to ScriptAttributes.reservedNames and delete this
@@ -82,10 +82,10 @@ createScript.reservedAttributes = reservedAttributes;
 /* eslint-disable jsdoc/check-examples */
 /**
  * Register a existing class type as a Script Type to {@link ScriptRegistry}. Useful when defining
- * a ES6 script class that extends {@link Script} (see example).
+ * a ES6 script class that extends {@link ScriptType} (see example).
  *
- * @param {typeof Script} script - The existing class type (constructor function) to be
- * registered as a Script Type. Class must extend {@link Script} (see example). Please note: A
+ * @param {typeof ScriptType} script - The existing class type (constructor function) to be
+ * registered as a Script Type. Class must extend {@link ScriptType} (see example). Please note: A
  * class created using {@link createScript} is auto-registered, and should therefore not be pass
  * into {@link registerScript} (which would result in swapping out all related script instances).
  * @param {string} [name] - Optional unique name of the Script Type. By default it will use the
@@ -100,7 +100,7 @@ createScript.reservedAttributes = reservedAttributes;
  * current {@link AppBase}.
  * @example
  * // define a ES6 script class
- * class PlayerController extends pc.Script {
+ * class PlayerController extends pc.ScriptType {
  *
  *     initialize() {
  *         // called once on initialize
@@ -119,18 +119,13 @@ createScript.reservedAttributes = reservedAttributes;
  * @category Script
  */
 function registerScript(script, name, app) {
-    if (script.legacy) {
-        Debug.error('This project is using the legacy script system. You cannot call pc.registerScript().');
-        return;
-    }
-
     if (typeof script !== 'function')
         throw new Error(`script class: '${script}' must be a constructor function (i.e. class).`);
 
     if (!(script.prototype instanceof Script))
-        throw new Error(`script class: '${Script.__getScriptName(script)}' does not extend pc.Script.`);
+        throw new Error(`script class: '${ScriptType.__getScriptName(script)}' does not extend pc.Script.`);
 
-    name = name || script.__name || Script.__getScriptName(script);
+    name = name || script.__name || ScriptType.__getScriptName(script);
 
     if (reservedScriptNames.has(name))
         throw new Error(`script name: '${name}' is reserved, please change script name`);
@@ -141,7 +136,7 @@ function registerScript(script, name, app) {
     const registry = app ? app.scripts : AppBase.getApplication().scripts;
     registry.add(script);
 
-    ScriptTypes.push(script, script.legacy);
+    ScriptTypes.push(script);
 }
 /* eslint-enable jsdoc/check-examples */
 

@@ -40,12 +40,7 @@ class MorphTarget {
      * allowing the clone operation.
      */
     constructor(options) {
-
-        if (arguments.length === 2) {
-            Debug.deprecated('Passing graphicsDevice to MorphTarget is deprecated, please remove the parameter.');
-            options = arguments[1];
-        }
-
+        Debug.assert(arguments.length === 1);
         this.options = options;
         this._name = options.name;
         this._defaultWeight = options.defaultWeight || 0;
@@ -73,7 +68,7 @@ class MorphTarget {
     }
 
     /**
-     * The name of the morph target.
+     * Gets the name of the morph target.
      *
      * @type {string}
      */
@@ -82,7 +77,7 @@ class MorphTarget {
     }
 
     /**
-     * The default weight of the morph target.
+     * Gets the default weight of the morph target.
      *
      * @type {number}
      */

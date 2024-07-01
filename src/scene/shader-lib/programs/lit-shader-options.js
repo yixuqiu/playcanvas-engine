@@ -103,13 +103,6 @@ class LitShaderOptions {
     pixelSnap = false;
 
     /**
-     * The value of {@link StandardMaterial#shadingModel}.
-     *
-     * @type {number}
-     */
-    shadingModel = 0;
-
-    /**
      * If ambient spherical harmonics are used. Ambient SH replace prefiltered cubemap ambient on
      * certain platforms (mostly Android) for performance reasons.
      *
@@ -194,13 +187,6 @@ class LitShaderOptions {
     cubeMapProjection = 0;
 
     /**
-     * The value of {@link StandardMaterial#conserveEnergy}.
-     *
-     * @type {boolean}
-     */
-    conserveEnergy = false;
-
-    /**
      * If any specular or reflections are needed at all.
      *
      * @type {boolean}
@@ -265,14 +251,6 @@ class LitShaderOptions {
      * @type {number}
      */
     toneMap = -1;
-
-    /**
-     * If cubemaps require seam fixing (see the `fixCubemapSeams` property of the options object
-     * passed to the {@link Texture} constructor).
-     *
-     * @type {boolean}
-     */
-    fixSeams = false;
 
     /**
      * One of "envAtlasHQ", "envAtlas", "cubeMap", "sphereMap".

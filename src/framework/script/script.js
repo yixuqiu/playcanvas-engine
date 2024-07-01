@@ -1,58 +1,50 @@
-import { Debug } from '../../core/debug.js';
+import { Debug } from '../..//core/debug.js';
 import { EventHandler } from '../../core/event-handler.js';
-
 import { SCRIPT_INITIALIZE, SCRIPT_POST_INITIALIZE } from './constants.js';
-import { ScriptAttributes } from './script-attributes.js';
-
-const funcNameRegex = new RegExp('^\\s*function(?:\\s|\\s*\\/\\*.*\\*\\/\\s*)+([^\\(\\s\\/]*)\\s*');
 
 /**
- * The Script class is a base class that you must extend to receive
- * {@link https://developer.playcanvas.com/user-manual/scripting/anatomy/ various lifecycle updates}
- * from the engine.
+ * The `Script` class is the fundamental base class for all scripts within PlayCanvas. It provides
+ * the minimal interface required for a script to be compatible with both the Engine and the
+ * Editor.
  *
- * You can create a Script using either {@link createScript} or by extending the class directly.
+ * At its core, a script is simply a collection of methods that are called at various points in the Engine's lifecycle. These methods are:
  *
+ * {@link Script#initialize} - Called once when the script is initialized
+ * {@link Script#postInitialize} - Called once after all scripts have been initialized
+ * {@link Script#update} - Called every frame, if the script is enabled
+ * {@link Script#postUpdate} - Called every frame, after all scripts have been updated
+ * {@link Script#swap} - Called when a script is redefined
+ *
+ * These methods are entirely optional, but provide a useful way to manage the lifecycle of a script and perform any necessary setup and cleanup.
+ *
+ * Below is a simple example of a script that rotates an entity every frame.
+ * @example
  * ```javascript
- * import { Script } from 'playcanvas';
- * class Rotator extends Script {
+ * class EntityRotator extends Script {
  *     update() {
- *         this.entity.rotate(0, 0.1, 0);
+ *         this.entity.rotateLocal(0, 1, 0);
  *     }
  * }
  * ```
- * The following methods are called if they exist on the Script instance:
  *
- * - `initialize`
- * - `postInitialize`
- * - `update`
- * - `postUpdate`
- * - `swap`
+ * When this script is attached to an entity, the update will be called every frame, slowly rotating the entity around the Y-axis.
  *
- * `initialize` and `postInitialize` - are called (if defined) when a script is about to run for
- * the first time - `postInitialize` will run after all `initialize` methods are executed in the
- * same tick or enabling chain of actions.
+ * For more information on how to create scripts, see the [Scripting Overview](https://developer.playcanvas.com/user-manual/scripting/).
  *
- * `update` and `postUpdate` - are called (if defined) for enabled (running state) scripts on each
- * tick.
- *
- * `swap` - is called when a Script that already exists in the registry gets redefined. If the
- * new Script has a `swap` method in its prototype, then it will be executed to perform hot-
- * reload at runtime.
- *
- * @see {@link https://developer.playcanvas.com/user-manual/scripting/anatomy/} for more information.
  * @category Script
  */
-class Script extends EventHandler {
+export class Script extends EventHandler {
     /**
      * Fired when a script instance becomes enabled.
      *
      * @event
      * @example
-     * PlayerController.prototype.initialize = function () {
-     *     this.on('enable', () => {
-     *         // Script Instance is now enabled
-     *     });
+     * export class PlayerController extends Script {
+     *     initialize() {
+     *         this.on('enable', () => {
+     *             // Script Instance is now enabled
+     *         });
+     *     }
      * };
      */
     static EVENT_ENABLE = 'enable';
@@ -62,10 +54,12 @@ class Script extends EventHandler {
      *
      * @event
      * @example
-     * PlayerController.prototype.initialize = function () {
-     *     this.on('disable', () => {
-     *         // Script Instance is now disabled
-     *     });
+     * export class PlayerController extends Script {
+     *     initialize() {
+     *         this.on('disable', () => {
+     *             // Script Instance is now disabled
+     *         });
+     *     }
      * };
      */
     static EVENT_DISABLE = 'disable';
@@ -76,10 +70,12 @@ class Script extends EventHandler {
      *
      * @event
      * @example
-     * PlayerController.prototype.initialize = function () {
-     *     this.on('state', (enabled) => {
-     *         console.log(`Script Instance is now ${enabled ? 'enabled' : 'disabled'}`);
-     *     });
+     * export class PlayerController extends Script {
+     *     initialize() {
+     *         this.on('state', (enabled) => {
+     *             console.log(`Script Instance is now ${enabled ? 'enabled' : 'disabled'}`);
+     *         });
+     *     }
      * };
      */
     static EVENT_STATE = 'state';
@@ -89,11 +85,13 @@ class Script extends EventHandler {
      *
      * @event
      * @example
-     * PlayerController.prototype.initialize = function () {
-     *     this.on('destroy', () => {
-     *         // no longer part of the entity
-     *         // this is a good place to clean up allocated resources used by the script
-     *     });
+     * export class PlayerController extends Script {
+     *     initialize() {
+     *         this.on('destroy', () => {
+     *             // no longer part of the entity
+     *             // this is a good place to clean up allocated resources used by the script
+     *         });
+     *     }
      * };
      */
     static EVENT_DESTROY = 'destroy';
@@ -109,32 +107,38 @@ class Script extends EventHandler {
      *
      * @event
      * @example
-     * PlayerController.prototype.initialize = function () {
-     *     this.on('attr', (name, newValue, oldValue) => {
-     *         console.log(`Attribute '${name}' changed from '${oldValue}' to '${newValue}'`);
-     *     });
+     * export class PlayerController extends Script {
+     *     initialize() {
+     *         this.on('attr', (name, newValue, oldValue) => {
+     *             console.log(`Attribute '${name}' changed from '${oldValue}' to '${newValue}'`);
+     *         });
+     *     }
      * };
      * @example
-     * PlayerController.prototype.initialize = function () {
-     *     this.on('attr:speed', (newValue, oldValue) => {
-     *         console.log(`Attribute 'speed' changed from '${oldValue}' to '${newValue}'`);
-     *     });
+     * export class PlayerController extends Script {
+     *     initialize() {
+     *         this.on('attr:speed', (newValue, oldValue) => {
+     *             console.log(`Attribute 'speed' changed from '${oldValue}' to '${newValue}'`);
+     *         });
+     *     }
      * };
      */
     static EVENT_ATTR = 'attr';
 
     /**
      * Fired when a script instance had an exception. The script instance will be automatically
-     * disabled. The handler is passed an {@link Error} object containing the details of the
+     * disabled. The handler is passed an Error object containing the details of the
      * exception and the name of the method that threw the exception.
      *
      * @event
      * @example
-     * PlayerController.prototype.initialize = function () {
-     *     this.on('error', (err, method) => {
-     *         // caught an exception
-     *         console.log(err.stack);
-     *     });
+     * export class PlayerController extends Script {
+     *     initialize() {
+     *         this.on('error', (err, method) => {
+     *             // caught an exception
+     *             console.log(err.stack);
+     *         });
+     *     }
      * };
      */
     static EVENT_ERROR = 'error';
@@ -169,12 +173,6 @@ class Script extends EventHandler {
     __destroyed;
 
     /** @private */
-    __attributes;
-
-    /** @private */
-    __attributesRaw;
-
-    /** @private */
     __scriptType;
 
     /**
@@ -197,7 +195,7 @@ class Script extends EventHandler {
      */
     constructor(args) {
         super();
-        this.initScriptType(args);
+        this.initScript(args);
     }
 
     /**
@@ -222,7 +220,7 @@ class Script extends EventHandler {
         if (!this._initialized && this.enabled) {
             this._initialized = true;
 
-            this.__initializeAttributes(true);
+            this.fire('preInitialize');
 
             if (this.initialize)
                 this.entity.script._scriptMethod(this, SCRIPT_INITIALIZE);
@@ -246,11 +244,17 @@ class Script extends EventHandler {
     }
 
     /**
-     * @param {{entity: import('../entity.js').Entity, app: import('../app-base.js').AppBase}} args -
-     * The entity and app.
-     * @private
+     * @typedef {object} ScriptInitializationArgs
+     * @property {boolean} [enabled] - True if the script instance is in running state.
+     * @property {import('../app-base.js').AppBase} app - The {@link AppBase} that is running the script.
+     * @property {import('../entity.js').Entity} entity - The {@link Entity} that the script is attached to.
      */
-    initScriptType(args) {
+
+    /**
+     * @param {ScriptInitializationArgs} args - The input arguments object.
+     * @protected
+     */
+    initScript(args) {
         const script = this.constructor; // get script type, i.e. function (class)
         Debug.assert(args && args.app && args.entity, `script [${script.__name}] has missing arguments in constructor`);
 
@@ -261,14 +265,13 @@ class Script extends EventHandler {
         this._enabledOld = this.enabled;
 
         this.__destroyed = false;
-        this.__attributes = { };
-        this.__attributesRaw = args.attributes || { }; // need at least an empty object to make sure default attributes are initialized
+
         this.__scriptType = script;
         this.__executionOrder = -1;
     }
 
     /**
-     * Name of a Script.
+     * Name of a Script Type.
      *
      * @type {string}
      * @private
@@ -280,13 +283,7 @@ class Script extends EventHandler {
      * @returns {string} The script name.
      * @private
      */
-    static __getScriptName(constructorFn) {
-        if (typeof constructorFn !== 'function') return undefined;
-        if ('name' in Function.prototype) return constructorFn.name;
-        if (constructorFn === Function || constructorFn === Function.prototype.constructor) return 'Function';
-        const match = ('' + constructorFn).match(funcNameRegex);
-        return match ? match[1] : undefined;
-    }
+    static __getScriptName = getScriptName;
 
     /**
      * Name of a Script Type.
@@ -295,74 +292,6 @@ class Script extends EventHandler {
      */
     static get scriptName() {
         return this.__name;
-    }
-
-    /**
-     * The interface to define attributes for Script Types. Refer to {@link ScriptAttributes}.
-     *
-     * @type {ScriptAttributes}
-     * @example
-     * var PlayerController = pc.createScript('playerController');
-     *
-     * PlayerController.attributes.add('speed', {
-     *     type: 'number',
-     *     title: 'Speed',
-     *     placeholder: 'km/h',
-     *     default: 22.2
-     * });
-     */
-    static get attributes() {
-        if (!this.hasOwnProperty('__attributes')) this.__attributes = new ScriptAttributes(this);
-        return this.__attributes;
-    }
-
-    /**
-     * @param {boolean} [force] - Set to true to force initialization of the attributes.
-     * @private
-     */
-    __initializeAttributes(force) {
-        if (!force && !this.__attributesRaw)
-            return;
-
-        // set attributes values
-        for (const key in this.__scriptType.attributes.index) {
-            if (this.__attributesRaw && this.__attributesRaw.hasOwnProperty(key)) {
-                this[key] = this.__attributesRaw[key];
-            } else if (!this.__attributes.hasOwnProperty(key)) {
-                if (this.__scriptType.attributes.index[key].hasOwnProperty('default')) {
-                    this[key] = this.__scriptType.attributes.index[key].default;
-                } else {
-                    this[key] = null;
-                }
-            }
-        }
-
-        this.__attributesRaw = null;
-    }
-
-    /**
-     * Shorthand function to extend Script Type prototype with list of methods.
-     *
-     * @param {object} methods - Object with methods, where key - is name of method, and value - is function.
-     * @example
-     * var PlayerController = pc.createScript('playerController');
-     *
-     * PlayerController.extend({
-     *     initialize: function () {
-     *         // called once on initialize
-     *     },
-     *     update: function (dt) {
-     *         // called each tick
-     *     }
-     * });
-     */
-    static extend(methods) {
-        for (const key in methods) {
-            if (!methods.hasOwnProperty(key))
-                continue;
-
-            this.prototype[key] = methods[key];
-        }
     }
 
     /**
@@ -394,11 +323,22 @@ class Script extends EventHandler {
     /**
      * @function
      * @name Script#[swap]
-     * @description Called when a Script that already exists in the registry
-     * gets redefined. If the new Script has a `swap` method in its prototype,
-     * then it will be executed to perform hot-reload at runtime.
-     * @param {Script} old - Old instance of the script to copy data to the new instance.
+     * @description Called when a Script that already exists in the registry gets redefined. If the
+     * new Script has a `swap` method, then it will be executed to perform hot-reload at runtime.
+     * @param {Script} old - Old instance of the scriptType to copy data to the new instance.
      */
 }
 
-export { Script };
+const funcNameRegex = new RegExp('^\\s*function(?:\\s|\\s*\\/\\*.*\\*\\/\\s*)+([^\\(\\s\\/]*)\\s*');
+
+/**
+ * @param {Function} constructorFn - The constructor function of the script type.
+ * @returns {string|undefined} The script name.
+ */
+export function getScriptName(constructorFn) {
+    if (typeof constructorFn !== 'function') return undefined;
+    if ('name' in Function.prototype) return constructorFn.name;
+    if (constructorFn === Function || constructorFn === Function.prototype.constructor) return 'Function';
+    const match = ('' + constructorFn).match(funcNameRegex);
+    return match ? match[1] : undefined;
+}

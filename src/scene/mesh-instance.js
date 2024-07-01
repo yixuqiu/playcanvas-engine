@@ -21,12 +21,19 @@ import { GraphNode } from './graph-node.js';
 import { getDefaultMaterial } from './materials/default-material.js';
 import { LightmapCache } from './graphics/lightmap-cache.js';
 import { DebugGraphics } from '../platform/graphics/debug-graphics.js';
+import { hash32Fnv1a } from '../core/hash.js';
+import { array } from '../core/array-utils.js';
 
 let id = 0;
 const _tmpAabb = new BoundingBox();
 const _tempBoneAabb = new BoundingBox();
 const _tempSphere = new BoundingSphere();
+
+/** @type {Set<import('./mesh.js').Mesh>} */
 const _meshSet = new Set();
+
+// internal array used to evaluate the hash for the shader instance
+const lookupHashes = new Uint32Array(4);
 
 /**
  * Internal data structure used to store data used by hardware instancing.
@@ -59,11 +66,25 @@ class ShaderInstance {
     shader;
 
     /**
-     * A bind group storing mesh uniforms for the shader.
+     * A bind group storing mesh textures / samplers for the shader. but not the uniform buffer.
      *
      * @type {BindGroup|null}
      */
     bindGroup = null;
+
+    /**
+     * A uniform buffer storing mesh uniforms for the shader.
+     *
+     * @type {UniformBuffer|null}
+     */
+    uniformBuffer = null;
+
+    /**
+     * The full array of hashes used to lookup the pipeline, used in case of hash collision.
+     *
+     * @type {Uint32Array}
+     */
+    hashes;
 
     /**
      * Returns the mesh bind group for the shader.
@@ -79,48 +100,43 @@ class ShaderInstance {
             const shader = this.shader;
             Debug.assert(shader);
 
-            // mesh uniform buffer
-            const ubFormat = shader.meshUniformBufferFormat;
-            Debug.assert(ubFormat);
-            const uniformBuffer = new UniformBuffer(device, ubFormat, false);
-
-            // mesh bind group
             const bindGroupFormat = shader.meshBindGroupFormat;
             Debug.assert(bindGroupFormat);
-            this.bindGroup = new BindGroup(device, bindGroupFormat, uniformBuffer);
+            this.bindGroup = new BindGroup(device, bindGroupFormat);
             DebugHelper.setName(this.bindGroup, `MeshBindGroup_${this.bindGroup.id}`);
         }
 
         return this.bindGroup;
     }
 
-    destroy() {
-        const group = this.bindGroup;
-        if (group) {
-            group.defaultUniformBuffer?.destroy();
-            group.destroy();
-            this.bindGroup = null;
-        }
-    }
-}
-
-/**
- * An entry in the shader cache, representing shaders for this mesh instance and a specific shader
- * pass.
- *
- * @ignore
- */
-class ShaderCacheEntry {
     /**
-     * The shader instances. Looked up by lightHash, which represents an ordered set of lights.
+     * Returns the uniform buffer for the shader.
      *
-     * @type {Map<number, ShaderInstance>}
+     * @param {import('../platform/graphics/graphics-device.js').GraphicsDevice} device - The
+     * graphics device.
+     * @returns {UniformBuffer} - The uniform buffer.
      */
-    shaderInstances = new Map();
+    getUniformBuffer(device) {
+
+        // create uniform buffer
+        if (!this.uniformBuffer) {
+            const shader = this.shader;
+            Debug.assert(shader);
+
+            const ubFormat = shader.meshUniformBufferFormat;
+            Debug.assert(ubFormat);
+            this.uniformBuffer = new UniformBuffer(device, ubFormat, false);
+        }
+
+        return this.uniformBuffer;
+    }
 
     destroy() {
-        this.shaderInstances.forEach(instance => instance.destroy());
-        this.shaderInstances.clear();
+        this.bindGroup?.destroy();
+        this.bindGroup = null;
+
+        this.uniformBuffer?.destroy();
+        this.uniformBuffer = null;
     }
 }
 
@@ -142,50 +158,92 @@ class ShaderCacheEntry {
  */
 class MeshInstance {
     /**
-     * Enable rendering for this mesh instance. Use visible property to enable/disable
-     * rendering without overhead of removing from scene. But note that the mesh instance is
-     * still in the hierarchy and still in the draw call list.
-     *
-     * @type {boolean}
-     */
-    visible = true;
-
-    /**
-     * Enable shadow casting for this mesh instance. Use this property to enable/disable
-     * shadow casting without overhead of removing from scene. Note that this property does not
-     * add the mesh instance to appropriate list of shadow casters on a {@link Layer}, but
-     * allows mesh to be skipped from shadow casting while it is in the list already. Defaults to
-     * false.
+     * Enable shadow casting for this mesh instance. Use this property to enable/disable shadow
+     * casting without overhead of removing from scene. Note that this property does not add the
+     * mesh instance to appropriate list of shadow casters on a {@link Layer}, but allows mesh to
+     * be skipped from shadow casting while it is in the list already. Defaults to false.
      *
      * @type {boolean}
      */
     castShadow = false;
 
     /**
-     * True if the material of the mesh instance is transparent. Optimization to avoid accessing the
-     * material. Updated by the material instance itself.
+     * Controls whether the mesh instance can be culled by frustum culling (see
+     * {@link CameraComponent#frustumCulling}). Defaults to true.
      *
+     * @type {boolean}
+     */
+    cull = true;
+
+    /**
+     * Determines the rendering order of mesh instances. Only used when mesh instances are added to
+     * a {@link Layer} with {@link Layer#opaqueSortMode} or {@link Layer#transparentSortMode}
+     * (depending on the material) set to {@link SORTMODE_MANUAL}.
+     *
+     * @type {number}
+     */
+    drawOrder = 0;
+
+    /**
+     * The graph node defining the transform for this instance.
+     *
+     * @type {GraphNode}
+     */
+    node;
+
+    /**
+     * Enable rendering for this mesh instance. Use visible property to enable/disable rendering
+     * without overhead of removing from scene. But note that the mesh instance is still in the
+     * hierarchy and still in the draw call list.
+     *
+     * @type {boolean}
+     */
+    visible = true;
+
+    /**
+     * Read this value in {@link Layer#onPostCull} to determine if the object is actually going to
+     * be rendered.
+     *
+     * @type {boolean}
+     */
+    visibleThisFrame = false;
+
+    /**
+     * Negative scale batching support.
+     *
+     * @type {number}
      * @ignore
      */
-    transparent = false;
+    flipFacesFactor = 1;
 
     /**
-     * @type {import('./materials/material.js').Material|null}
-     * @private
+     * @type {import('./gsplat/gsplat-instance.js').GSplatInstance|null}
+     * @ignore
      */
-    _material = null;
-
-    /**
-     * An array of shader cache entries, indexed by the shader pass constant (SHADER_FORWARD..). The
-     * value stores all shaders and bind groups for the shader pass for various light combinations.
-     *
-     * @type {Array<ShaderCacheEntry|null>}
-     * @private
-     */
-    _shaderCache = [];
+    gsplatInstance = null;
 
     /** @ignore */
     id = id++;
+
+    /**
+     * Custom function used to customize culling (e.g. for 2D UI elements).
+     *
+     * @type {Function|null}
+     * @ignore
+     */
+    isVisibleFunc = null;
+
+    /**
+     * @type {InstancingData|null}
+     * @ignore
+     */
+    instancingData = null;
+
+    /**
+     * @type {Record<string, {scopeId: import('../platform/graphics/scope-id.js').ScopeId|null, data: any, passFlags: number}>}
+     * @ignore
+     */
+    parameters = {};
 
     /**
      * True if the mesh instance is pickable by the {@link Picker}. Defaults to true.
@@ -194,6 +252,105 @@ class MeshInstance {
      * @ignore
      */
     pick = true;
+
+    /**
+     * The stencil parameters for front faces or null if no stencil is enabled.
+     *
+     * @type {import('../platform/graphics/stencil-parameters.js').StencilParameters|null}
+     * @ignore
+     */
+    stencilFront = null;
+
+    /**
+     * The stencil parameters for back faces or null if no stencil is enabled.
+     *
+     * @type {import('../platform/graphics/stencil-parameters.js').StencilParameters|null}
+     * @ignore
+     */
+    stencilBack = null;
+
+    /**
+     * True if the material of the mesh instance is transparent. Optimization to avoid accessing
+     * the material. Updated by the material instance itself.
+     *
+     * @ignore
+     */
+    transparent = false;
+
+    /** @private */
+    _aabb = new BoundingBox();
+
+    /** @private */
+    _aabbVer = -1;
+
+    /** @private */
+    _aabbMeshVer = -1;
+
+    /**
+     * @type {BoundingBox|null}
+     * @private
+     */
+    _customAabb = null;
+
+    /** @private */
+    _updateAabb = true;
+
+    /** @private */
+    _updateAabbFunc = null;
+
+    /** @private */
+    _key = [0, 0];
+
+    /** @private */
+    _layer = LAYER_WORLD;
+
+    /**
+     * @type {import('./materials/material.js').Material|null}
+     * @private
+     */
+    _material = null;
+
+    /**
+     * @type {import('./skin-instance.js').SkinInstance|null}
+     * @private
+     */
+    _skinInstance = null;
+
+    /**
+     * @type {import('./morph-instance.js').MorphInstance|null}
+     * @private
+     */
+    _morphInstance = null;
+
+    /** @private */
+    _receiveShadow = true;
+
+    /** @private */
+    _renderStyle = RENDERSTYLE_SOLID;
+
+    /** @private */
+    _screenSpace = false;
+
+    /**
+     * The cache of shaders, indexed by a hash value.
+     *
+     * @type {Map<number, ShaderInstance>}
+     * @private
+     */
+    _shaderCache = new Map();
+
+    /**
+     * 2 byte toggles, 2 bytes light mask; Default value is no toggles and mask = pc.MASK_AFFECT_DYNAMIC
+     *
+     * @private
+     */
+    _shaderDefs = MASK_AFFECT_DYNAMIC << 16;
+
+    /**
+     * @type {CalculateSortDistanceCallback|null}
+     * @private
+     */
+    _calculateSortDistance = null;
 
     /**
      * Create a new MeshInstance instance.
@@ -228,19 +385,11 @@ class MeshInstance {
             node = temp;
         }
 
-        this._key = [0, 0];
-
-        /**
-         * The graph node defining the transform for this instance.
-         *
-         * @type {GraphNode}
-         */
         this.node = node;           // The node that defines the transform of the mesh instance
         this._mesh = mesh;          // The mesh that this instance renders
         mesh.incRefCount();
         this.material = material;   // The material with which to render this instance
 
-        this._shaderDefs = MASK_AFFECT_DYNAMIC << 16; // 2 byte toggles, 2 bytes light mask; Default value is no toggles and mask = pc.MASK_AFFECT_DYNAMIC
         if (mesh.vertexBuffer) {
             const format = mesh.vertexBuffer.format;
             this._shaderDefs |= format.hasUv0 ? SHADERDEF_UV0 : 0;
@@ -249,91 +398,12 @@ class MeshInstance {
             this._shaderDefs |= format.hasTangents ? SHADERDEF_TANGENTS : 0;
         }
 
-        // Render options
-        this.layer = LAYER_WORLD; // legacy
-        /** @private */
-        this._renderStyle = RENDERSTYLE_SOLID;
-        this._receiveShadow = true;
-        this._screenSpace = false;
-
-        /**
-         * Controls whether the mesh instance can be culled by frustum culling
-         * ({@link CameraComponent#frustumCulling}). Defaults to true.
-         *
-         * @type {boolean}
-         */
-        this.cull = true;
-
-        this._updateAabb = true;
-        this._updateAabbFunc = null;
-        this._calculateSortDistance = null;
-
         // 64-bit integer key that defines render order of this mesh instance
         this.updateKey();
-
-        /**
-         * @type {import('./skin-instance.js').SkinInstance|null}
-         * @private
-         */
-        this._skinInstance = null;
-
-        /**
-         * @type {import('./morph-instance.js').MorphInstance|null}
-         * @private
-         */
-        this._morphInstance = null;
-
-        /**
-         * @type {import('./gsplat/gsplat-instance.js').GSplatInstance|null}
-         * @ignore
-         */
-        this.gsplatInstance = null;
-
-        this.instancingData = null;
-
-        /**
-         * @type {BoundingBox|null}
-         * @private
-         */
-        this._customAabb = null;
-
-        // World space AABB
-        this.aabb = new BoundingBox();
-        this._aabbVer = -1;
-        this._aabbMeshVer = -1;
-
-        /**
-         * Use this value to affect rendering order of mesh instances. Only used when mesh
-         * instances are added to a {@link Layer} with {@link Layer#opaqueSortMode} or
-         * {@link Layer#transparentSortMode} (depending on the material) set to
-         * {@link SORTMODE_MANUAL}.
-         *
-         * @type {number}
-         */
-        this.drawOrder = 0;
-
-        /**
-         * Read this value in {@link Layer#onPostCull} to determine if the object is actually going
-         * to be rendered.
-         *
-         * @type {boolean}
-         */
-        this.visibleThisFrame = false;
-
-        // custom function used to customize culling (e.g. for 2D UI elements)
-        this.isVisibleFunc = null;
-
-        this.parameters = {};
-
-        this.stencilFront = null;
-        this.stencilBack = null;
-
-        // Negative scale batching support
-        this.flipFacesFactor = 1;
     }
 
     /**
-     * The render style of the mesh instance. Can be:
+     * Sets the render style of the mesh instance. Can be:
      *
      * - {@link RENDERSTYLE_SOLID}
      * - {@link RENDERSTYLE_WIREFRAME}
@@ -348,12 +418,17 @@ class MeshInstance {
         this.mesh.prepareRenderState(renderStyle);
     }
 
+    /**
+     * Gets the render style of the mesh instance.
+     *
+     * @type {number}
+     */
     get renderStyle() {
         return this._renderStyle;
     }
 
     /**
-     * The graphics mesh being instanced.
+     * Sets the graphics mesh being instanced.
      *
      * @type {import('./mesh.js').Mesh}
      */
@@ -373,12 +448,17 @@ class MeshInstance {
         }
     }
 
+    /**
+     * Gets the graphics mesh being instanced.
+     *
+     * @type {import('./mesh.js').Mesh}
+     */
     get mesh() {
         return this._mesh;
     }
 
     /**
-     * The world space axis-aligned bounding box for this mesh instance.
+     * Sets the world space axis-aligned bounding box for this mesh instance.
      *
      * @type {BoundingBox}
      */
@@ -386,6 +466,11 @@ class MeshInstance {
         this._aabb = aabb;
     }
 
+    /**
+     * Gets the world space axis-aligned bounding box for this mesh instance.
+     *
+     * @type {BoundingBox}
+     */
     get aabb() {
         // use specified world space aabb
         if (!this._updateAabb) {
@@ -474,11 +559,10 @@ class MeshInstance {
      * @ignore
      */
     clearShaders() {
-        const shaderCache = this._shaderCache;
-        for (let i = 0; i < shaderCache.length; i++) {
-            shaderCache[i]?.destroy();
-            shaderCache[i] = null;
-        }
+        this._shaderCache.forEach((shaderInstance) => {
+            shaderInstance.destroy();
+        });
+        this._shaderCache.clear();
     }
 
     /**
@@ -488,6 +572,8 @@ class MeshInstance {
      * @param {number} shaderPass - The shader pass index.
      * @param {number} lightHash - The hash value of the lights that are affecting this mesh instance.
      * @param {import('./scene.js').Scene} scene - The scene.
+     * @param {import('./renderer/rendering-params.js').RenderingParams} renderParams - The rendering
+     * parameters.
      * @param {import('../platform/graphics/uniform-buffer-format.js').UniformBufferFormat} [viewUniformFormat] - The
      * format of the view uniform buffer.
      * @param {import('../platform/graphics/bind-group-format.js').BindGroupFormat} [viewBindGroupFormat] - The
@@ -496,26 +582,29 @@ class MeshInstance {
      * @returns {ShaderInstance} - the shader instance.
      * @ignore
      */
-    getShaderInstance(shaderPass, lightHash, scene, viewUniformFormat, viewBindGroupFormat, sortedLights) {
+    getShaderInstance(shaderPass, lightHash, scene, renderParams, viewUniformFormat, viewBindGroupFormat, sortedLights) {
 
-        let shaderInstance;
-        let passEntry = this._shaderCache[shaderPass];
-        if (passEntry) {
-            shaderInstance = passEntry.shaderInstances.get(lightHash);
-        } else {
-            passEntry = new ShaderCacheEntry();
-            this._shaderCache[shaderPass] = passEntry;
-        }
+        const shaderDefs = this._shaderDefs;
+
+        // unique hash for the required shader
+        lookupHashes[0] = shaderPass;
+        lookupHashes[1] = lightHash;
+        lookupHashes[2] = shaderDefs;
+        lookupHashes[3] = renderParams.hash;
+        const hash = hash32Fnv1a(lookupHashes);
+
+        // look up the cache
+        let shaderInstance = this._shaderCache.get(hash);
 
         // cache miss in the shader cache of the mesh instance
         if (!shaderInstance) {
 
-            // get the shader from the material
             const mat = this._material;
-            const shaderDefs = this._shaderDefs;
-            const variantKey = shaderPass + '_' + shaderDefs + '_' + lightHash;
+
+            // get the shader from the material
             shaderInstance = new ShaderInstance();
-            shaderInstance.shader = mat.variants.get(variantKey);
+            shaderInstance.shader = mat.variants.get(hash);
+            shaderInstance.hashes = new Uint32Array(lookupHashes);
 
             // cache miss in the material variants
             if (!shaderInstance.shader) {
@@ -523,26 +612,35 @@ class MeshInstance {
                 // marker to allow us to see the source node for shader alloc
                 DebugGraphics.pushGpuMarker(this.mesh.device, `Node: ${this.node.name}`);
 
-                const shader = mat.getShaderVariant(this.mesh.device, scene, shaderDefs, null, shaderPass, sortedLights,
+                const shader = mat.getShaderVariant(this.mesh.device, scene, shaderDefs, renderParams, shaderPass, sortedLights,
                                                     viewUniformFormat, viewBindGroupFormat, this._mesh.vertexBuffer?.format);
 
                 DebugGraphics.popGpuMarker(this.mesh.device);
 
                 // add it to the material variants cache
-                mat.variants.set(variantKey, shader);
+                mat.variants.set(hash, shader);
 
                 shaderInstance.shader = shader;
             }
 
             // add it to the mesh instance cache
-            passEntry.shaderInstances.set(lightHash, shaderInstance);
+            this._shaderCache.set(hash, shaderInstance);
         }
+
+        Debug.call(() => {
+            // due to a small number of shaders in the cache, and to avoid performance hit, we're not
+            // handling the hash collision. This is very unlikely but still possible. Check and report
+            // if it happens in the debug mode, allowing us to fix the issue.
+            if (!array.equals(shaderInstance.hashes, lookupHashes)) {
+                Debug.errorOnce('Hash collision in the shader cache for mesh instance. This is very unlikely but still possible. Please report this issue.');
+            }
+        });
 
         return shaderInstance;
     }
 
     /**
-     * The material used by this mesh instance.
+     * Sets the material used by this mesh instance.
      *
      * @type {import('./materials/material.js').Material}
      */
@@ -571,6 +669,11 @@ class MeshInstance {
         }
     }
 
+    /**
+     * Gets the material used by this mesh instance.
+     *
+     * @type {import('./materials/material.js').Material}
+     */
     get material() {
         return this._material;
     }
@@ -584,6 +687,10 @@ class MeshInstance {
         return this._layer;
     }
 
+    /**
+     * @param {number} shaderDefs - The shader definitions to set.
+     * @private
+     */
     _updateShaderDefs(shaderDefs) {
         if (shaderDefs !== this._shaderDefs) {
             this._shaderDefs = shaderDefs;
@@ -592,18 +699,24 @@ class MeshInstance {
     }
 
     /**
-     * In some circumstances mesh instances are sorted by a distance calculation to determine their
-     * rendering order. Set this callback to override the default distance calculation, which gives
-     * the dot product of the camera forward vector and the vector between the camera position and
-     * the center of the mesh instance's axis-aligned bounding box. This option can be particularly
-     * useful for rendering transparent meshes in a better order than default.
+     * Sets the callback to calculate sort distance. In some circumstances mesh instances are
+     * sorted by a distance calculation to determine their rendering order. Set this callback to
+     * override the default distance calculation, which gives the dot product of the camera forward
+     * vector and the vector between the camera position and the center of the mesh instance's
+     * axis-aligned bounding box. This option can be particularly useful for rendering transparent
+     * meshes in a better order than the default.
      *
-     * @type {CalculateSortDistanceCallback}
+     * @type {CalculateSortDistanceCallback|null}
      */
     set calculateSortDistance(calculateSortDistance) {
         this._calculateSortDistance = calculateSortDistance;
     }
 
+    /**
+     * Gets the callback to calculate sort distance.
+     *
+     * @type {CalculateSortDistanceCallback|null}
+     */
     get calculateSortDistance() {
         return this._calculateSortDistance;
     }
@@ -620,9 +733,10 @@ class MeshInstance {
     }
 
     /**
-     * The skin instance managing skinning of this mesh instance, or null if skinning is not used.
+     * Sets the skin instance managing skinning of this mesh instance. Set to null if skinning is
+     * not used.
      *
-     * @type {import('./skin-instance.js').SkinInstance}
+     * @type {import('./skin-instance.js').SkinInstance|null}
      */
     set skinInstance(val) {
         this._skinInstance = val;
@@ -630,14 +744,20 @@ class MeshInstance {
         this._setupSkinUpdate();
     }
 
+    /**
+     * Gets the skin instance managing skinning of this mesh instance.
+     *
+     * @type {import('./skin-instance.js').SkinInstance|null}
+     */
     get skinInstance() {
         return this._skinInstance;
     }
 
     /**
-     * The morph instance managing morphing of this mesh instance, or null if morphing is not used.
+     * Sets the morph instance managing morphing of this mesh instance. Set to null if morphing is
+     * not used.
      *
-     * @type {import('./morph-instance.js').MorphInstance}
+     * @type {import('./morph-instance.js').MorphInstance|null}
      */
     set morphInstance(val) {
 
@@ -654,6 +774,11 @@ class MeshInstance {
         this._updateShaderDefs(shaderDefs);
     }
 
+    /**
+     * Gets the morph instance managing morphing of this mesh instance.
+     *
+     * @type {import('./morph-instance.js').MorphInstance|null}
+     */
     get morphInstance() {
         return this._morphInstance;
     }
@@ -678,7 +803,7 @@ class MeshInstance {
     }
 
     /**
-     * Mask controlling which {@link LightComponent}s light this mesh instance, which
+     * Sets the mask controlling which {@link LightComponent}s light this mesh instance, which
      * {@link CameraComponent} sees it and in which {@link Layer} it is rendered. Defaults to 1.
      *
      * @type {number}
@@ -688,12 +813,18 @@ class MeshInstance {
         this._updateShaderDefs(toggles | (val << 16));
     }
 
+    /**
+     * Gets the mask controlling which {@link LightComponent}s light this mesh instance, which
+     * {@link CameraComponent} sees it and in which {@link Layer} it is rendered.
+     *
+     * @type {number}
+     */
     get mask() {
         return this._shaderDefs >> 16;
     }
 
     /**
-     * Number of instances when using hardware instancing to render the mesh.
+     * Sets the number of instances when using hardware instancing to render the mesh.
      *
      * @type {number}
      */
@@ -702,6 +833,11 @@ class MeshInstance {
             this.instancingData.count = value;
     }
 
+    /**
+     * Gets the number of instances when using hardware instancing to render the mesh.
+     *
+     * @type {number}
+     */
     get instancingCount() {
         return this.instancingData ? this.instancingData.count : 0;
     }
@@ -739,7 +875,13 @@ class MeshInstance {
     // shader uniform names for lightmaps
     static lightmapParamNames = ['texture_lightMap', 'texture_dirLightMap'];
 
-    // generates wireframes for an array of mesh instances
+    /**
+     * Sets the render style for an array of mesh instances.
+     *
+     * @param {MeshInstance[]} meshInstances - The mesh instances to set the render style for.
+     * @param {number} renderStyle - The render style to set.
+     * @ignore
+     */
     static _prepareRenderStyleForArray(meshInstances, renderStyle) {
 
         if (meshInstances) {
@@ -760,8 +902,14 @@ class MeshInstance {
         }
     }
 
-    // test if meshInstance is visible by camera. It requires the frustum of the camera to be up to date, which forward-renderer
-    // takes care of. This function should  not be called elsewhere.
+    /**
+     * Test if meshInstance is visible by camera. It requires the frustum of the camera to be up to
+     * date, which forward-renderer takes care of. This function should not be called elsewhere.
+     *
+     * @param {import('./camera.js').Camera} camera - The camera to test visibility against.
+     * @returns {boolean} - True if the mesh instance is visible by the camera, false otherwise.
+     * @ignore
+     */
     _isVisible(camera) {
 
         if (this.visible) {
@@ -774,7 +922,7 @@ class MeshInstance {
             _tempSphere.center = this.aabb.center;  // this line evaluates aabb
             _tempSphere.radius = this._aabb.halfExtents.length();
 
-            return camera.frustum.containsSphere(_tempSphere);
+            return camera.frustum.containsSphere(_tempSphere) > 0;
         }
 
         return false;
@@ -859,8 +1007,8 @@ class MeshInstance {
      * over parameter of the same name if set on Material this mesh instance uses for rendering.
      *
      * @param {string} name - The name of the parameter to set.
-     * @param {number|number[]|import('../platform/graphics/texture.js').Texture} data - The value
-     * for the specified parameter.
+     * @param {number|number[]|import('../platform/graphics/texture.js').Texture|Float32Array} data - The
+     * value for the specified parameter.
      * @param {number} [passFlags] - Mask describing which passes the material should be included
      * in.
      */
@@ -893,10 +1041,16 @@ class MeshInstance {
         }
     }
 
-    // a wrapper over settings parameter specifically for realtime baked lightmaps. This handles reference counting of lightmaps
-    // and releases them when no longer referenced
+    /**
+     * A wrapper over settings parameter specifically for realtime baked lightmaps. This handles
+     * reference counting of lightmaps and releases them when no longer referenced.
+     *
+     * @param {string} name - The name of the parameter to set.
+     * @param {import('../platform/graphics/texture.js').Texture|null} texture - The lightmap
+     * texture to set.
+     * @ignore
+     */
     setRealtimeLightmap(name, texture) {
-
         // no change
         const old = this.getParameter(name);
         if (old === texture)
@@ -927,7 +1081,15 @@ class MeshInstance {
         }
     }
 
-    // used to apply parameters from this mesh instance into scope of uniforms, called internally by forward-renderer
+    /**
+     * Used to apply parameters from this mesh instance into scope of uniforms, called internally
+     * by forward-renderer.
+     *
+     * @param {import('../platform/graphics/graphics-device.js').GraphicsDevice} device - The
+     * graphics device.
+     * @param {number} passFlag - The pass flag for the current render pass.
+     * @ignore
+     */
     setParameters(device, passFlag) {
         const parameters = this.parameters;
         for (const paramName in parameters) {
@@ -941,6 +1103,10 @@ class MeshInstance {
         }
     }
 
+    /**
+     * @param {boolean} value - True to enable lightmapped rendering, false to disable.
+     * @ignore
+     */
     setLightmapped(value) {
         if (value) {
             this.mask = (this.mask | MASK_AFFECT_LIGHTMAPPED) & ~(MASK_AFFECT_DYNAMIC | MASK_BAKE);
@@ -952,8 +1118,12 @@ class MeshInstance {
         }
     }
 
+    /**
+     * @param {BoundingBox|null} aabb - The custom axis-aligned bounding box or null to reset to
+     * the mesh's bounding box.
+     * @ignore
+     */
     setCustomAabb(aabb) {
-
         if (aabb) {
             // store the override aabb
             if (this._customAabb) {
@@ -970,8 +1140,8 @@ class MeshInstance {
         this._setupSkinUpdate();
     }
 
+    /** @private */
     _setupSkinUpdate() {
-
         // set if bones need to be updated before culling
         if (this._skinInstance) {
             this._skinInstance._updateBeforeCull = !this._customAabb;

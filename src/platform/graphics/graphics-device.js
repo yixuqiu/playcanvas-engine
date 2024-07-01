@@ -264,6 +264,15 @@ class GraphicsDevice extends EventHandler {
       */
     textureHalfFloatRenderable;
 
+    /**
+     * True if small-float textures with format {@link PIXELFORMAT_111110F} can be used as a frame
+     * buffer. This is always true on WebGL2, but optional on WebGPU device.
+     *
+     * @type {boolean}
+     * @readonly
+     */
+    textureRG11B10Renderable = false;
+
      /**
       * True if filtering can be applied when sampling float textures.
       *
@@ -605,7 +614,7 @@ class GraphicsDevice extends EventHandler {
      * {@link GraphicsDevice#draw}, the specified index buffer will be used to provide index data
      * for any indexed primitives.
      *
-     * @param {import('./index-buffer.js').IndexBuffer} indexBuffer - The index buffer to assign to
+     * @param {import('./index-buffer.js').IndexBuffer|null} indexBuffer - The index buffer to assign to
      * the device.
      */
     setIndexBuffer(indexBuffer) {
@@ -759,7 +768,7 @@ class GraphicsDevice extends EventHandler {
     }
 
     /**
-     * Fullscreen mode.
+     * Sets whether the device is currently in fullscreen mode.
      *
      * @type {boolean}
      */
@@ -767,13 +776,18 @@ class GraphicsDevice extends EventHandler {
         Debug.error("GraphicsDevice.fullscreen is not implemented on current device.");
     }
 
+    /**
+     * Gets whether the device is currently in fullscreen mode.
+     *
+     * @type {boolean}
+     */
     get fullscreen() {
         Debug.error("GraphicsDevice.fullscreen is not implemented on current device.");
         return false;
     }
 
     /**
-     * Maximum pixel ratio.
+     * Sets the maximum pixel ratio.
      *
      * @type {number}
      */
@@ -781,12 +795,20 @@ class GraphicsDevice extends EventHandler {
         this._maxPixelRatio = ratio;
     }
 
+    /**
+     * Gets the maximum pixel ratio.
+     *
+     * @type {number}
+     */
     get maxPixelRatio() {
         return this._maxPixelRatio;
     }
 
     /**
-     * The type of the device. Can be pc.DEVICETYPE_WEBGL2 or pc.DEVICETYPE_WEBGPU.
+     * Gets the type of the device. Can be:
+     *
+     * - {@link DEVICETYPE_WEBGL2}
+     * - {@link DEVICETYPE_WEBGPU}
      *
      * @type {import('./constants.js').DEVICETYPE_WEBGL2 | import('./constants.js').DEVICETYPE_WEBGPU}
      */
@@ -854,6 +876,12 @@ class GraphicsDevice extends EventHandler {
 
     /**
      * Get a renderable HDR pixel format supported by the graphics device.
+     *
+     * Note:
+     * - When the `filterable` parameter is set to false, this function returns one of the supported
+     * formats on the majority of devices apart from some very old iOS and Android devices (99%).
+     * - When the `filterable` parameter is set to true, the function returns a format on a
+     * considerably lower number of devices (70%).
      *
      * @param {number[]} [formats] - An array of pixel formats to check for support. Can contain:
      *

@@ -3,7 +3,7 @@ import { Quat } from '../../core/math/quat.js';
 
 import { AxisBoxCenter, AxisBoxLine, AxisPlane } from './axis-shapes.js';
 import { GIZMO_LOCAL } from './gizmo.js';
-import { TransformGizmo } from "./transform-gizmo.js";
+import { SHAPEAXIS_X, SHAPEAXIS_XYZ, SHAPEAXIS_Y, SHAPEAXIS_Z, TransformGizmo } from './transform-gizmo.js';
 
 // temporary variables
 const tmpV1 = new Vec3();
@@ -18,51 +18,51 @@ const tmpQ1 = new Quat();
 class ScaleGizmo extends TransformGizmo {
     _shapes = {
         xyz: new AxisBoxCenter(this._device, {
-            axis: 'xyz',
+            axis: SHAPEAXIS_XYZ,
             layers: [this._layer.id],
             defaultColor: this._meshColors.axis.xyz,
             hoverColor: this._meshColors.hover.xyz
         }),
         yz: new AxisPlane(this._device, {
-            axis: 'x',
-            flipAxis: 'y',
+            axis: SHAPEAXIS_X,
+            flipAxis: SHAPEAXIS_Y,
             layers: [this._layer.id],
             rotation: new Vec3(0, 0, -90),
             defaultColor: this._meshColors.axis.x,
             hoverColor: this._meshColors.hover.x
         }),
         xz: new AxisPlane(this._device, {
-            axis: 'y',
-            flipAxis: 'z',
+            axis: SHAPEAXIS_Y,
+            flipAxis: SHAPEAXIS_Z,
             layers: [this._layer.id],
             rotation: new Vec3(0, 0, 0),
             defaultColor: this._meshColors.axis.y,
             hoverColor: this._meshColors.hover.y
         }),
         xy: new AxisPlane(this._device, {
-            axis: 'z',
-            flipAxis: 'x',
+            axis: SHAPEAXIS_Z,
+            flipAxis: SHAPEAXIS_X,
             layers: [this._layer.id],
             rotation: new Vec3(90, 0, 0),
             defaultColor: this._meshColors.axis.z,
             hoverColor: this._meshColors.hover.z
         }),
         x: new AxisBoxLine(this._device, {
-            axis: 'x',
+            axis: SHAPEAXIS_X,
             layers: [this._layer.id],
             rotation: new Vec3(0, 0, -90),
             defaultColor: this._meshColors.axis.x,
             hoverColor: this._meshColors.hover.x
         }),
         y: new AxisBoxLine(this._device, {
-            axis: 'y',
+            axis: SHAPEAXIS_Y,
             layers: [this._layer.id],
             rotation: new Vec3(0, 0, 0),
             defaultColor: this._meshColors.axis.y,
             hoverColor: this._meshColors.hover.y
         }),
         z: new AxisBoxLine(this._device, {
-            axis: 'z',
+            axis: SHAPEAXIS_Z,
             layers: [this._layer.id],
             rotation: new Vec3(90, 0, 0),
             defaultColor: this._meshColors.axis.z,
@@ -108,12 +108,12 @@ class ScaleGizmo extends TransformGizmo {
 
         this._createTransform();
 
-        this.on('transform:start', () => {
+        this.on(TransformGizmo.EVENT_TRANSFORMSTART, () => {
             this._selectionStartPoint.sub(Vec3.ONE);
             this._storeNodeScales();
         });
 
-        this.on('transform:move', (pointDelta) => {
+        this.on(TransformGizmo.EVENT_TRANSFORMMOVE, (pointDelta) => {
             if (this.snap) {
                 pointDelta.mulScalar(1 / this.snapIncrement);
                 pointDelta.round();
@@ -122,7 +122,7 @@ class ScaleGizmo extends TransformGizmo {
             this._setNodeScales(pointDelta);
         });
 
-        this.on('nodes:detach', () => {
+        this.on(TransformGizmo.EVENT_NODESDETACH, () => {
             this._nodeScales.clear();
         });
     }
@@ -136,7 +136,7 @@ class ScaleGizmo extends TransformGizmo {
     }
 
     /**
-     * Uniform scaling state for planes.
+     * Sets the uniform scaling state for planes.
      *
      * @type {boolean}
      */
@@ -144,12 +144,17 @@ class ScaleGizmo extends TransformGizmo {
         this._useUniformScaling = value ?? true;
     }
 
+    /**
+     * Gets the uniform scaling state for planes.
+     *
+     * @type {boolean}
+     */
     get uniform() {
         return this._useUniformScaling;
     }
 
     /**
-     * Axis gap.
+     * Sets the axis gap.
      *
      * @type {number}
      */
@@ -157,12 +162,17 @@ class ScaleGizmo extends TransformGizmo {
         this._setArrowProp('gap', value);
     }
 
+    /**
+     * Gets the axis gap.
+     *
+     * @type {number}
+     */
     get axisGap() {
         return this._shapes.x.gap;
     }
 
     /**
-     * Axis line thickness.
+     * Sets the axis line thickness.
      *
      * @type {number}
      */
@@ -170,12 +180,17 @@ class ScaleGizmo extends TransformGizmo {
         this._setArrowProp('lineThickness', value);
     }
 
+    /**
+     * Gets the axis line thickness.
+     *
+     * @type {number}
+     */
     get axisLineThickness() {
         return this._shapes.x.lineThickness;
     }
 
     /**
-     * Axis line length.
+     * Sets the axis line length.
      *
      * @type {number}
      */
@@ -183,12 +198,17 @@ class ScaleGizmo extends TransformGizmo {
         this._setArrowProp('lineLength', value);
     }
 
+    /**
+     * Gets the axis line length.
+     *
+     * @type {number}
+     */
     get axisLineLength() {
         return this._shapes.x.lineLength;
     }
 
     /**
-     * Axis line tolerance.
+     * Sets the axis line tolerance.
      *
      * @type {number}
      */
@@ -196,12 +216,17 @@ class ScaleGizmo extends TransformGizmo {
         this._setArrowProp('tolerance', value);
     }
 
+    /**
+     * Gets the axis line tolerance.
+     *
+     * @type {number}
+     */
     get axisLineTolerance() {
         return this._shapes.x.tolerance;
     }
 
     /**
-     * Axis box size.
+     * Sets the axis box size.
      *
      * @type {number}
      */
@@ -209,12 +234,17 @@ class ScaleGizmo extends TransformGizmo {
         this._setArrowProp('boxSize', value);
     }
 
+    /**
+     * Gets the axis box size.
+     *
+     * @type {number}
+     */
     get axisBoxSize() {
         return this._shapes.x.boxSize;
     }
 
     /**
-     * Plane size.
+     * Sets the plane size.
      *
      * @type {number}
      */
@@ -222,12 +252,17 @@ class ScaleGizmo extends TransformGizmo {
         this._setPlaneProp('size', value);
     }
 
+    /**
+     * Gets the plane size.
+     *
+     * @type {number}
+     */
     get axisPlaneSize() {
         return this._shapes.yz.size;
     }
 
     /**
-     * Plane gap.
+     * Sets the plane gap.
      *
      * @type {number}
      */
@@ -235,12 +270,17 @@ class ScaleGizmo extends TransformGizmo {
         this._setPlaneProp('gap', value);
     }
 
+    /**
+     * Gets the plane gap.
+     *
+     * @type {number}
+     */
     get axisPlaneGap() {
         return this._shapes.yz.gap;
     }
 
     /**
-     * Axis center size.
+     * Sets the axis center size.
      *
      * @type {number}
      */
@@ -248,12 +288,17 @@ class ScaleGizmo extends TransformGizmo {
         this._shapes.xyz.size = value;
     }
 
+    /**
+     * Gets the axis center size.
+     *
+     * @type {number}
+     */
     get axisCenterSize() {
         return this._shapes.xyz.size;
     }
 
     /**
-     * Axis center tolerance.
+     * Sets the axis center tolerance.
      *
      * @type {number}
      */
@@ -261,22 +306,40 @@ class ScaleGizmo extends TransformGizmo {
         this._shapes.xyz.tolerance = value;
     }
 
+    /**
+     * Gets the axis center tolerance.
+     *
+     * @type {number}
+     */
     get axisCenterTolerance() {
         return this._shapes.xyz.tolerance;
     }
 
+    /**
+     * @param {string} prop - The property name.
+     * @param {any} value - The property value.
+     * @private
+     */
     _setArrowProp(prop, value) {
         this._shapes.x[prop] = value;
         this._shapes.y[prop] = value;
         this._shapes.z[prop] = value;
     }
 
+    /**
+     * @param {string} prop - The property name.
+     * @param {any} value - The property value.
+     * @private
+     */
     _setPlaneProp(prop, value) {
         this._shapes.yz[prop] = value;
         this._shapes.xz[prop] = value;
         this._shapes.xy[prop] = value;
     }
 
+    /**
+     * @private
+     */
     _storeNodeScales() {
         for (let i = 0; i < this.nodes.length; i++) {
             const node = this.nodes[i];
@@ -284,13 +347,27 @@ class ScaleGizmo extends TransformGizmo {
         }
     }
 
+    /**
+     * @param {Vec3} pointDelta - The point delta.
+     * @private
+     */
     _setNodeScales(pointDelta) {
         for (let i = 0; i < this.nodes.length; i++) {
             const node = this.nodes[i];
-            node.setLocalScale(this._nodeScales.get(node).clone().mul(pointDelta));
+            const scale = this._nodeScales.get(node);
+            if (!scale) {
+                continue;
+            }
+            node.setLocalScale(scale.clone().mul(pointDelta));
         }
     }
 
+    /**
+     * @param {number} x - The x coordinate.
+     * @param {number} y - The y coordinate.
+     * @returns {{ point: Vec3, angle: number }} The point and angle.
+     * @protected
+     */
     _screenToPoint(x, y) {
         const gizmoPos = this.root.getPosition();
         const mouseWPos = this._camera.screenToWorld(x, y, 1);
@@ -298,7 +375,7 @@ class ScaleGizmo extends TransformGizmo {
         const axis = this._selectedAxis;
 
         const isPlane = this._selectedIsPlane;
-        const isScaleUniform = (this._useUniformScaling && isPlane) || axis === 'xyz';
+        const isScaleUniform = (this._useUniformScaling && isPlane) || axis === SHAPEAXIS_XYZ;
 
         const ray = this._createRay(mouseWPos);
         const plane = this._createPlane(axis, isScaleUniform, !isPlane);
@@ -311,15 +388,15 @@ class ScaleGizmo extends TransformGizmo {
         if (isScaleUniform) {
             // calculate projecion vector for scale direction
             switch (axis) {
-                case 'x':
+                case SHAPEAXIS_X:
                     tmpV1.copy(this.root.up);
                     tmpV2.copy(this.root.forward).mulScalar(-1);
                     break;
-                case 'y':
+                case SHAPEAXIS_Y:
                     tmpV1.copy(this.root.right);
                     tmpV2.copy(this.root.forward).mulScalar(-1);
                     break;
-                case 'z':
+                case SHAPEAXIS_Z:
                     tmpV1.copy(this.root.up);
                     tmpV2.copy(this.root.right);
                     break;
@@ -336,7 +413,7 @@ class ScaleGizmo extends TransformGizmo {
             point.set(v, v, v);
 
             // keep scale of axis constant if not all axes are selected
-            if (axis !== 'xyz') {
+            if (axis !== SHAPEAXIS_XYZ) {
                 point[axis] = 1;
             }
 

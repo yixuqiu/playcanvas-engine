@@ -6,10 +6,49 @@ import { GraphNode } from '../scene/graph-node.js';
 import { getApplication } from './globals.js';
 
 /**
+ * @typedef {import('./components/component.js').Component} Component
+ */
+
+/**
+ * @param {Component} a - First object with `order` property.
+ * @param {Component} b - Second object with `order` property.
+ * @returns {number} A number indicating the relative position.
+ * @ignore
+ */
+const cmpStaticOrder = (a, b) => a.constructor.order - b.constructor.order;
+
+/**
+ * @param {Array<Component>} arr - Array to be sorted in place where each element contains
+ * an object with a static `order` property.
+ * @returns {Array<Component>} In place sorted array.
+ * @ignore
+ */
+const sortStaticOrder = arr => arr.sort(cmpStaticOrder);
+
+/**
  * @type {GraphNode[]}
  * @ignore
  */
 const _enableList = [];
+
+/**
+ * @type {Array<Array<Component>>}
+ * @ignore
+ */
+const tmpPool = [];
+
+const getTempArray = () => {
+    return tmpPool.pop() ?? [];
+};
+
+/**
+ * @param {Array<Component>} a - Array to return back to pool.
+ * @ignore
+ */
+const releaseTempArray = (a) => {
+    a.length = 0;
+    tmpPool.push(a);
+};
 
 /**
  * The Entity is the core primitive of a PlayCanvas game. Generally speaking an object in your game
@@ -372,9 +411,7 @@ class Entity extends GraphNode {
      * const light = entity.findComponent("light");
      */
     findComponent(type) {
-        const entity = this.findOne(function (node) {
-            return node.c && node.c[type];
-        });
+        const entity = this.findOne(entity => entity?.c[type]);
         return entity && entity.c[type];
     }
 
@@ -389,23 +426,18 @@ class Entity extends GraphNode {
      * const lights = entity.findComponents("light");
      */
     findComponents(type) {
-        const entities = this.find(function (node) {
-            return node.c && node.c[type];
-        });
-        return entities.map(function (entity) {
-            return entity.c[type];
-        });
+        return this.find(entity => entity?.c[type]).map(entity => entity.c[type]);
     }
 
     /**
      * Search the entity and all of its descendants for the first script instance of specified type.
      *
-     * @param {string|typeof import('./script/script.js').Script} nameOrType - The name or type of {@link Script}.
-     * @returns {import('./script/script.js').Script|undefined} A script instance of specified type, if the entity or any of its descendants
+     * @param {string|typeof import('./script/script-type.js').ScriptType} nameOrType - The name or type of {@link ScriptType}.
+     * @returns {import('./script/script-type.js').ScriptType|undefined} A script instance of specified type, if the entity or any of its descendants
      * has one. Returns undefined otherwise.
      * @example
      * // Get the first found "playerController" instance in the hierarchy tree that starts with this entity
-     * var controller = entity.findScript("playerController");
+     * const controller = entity.findScript("playerController");
      */
     findScript(nameOrType) {
         const entity = this.findOne(node => node.c?.script?.has(nameOrType));
@@ -415,12 +447,12 @@ class Entity extends GraphNode {
     /**
      * Search the entity and all of its descendants for all script instances of specified type.
      *
-     * @param {string|typeof import('./script/script.js').Script} nameOrType - The name or type of {@link Script}.
-     * @returns {import('./script/script.js').Script[]} All script instances of specified type in the entity or any of its
+     * @param {string|typeof import('./script/script-type.js').ScriptType} nameOrType - The name or type of {@link ScriptType}.
+     * @returns {import('./script/script-type.js').ScriptType[]} All script instances of specified type in the entity or any of its
      * descendants. Returns empty array if none found.
      * @example
      * // Get all "playerController" instances in the hierarchy tree that starts with this entity
-     * var controllers = entity.findScripts("playerController");
+     * const controllers = entity.findScripts("playerController");
      */
     findScripts(nameOrType) {
         const entities = this.find(node => node.c?.script?.has(nameOrType));
@@ -503,30 +535,30 @@ class Entity extends GraphNode {
     _onHierarchyStateChanged(enabled) {
         super._onHierarchyStateChanged(enabled);
 
-        // enable / disable all the components
-        const components = this.c;
-        for (const type in components) {
-            if (components.hasOwnProperty(type)) {
-                const component = components[type];
-                if (component.enabled) {
-                    if (enabled) {
-                        component.onEnable();
-                    } else {
-                        component.onDisable();
-                    }
+        const components = this._getSortedComponents();
+        for (let i = 0; i < components.length; i++) {
+            const component = components[i];
+            if (component.enabled) {
+                if (enabled) {
+                    component.onEnable();
+                } else {
+                    component.onDisable();
                 }
             }
         }
+
+        releaseTempArray(components);
     }
 
     /** @private */
     _onHierarchyStatePostChanged() {
         // post enable all the components
-        const components = this.c;
-        for (const type in components) {
-            if (components.hasOwnProperty(type))
-                components[type].onPostStateChange();
+        const components = this._getSortedComponents();
+        for (let i = 0; i < components.length; i++) {
+            components[i].onPostStateChange();
         }
+
+        releaseTempArray(components);
     }
 
     /**
@@ -601,6 +633,25 @@ class Entity extends GraphNode {
         return clone;
     }
 
+    _getSortedComponents() {
+        const components = this.c;
+        const sortedArray = getTempArray();
+        let needSort = 0;
+        for (const type in components) {
+            if (components.hasOwnProperty(type)) {
+                const component = components[type];
+                needSort |= component.constructor.order !== 0;
+                sortedArray.push(component);
+            }
+        }
+
+        if (needSort && sortedArray.length > 1) {
+            sortStaticOrder(sortedArray);
+        }
+
+        return sortedArray;
+    }
+
     /**
      * @param {Object<string, Entity>} duplicatedIdsMap - A map of original entity GUIDs to cloned
      * entities.
@@ -630,15 +681,23 @@ class Entity extends GraphNode {
     }
 }
 
-// When an entity that has properties that contain references to other
-// entities within its subtree is duplicated, the expectation of the
-// user is likely that those properties will be updated to point to
-// the corresponding entities within the newly-created duplicate subtree.
-//
-// To handle this, we need to search for properties that refer to entities
-// within the old duplicated structure, find their newly-cloned partners
-// within the new structure, and update the references accordingly. This
-// function implements that requirement.
+/**
+ * When an entity that has properties that contain references to other entities within its subtree
+ * is duplicated, the expectation of the user is likely that those properties will be updated to
+ * point to the corresponding entities within the newly-created duplicate subtree.
+ *
+ * To handle this, we need to search for properties that refer to entities within the old
+ * duplicated structure, find their newly-cloned partners within the new structure, and update the
+ * references accordingly. This function implements that requirement.
+ *
+ * @param {Entity} oldSubtreeRoot - The root of the duplicated entity subtree that is being
+ * resolved.
+ * @param {Entity} oldEntity - The entity within the old duplicated subtree that is being resolved.
+ * @param {Entity} newEntity - The entity within the new duplicated subtree that is being resolved.
+ * @param {Object<string, Entity>} duplicatedIdsMap - A map of original entity GUIDs to cloned
+ * entities.
+ * @private
+ */
 function resolveDuplicatedEntityReferenceProperties(oldSubtreeRoot, oldEntity, newEntity, duplicatedIdsMap) {
     if (oldEntity instanceof Entity) {
         const components = oldEntity.c;
@@ -667,7 +726,7 @@ function resolveDuplicatedEntityReferenceProperties(oldSubtreeRoot, oldEntity, n
         }
 
         // Handle entity script attributes
-        if (components.script && !newEntity._app.useLegacyScriptAttributeCloning) {
+        if (components.script) {
             newEntity.script.resolveDuplicatedEntityReferenceProperties(components.script, duplicatedIdsMap);
         }
 
@@ -681,16 +740,11 @@ function resolveDuplicatedEntityReferenceProperties(oldSubtreeRoot, oldEntity, n
             newEntity.anim.resolveDuplicatedEntityReferenceProperties(components.anim, duplicatedIdsMap);
         }
 
-        // Recurse into children. Note that we continue to pass in the same `oldSubtreeRoot`,
-        // in order to correctly handle cases where a child has an entity reference
-        // field that points to a parent or other ancestor that is still within the
-        // duplicated subtree.
-        const _old = oldEntity.children.filter(function (e) {
-            return (e instanceof Entity);
-        });
-        const _new = newEntity.children.filter(function (e) {
-            return (e instanceof Entity);
-        });
+        // Recurse into children. Note that we continue to pass in the same `oldSubtreeRoot`, in
+        // order to correctly handle cases where a child has an entity reference field that points
+        // to a parent or other ancestor that is still within the duplicated subtree.
+        const _old = oldEntity.children.filter(e => e instanceof Entity);
+        const _new = newEntity.children.filter(e => e instanceof Entity);
 
         for (let i = 0, len = _old.length; i < len; i++) {
             resolveDuplicatedEntityReferenceProperties(oldSubtreeRoot, _old[i], _new[i], duplicatedIdsMap);

@@ -1,5 +1,4 @@
-import config from '@examples/config';
-import { getQueryParams } from '@examples/utils';
+import { getQueryParams } from 'examples/utils';
 
 const params = getQueryParams(window.top?.location.href ?? '');
 
@@ -12,9 +11,6 @@ export default class MiniStats {
      * @param {any} state - The enabled state.
      */
     static enable(app, state) {
-        if (config.NO_MINISTATS) {
-            return;
-        }
         if (params.miniStats === 'false') {
             return;
         }

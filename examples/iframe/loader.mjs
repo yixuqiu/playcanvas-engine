@@ -1,11 +1,16 @@
-import config from '@examples/config';
-import { fetchFile, fire } from '@examples/utils';
-import { data, refresh } from '@examples/observer';
-import files from '@examples/files';
+import { updateDeviceType, fetchFile, localImport, clearImports, parseConfig, fire } from 'examples/utils';
+import { data, refresh } from 'examples/observer';
+import files from 'examples/files';
 
 import MiniStats from './ministats.mjs';
 
 class ExampleLoader {
+    /**
+     * @type {Record<string, any>}
+     * @private
+     */
+    _config;
+
     /**
      * @type {import('playcanvas').AppBase}
      * @private
@@ -25,16 +30,10 @@ class ExampleLoader {
     _allowRestart = true;
 
     /**
-     * @type {string}
+     * @type {Function[]}
      * @private
      */
-    _scriptUrl = '';
-
-    /**
-     * @type {Function | null}
-     * @private
-     */
-    _scriptDestroy = null;
+    destroyHandlers = [];
 
     /**
      * @type {boolean}
@@ -42,19 +41,22 @@ class ExampleLoader {
     ready = false;
 
     _appStart() {
+        // set ready state
+        this.ready = true;
+
         if (this._app) {
             if (!this._app?.graphicsDevice?.canvas) {
                 console.warn('No canvas found.');
                 return;
             }
-            MiniStats.enable(this._app, true);
+            this.setMiniStats(true);
         }
 
         if (!this._started) {
             // Sets code editor component files
             // Sets example component files (for controls + description)
             // Sets mini stats enabled state based on UI
-            fire('exampleLoad', { observer: data, files, description: config.DESCRIPTION || '' });
+            fire('exampleLoad', { observer: data, files, description: this._config.DESCRIPTION || '' });
         }
         this._started = true;
 
@@ -69,8 +71,15 @@ class ExampleLoader {
         this._allowRestart = true;
     }
 
+    /**
+     * @param {string} stack - The stack trace.
+     * @returns {{ file: string, line: number, column: number }[]} - The error locations.
+     */
     _parseErrorLocations(stack) {
         const lines = stack.split('\n');
+        /**
+         * @type {{ file: string, line: number, column: number }[]}
+         */
         const locations = [];
         lines.forEach((line) => {
             const match = /^\s*at\s(.+):(\d+):(\d+)$/g.exec(line);
@@ -87,16 +96,32 @@ class ExampleLoader {
     }
 
     /**
-     * @param {{ engineUrl: string, exampleUrl: string, controlsUrl: string }} options - Options to start the loader
+     * @param {{ engineUrl: string, fileNames: string[] }} options - Options to start the loader
      */
-    async start({ engineUrl, exampleUrl, controlsUrl }) {
+    async start({ engineUrl, fileNames }) {
         window.pc = await import(engineUrl);
 
         // @ts-ignore
         window.top.pc = window.pc;
 
-        files['example.mjs'] = await fetchFile(exampleUrl);
-        files['controls.mjs'] = await fetchFile(controlsUrl);
+        // extracts example category and name from the URL
+        const match = /([^/]+)\.html$/.exec(new URL(location.href).pathname);
+        if (!match) {
+            return;
+        }
+
+        // loads each files
+        /**
+         * @type {Record<string, string>}
+         */
+        const unorderedFiles = {};
+        await Promise.all(fileNames.map(async (name) => {
+            unorderedFiles[name] = await fetchFile(`./${match[1]}.${name}`);
+        }));
+        for (const name of Object.keys(unorderedFiles).sort()) {
+            files[name] = unorderedFiles[name];
+        }
+
 
         await this.load();
     }
@@ -107,27 +132,32 @@ class ExampleLoader {
         // refresh observer instance
         refresh();
 
+        // parse config
+        this._config = parseConfig(files['example.mjs']);
+
+        // update device type
+        updateDeviceType(this._config);
+
         if (!this._started) {
             // just notify to clean UI, but not during hot-reload
-            fire('exampleLoading', { showDeviceSelector: !config.NO_DEVICE_SELECTOR });
+            fire('exampleLoading', { showDeviceSelector: !this._config.NO_DEVICE_SELECTOR });
         }
 
-        if (this._scriptUrl) {
-            URL.revokeObjectURL(this._scriptUrl);
-        }
-        const blob = new Blob([files['example.mjs']], { type: 'text/javascript' });
-        this._scriptUrl = URL.createObjectURL(blob);
+        clearImports();
 
         try {
-            const module = await import(this._scriptUrl);
+            // import local file
+            const module = await localImport('example.mjs');
             this._app = module.app;
 
             // additional destroy handler in case no app provided
-            this._scriptDestroy = module.destroy;
+            if (typeof module.destroy === 'function') {
+                this.destroyHandlers.push(module.destroy);
+            }
         } catch (e) {
             console.error(e);
             const locations = this._parseErrorLocations(e.stack);
-            window.top.dispatchEvent(new CustomEvent('exampleError', {
+            window.top?.dispatchEvent(new CustomEvent('exampleError', {
                 detail: {
                     name: e.constructor.name,
                     message: e.message,
@@ -138,9 +168,6 @@ class ExampleLoader {
             this._allowRestart = true;
             return;
         }
-
-        // set ready state
-        this.ready = true;
 
         if (this._app) {
             if (this._app.frame) {
@@ -161,6 +188,9 @@ class ExampleLoader {
      * @param {boolean} enabled - The enabled state of ministats
      */
     setMiniStats(enabled = false) {
+        if (this._config.NO_MINISTATS) {
+            return;
+        }
         MiniStats.enable(this._app, enabled);
     }
 
@@ -169,7 +199,7 @@ class ExampleLoader {
             console.warn('Dropping restart while still restarting');
             return;
         }
-        window.top.dispatchEvent(new CustomEvent('exampleHotReload'));
+        window.top?.dispatchEvent(new CustomEvent('exampleHotReload'));
         this.destroy();
         this.load();
     }
@@ -179,17 +209,12 @@ class ExampleLoader {
         if (this._app && this._app.graphicsDevice) {
             this._app.destroy();
         }
-        if (this._scriptDestroy) {
-            this._scriptDestroy();
-            this._scriptDestroy = null;
-        }
+        this.destroyHandlers.forEach(destroy => destroy());
         this.ready = false;
     }
 
     exit() {
-        if (this._scriptUrl) {
-            URL.revokeObjectURL(this._scriptUrl);
-        }
+        clearImports();
         this.destroy();
     }
 }

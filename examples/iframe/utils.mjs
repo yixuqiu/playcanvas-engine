@@ -1,4 +1,4 @@
-import config from '@examples/config';
+import files from 'examples/files';
 
 const href = window.top?.location.href ?? '';
 const params = getQueryParams(href);
@@ -47,47 +47,93 @@ export async function loadES5(url) {
     return (Function('module', 'exports', txt).call(module, module, module.exports), module).exports;
 }
 
-function isLinuxChrome() {
-    // Lack of Chrome's WebGPU support on Linux
-    return navigator.platform.includes('Linux') && navigator.appVersion.includes("Chrome");
+/**
+ * @type {string[]}
+ */
+const blobUrls = [];
+
+/**
+ * Imports a local file as a module.
+ *
+ * @param {string} name - The name of the local file.
+ * @returns {Promise<any>} - The module exports.
+ */
+export function localImport(name) {
+    if (!/\.mjs$/.test(name)) {
+        throw new Error(`Invalid module: ${name}`);
+    }
+    const blob = new Blob([files[name]], { type: 'text/javascript' });
+    const url = URL.createObjectURL(blob);
+    blobUrls.push(url);
+    return import(url);
 }
 
 /**
- * @returns {string} - The device type.
+ * Imports an absolute file as a module.
+ *
+ * @param {string} name - The name of the absolute file.
+ * @returns {Promise<any>} - The module exports.
  */
-function getDeviceType() {
-    if (config.WEBGPU_REQUIRED) {
-        if (isLinuxChrome()) {
-            return 'webgl2';
-        }
-        return 'webgpu';
-    }
-
-    if (params.deviceType) {
-        console.warn("Overwriting default deviceType from URL");
-        return params.deviceType;
-    }
-
-    const savedDevice = localStorage.getItem('preferredGraphicsDevice');
-    if (config.WEBGPU_ENABLED) {
-        let preferredDevice = 'webgpu';
-        if (isLinuxChrome()) {
-            preferredDevice = 'webgl2';
-        }
-        return savedDevice || preferredDevice;
-    }
-
-    switch (savedDevice) {
-        case 'webgpu':
-            console.warn('Picked WebGPU but example is not supported on WebGPU, defaulting to WebGL2');
-            return 'webgl2';
-        case 'webgl2':
-            return savedDevice;
-        default:
-            return 'webgl2';
-    }
+export function fileImport(name) {
+    return import(name);
 }
-export const deviceType = getDeviceType();
+
+/**
+ * Clears all the blob URLs.
+ */
+export function clearImports() {
+    blobUrls.forEach(URL.revokeObjectURL);
+}
+
+/**
+ * @param {string} script - The script to parse.
+ * @returns {Record<string, any>} - The parsed config.
+ */
+export function parseConfig(script) {
+    const regex = /\/\/ @config ([^ \n]+) ?([^\n]+)?/g;
+    let match;
+    /** @type {Record<string, any>} */
+    const config = {};
+    while ((match = regex.exec(script)) !== null) {
+        const key = match[1].trim();
+        const val = match[2]?.trim();
+        config[key] = /true|false/g.test(val) ? val === 'true' : val ?? true;
+    }
+    return config;
+}
+
+const DEVICE_TYPES = ['webgpu', 'webgl2', 'null'];
+export let deviceType = 'webgl2';
+
+/**
+ * @param {{ WEBGPU_DISABLED: boolean; WEBGL_DISABLED: boolean; }} config - The configuration object.
+ */
+export function updateDeviceType(config) {
+    if (params.deviceType && DEVICE_TYPES.includes(params.deviceType)) {
+        console.warn("Overwriting default deviceType from URL: ", params.deviceType);
+        deviceType = params.deviceType;
+        return;
+    }
+
+    if (config.WEBGL_DISABLED && config.WEBGPU_DISABLED) {
+        console.warn('Both WebGL and WebGPU are disabled. Using NullGraphicsDevice instead.');
+        deviceType = 'null';
+        return;
+    }
+    if (config.WEBGPU_DISABLED) {
+        console.warn('WebGPU is disabled. Using WebGL2 instead.');
+        deviceType = 'webgl2';
+        return;
+    }
+    if (config.WEBGL_DISABLED) {
+        console.warn('WebGL is disabled. Using WebGPU instead.');
+        deviceType = 'webgpu';
+        return;
+    }
+
+    const savedDevice = localStorage.getItem('preferredGraphicsDevice') ?? 'webgl2';
+    deviceType = DEVICE_TYPES.includes(savedDevice) ? savedDevice : 'webgl2';
+}
 
 /**
  * @param {string} eventName - The name of the fired event.

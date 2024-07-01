@@ -16,7 +16,6 @@ import {
     SHADER_DEPTH, SHADER_PICK,
     SHADOW_PCF1, SHADOW_PCF3, SHADOW_PCF5, SHADOW_VSM8, SHADOW_VSM16, SHADOW_VSM32, SHADOW_PCSS,
     SPECOCC_AO, SPECOCC_GLOSSDEPENDENT,
-    SPECULAR_PHONG,
     SPRITE_RENDERMODE_SLICED, SPRITE_RENDERMODE_TILED, shadowTypeToString, SHADER_PREPASS_VELOCITY
 } from '../../constants.js';
 import { LightsBuffer } from '../../lighting/lights-buffer.js';
@@ -420,17 +419,23 @@ class LitShader {
     }
 
     _fsGetPickPassCode() {
-        let code = this._fsGetBeginCode();
-        code += "uniform vec4 uColor;\n";
-        code += this.varyings;
-        code += this.varyingDefines;
-        code += this.frontendDecl;
-        code += this.frontendCode;
-        code += ShaderGenerator.begin();
-        code += this.frontendFunc;
-        code += "    gl_FragColor = uColor;\n";
-        code += ShaderGenerator.end();
-        return code;
+        return `
+            ${this._fsGetBeginCode()}
+            ${this.varyings}
+            ${this.varyingDefines}
+            ${this.frontendDecl}
+            ${this.frontendCode}
+            uniform uint meshInstanceId;
+
+            void main(void) {
+                ${this.frontendFunc}
+                
+                const vec4 inv = vec4(1.0 / 255.0, 1.0 / 255.0, 1.0 / 255.0, 1.0 / 255.0);
+                const uvec4 shifts = uvec4(16, 8, 0, 24);
+                uvec4 col = (uvec4(meshInstanceId) >> shifts) & uvec4(0xff);
+                gl_FragColor = vec4(col) * inv;
+            }
+        `;
     }
 
     _fsGetDepthPassCode() {
@@ -586,11 +591,6 @@ class LitShader {
 
             if (options.fresnelModel > 0) {
                 this.defines.push("LIT_SPECULAR_FRESNEL");
-            }
-
-            // enable conserve energy path in clustered chunk
-            if (options.conserveEnergy) {
-                this.defines.push("LIT_CONSERVE_ENERGY");
             }
 
             if (options.useSheen) {
@@ -780,7 +780,6 @@ class LitShader {
         }
 
         if (options.reflectionSource === 'envAtlasHQ') {
-            func.append(options.fixSeams ? chunks.fixCubemapSeamsStretchPS : chunks.fixCubemapSeamsNonePS);
             func.append(chunks.envAtlasPS);
             func.append(chunks.reflectionEnvHQPS
                 .replace(/\$DECODE_CUBEMAP/g, ChunkUtils.decodeFunc(options.reflectionCubemapEncoding))
@@ -790,7 +789,6 @@ class LitShader {
             func.append(chunks.envAtlasPS);
             func.append(chunks.reflectionEnvPS.replace(/\$DECODE/g, ChunkUtils.decodeFunc(options.reflectionEncoding)));
         } else if (options.reflectionSource === 'cubeMap') {
-            func.append(options.fixSeams ? chunks.fixCubemapSeamsStretchPS : chunks.fixCubemapSeamsNonePS);
             func.append(chunks.reflectionCubePS.replace(/\$DECODE/g, ChunkUtils.decodeFunc(options.reflectionEncoding)));
         } else if (options.reflectionSource === 'sphereMap') {
             func.append(chunks.reflectionSpherePS.replace(/\$DECODE/g, ChunkUtils.decodeFunc(options.reflectionEncoding)));
@@ -844,7 +842,7 @@ class LitShader {
             if (shadowTypeUsed[SHADOW_PCF1] || shadowTypeUsed[SHADOW_PCF3]) {
                 func.append(chunks.shadowStandardPS);
             }
-            if (shadowTypeUsed[SHADOW_PCF5] && !device.isWebGL1) {
+            if (shadowTypeUsed[SHADOW_PCF5]) {
                 func.append(chunks.shadowStandardGL2PS);
             }
             if (useVsm) {
@@ -878,7 +876,7 @@ class LitShader {
         if (options.useSpecular) {
 
             if (this.lighting) {
-                func.append(options.shadingModel === SPECULAR_PHONG ? chunks.lightSpecularPhongPS : (options.enableGGXSpecular ? chunks.lightSpecularAnisoGGXPS : chunks.lightSpecularBlinnPS));
+                func.append(options.enableGGXSpecular ? chunks.lightSpecularAnisoGGXPS : chunks.lightSpecularBlinnPS);
             }
 
             if (!options.fresnelModel && !this.reflections && !options.diffuseMapEnabled) {
@@ -1016,7 +1014,7 @@ class LitShader {
 
         if (addAmbient) {
             backend.append("    addAmbient(litArgs_worldNormal);");
-            if (options.conserveEnergy && options.useSpecular) {
+            if (options.useSpecular) {
                 backend.append(`   dDiffuseLight = dDiffuseLight * (1.0 - litArgs_specularity);`);
             }
 
@@ -1303,7 +1301,7 @@ class LitShader {
                 if (lightShape !== LIGHTSHAPE_PUNCTUAL) {
 
                     // area light - they do not mix diffuse lighting into specular attenuation
-                    if (options.conserveEnergy && options.useSpecular) {
+                    if (options.useSpecular) {
                         backend.append("    dDiffuseLight += ((dAttenD * dAtten) * light" + i + "_color" + (usesCookieNow ? " * dAtten3" : "") + ") * (1.0 - dLTCSpecFres);");
                     } else {
                         backend.append("    dDiffuseLight += (dAttenD * dAtten) * light" + i + "_color" + (usesCookieNow ? " * dAtten3" : "") + ";");
@@ -1311,7 +1309,7 @@ class LitShader {
                 } else {
 
                     // punctual light
-                    if (hasAreaLights && options.conserveEnergy && options.useSpecular) {
+                    if (hasAreaLights && options.useSpecular) {
                         backend.append("    dDiffuseLight += (dAtten * light" + i + "_color" + (usesCookieNow ? " * dAtten3" : "") + ") * (1.0 - litArgs_specularity);");
                     } else {
                         backend.append("    dDiffuseLight += dAtten * light" + i + "_color" + (usesCookieNow ? " * dAtten3" : "") + ";");

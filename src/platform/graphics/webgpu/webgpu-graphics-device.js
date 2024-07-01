@@ -1,6 +1,5 @@
 import { TRACEID_RENDER_QUEUE } from '../../../core/constants.js';
 import { Debug, DebugHelper } from '../../../core/debug.js';
-import { path } from '../../../core/path.js';
 
 import {
     PIXELFORMAT_RGBA8, PIXELFORMAT_BGRA8, DEVICETYPE_WEBGPU,
@@ -29,6 +28,8 @@ import { WebgpuGpuProfiler } from './webgpu-gpu-profiler.js';
 import { WebgpuResolver } from './webgpu-resolver.js';
 import { WebgpuCompute } from './webgpu-compute.js';
 import { WebgpuBuffer } from './webgpu-buffer.js';
+import { BindGroupFormat } from '../bind-group-format.js';
+import { BindGroup } from '../bind-group.js';
 
 const _uniqueLocations = new Map();
 
@@ -71,6 +72,14 @@ class WebgpuGraphicsDevice extends GraphicsDevice {
      * @type {WebgpuBindGroupFormat[]}
      */
     bindGroupFormats = [];
+
+    /**
+     * An empty bind group, used when the draw call is using a typical bind group layout based on
+     * BINDGROUP_*** constants but some bind groups are not needed, for example clear renderer.
+     *
+     * @type {BindGroup}
+     */
+    emptyBindGroup;
 
     /**
      * Current command buffer encoder.
@@ -148,7 +157,6 @@ class WebgpuGraphicsDevice extends GraphicsDevice {
         this.textureFloatRenderable = true;
         this.textureHalfFloatRenderable = true;
         this.supportsImageBitmap = true;
-        this.supportsTextureFetch = true;
 
         // WebGPU currently only supports 1 and 4 samples
         this.samples = this.backBufferAntialias ? 4 : 1;
@@ -167,16 +175,9 @@ class WebgpuGraphicsDevice extends GraphicsDevice {
         // temporary message to confirm Webgpu is being used
         Debug.log("WebgpuGraphicsDevice initialization ..");
 
-        // build a full URL from a relative path
+        // build a full URL from a relative or absolute path
         const buildUrl = (srcPath) => {
-            if (!path.isRelativePath(srcPath)) {
-                return srcPath;
-            }
-
-            const url = new URL(window.location.href);
-            url.pathname = srcPath;
-            url.search = '';
-            return url.toString();
+            return new URL(srcPath, window.location.href).toString();
         };
 
         const results = await Promise.all([
@@ -308,8 +309,12 @@ class WebgpuGraphicsDevice extends GraphicsDevice {
 
         this.gpuProfiler = new WebgpuGpuProfiler(this);
 
-        // init dynamic buffer using 1MB allocation
-        this.dynamicBuffers = new WebgpuDynamicBuffers(this, 1024 * 1024, this.limits.minUniformBufferOffsetAlignment);
+        // init dynamic buffer using 100kB allocation
+        this.dynamicBuffers = new WebgpuDynamicBuffers(this, 100 * 1024, this.limits.minUniformBufferOffsetAlignment);
+
+        // empty bind group
+        this.emptyBindGroup = new BindGroup(this, new BindGroupFormat(this, []));
+        this.emptyBindGroup.update();
     }
 
     createBackbuffer() {
@@ -419,14 +424,15 @@ class WebgpuGraphicsDevice extends GraphicsDevice {
     /**
      * @param {number} index - Index of the bind group slot
      * @param {import('../bind-group.js').BindGroup} bindGroup - Bind group to attach
+     * @param {number[]} [offsets] - Byte offsets for all uniform buffers in the bind group.
      */
-    setBindGroup(index, bindGroup) {
+    setBindGroup(index, bindGroup, offsets) {
 
         // TODO: this condition should be removed, it's here to handle fake grab pass, which should be refactored instead
         if (this.passEncoder) {
 
             // set it on the device
-            this.passEncoder.setBindGroup(index, bindGroup.impl.bindGroup, bindGroup.uniformBufferOffsets);
+            this.passEncoder.setBindGroup(index, bindGroup.impl.bindGroup, offsets ?? bindGroup.uniformBufferOffsets);
 
             // store the active formats, used by the pipeline creation
             this.bindGroupFormats[index] = bindGroup.format.impl;
@@ -913,6 +919,13 @@ class WebgpuGraphicsDevice extends GraphicsDevice {
             this.addCommandBuffer(cb);
         }
 
+        return this.readBuffer(stagingBuffer, size, data, immediate);
+    }
+
+    readBuffer(stagingBuffer, size, data = null, immediate = false) {
+
+        const destBuffer = stagingBuffer.buffer;
+
         // return a promise that resolves with the data
         return new Promise((resolve, reject) => {
 
@@ -971,8 +984,8 @@ class WebgpuGraphicsDevice extends GraphicsDevice {
      *
      * @param {RenderTarget} [source] - The source render target. Defaults to frame buffer.
      * @param {RenderTarget} [dest] - The destination render target. Defaults to frame buffer.
-     * @param {boolean} [color] - If true will copy the color buffer. Defaults to false.
-     * @param {boolean} [depth] - If true will copy the depth buffer. Defaults to false.
+     * @param {boolean} [color] - If true, will copy the color buffer. Defaults to false.
+     * @param {boolean} [depth] - If true, will copy the depth buffer. Defaults to false.
      * @returns {boolean} True if the copy was successful, false otherwise.
      */
     copyRenderTarget(source, dest, color, depth) {

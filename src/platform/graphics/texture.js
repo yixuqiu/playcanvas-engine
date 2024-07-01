@@ -2,7 +2,6 @@ import { Debug } from '../../core/debug.js';
 import { TRACEID_TEXTURE_ALLOC, TRACEID_VRAM_TEXTURE } from '../../core/constants.js';
 import { math } from '../../core/math/math.js';
 
-import { RenderTarget } from './render-target.js';
 import { TextureUtils } from './texture-utils.js';
 import {
     isCompressedPixelFormat,
@@ -11,20 +10,51 @@ import {
     FILTER_LINEAR, FILTER_LINEAR_MIPMAP_LINEAR,
     FUNC_LESS,
     PIXELFORMAT_RGBA8,
-    PIXELFORMAT_RGB16F, PIXELFORMAT_RGBA16F, PIXELFORMAT_RGB32F, PIXELFORMAT_RGBA32F,
     TEXHINT_SHADOWMAP, TEXHINT_ASSET, TEXHINT_LIGHTMAP,
     TEXTURELOCK_WRITE,
     TEXTUREPROJECTION_NONE, TEXTUREPROJECTION_CUBE,
-    TEXTURETYPE_DEFAULT, TEXTURETYPE_RGBM, TEXTURETYPE_RGBE, TEXTURETYPE_RGBP, TEXTURETYPE_SWIZZLEGGGR,
-    isIntegerPixelFormat, FILTER_NEAREST, TEXTURELOCK_NONE, TEXTURELOCK_READ
+    TEXTURETYPE_DEFAULT, TEXTURETYPE_RGBM, TEXTURETYPE_RGBE, TEXTURETYPE_RGBP,
+    isIntegerPixelFormat, FILTER_NEAREST, TEXTURELOCK_NONE, TEXTURELOCK_READ,
+    requiresManualGamma
 } from './constants.js';
 
 let id = 0;
+
+const PROPERTY_MIN_FILTER = 1;
+const PROPERTY_MAG_FILTER = 2;
+const PROPERTY_ADDRESS_U = 4;
+const PROPERTY_ADDRESS_V = 8;
+const PROPERTY_ADDRESS_W = 16;
+const PROPERTY_COMPARE_ON_READ = 32;
+const PROPERTY_COMPARE_FUNC = 64;
+const PROPERTY_ANISOTROPY = 128;
+const PROPERTY_ALL = 255; // 1 | 2 | 4 | 8 | 16 | 32 | 64 | 128
 
 /**
  * A texture is a container for texel data that can be utilized in a fragment shader. Typically,
  * the texel data represents an image that is mapped over geometry.
  *
+ * Note on **HDR texture format** support:
+ * 1. **As textures**:
+ *     - float (i.e. {@link PIXELFORMAT_RGBA32F}), half-float (i.e. {@link PIXELFORMAT_RGBA16F}) and
+ * small-float ({@link PIXELFORMAT_111110F}) formats are always supported on both WebGL2 and WebGPU
+ * with point sampling.
+ *     - half-float and small-float formats are always supported on WebGL2 and WebGPU with linear
+ * sampling.
+ *     - float formats are supported on WebGL2 and WebGPU with linear sampling only if
+ * {@link GraphicsDevice#textureFloatFilterable} is true.
+ *
+ * 2. **As renderable textures** that can be used as color buffers in a {@link RenderTarget}:
+ *     - on WebGPU, rendering to float and half-float formats is always supported.
+ *     - on WebGPU, rendering to small-float format is supported only if
+ * {@link GraphicsDevice#textureRG11B10Renderable} is true.
+ *     - on WebGL2, rendering to these 3 formats formats is supported only if
+ * {@link GraphicsDevice#textureFloatRenderable} is true.
+ *     - on WebGL2, if {@link GraphicsDevice#textureFloatRenderable} is false, but
+ * {@link GraphicsDevice#textureHalfFloatRenderable} is true, rendering to half-float formats only
+ * is supported. This is the case of many mobile iOS devices.
+ *     - you can determine available renderable HDR format using
+ * {@link GraphicsDevice#getRenderableHdrFormat}.
  * @category Graphics
  */
 class Texture {
@@ -74,9 +104,8 @@ class Texture {
      * @param {number} [options.depth] - The number of depth slices in a 3D texture.
      * @param {number} [options.format] - The pixel format of the texture. Can be:
      *
-     * - {@link PIXELFORMAT_A8}
-     * - {@link PIXELFORMAT_L8}
-     * - {@link PIXELFORMAT_LA8}
+     * - {@link PIXELFORMAT_R8}
+     * - {@link PIXELFORMAT_RG8}
      * - {@link PIXELFORMAT_RGB565}
      * - {@link PIXELFORMAT_RGBA5551}
      * - {@link PIXELFORMAT_RGBA4}
@@ -140,8 +169,6 @@ class Texture {
      * - {@link TEXTURETYPE_SWIZZLEGGGR}
      *
      * Defaults to {@link TEXTURETYPE_DEFAULT}.
-     * @param {boolean} [options.fixCubemapSeams] - Specifies whether this cubemap texture requires
-     * special seam fixing shader code to look right. Defaults to false.
      * @param {boolean} [options.flipY] - Specifies whether the texture should be flipped in the
      * Y-direction. Only affects textures with a source that is an image, canvas or video element.
      * Does not affect cubemaps, compressed textures or textures set from raw pixel data. Defaults
@@ -215,7 +242,6 @@ class Texture {
 
         this._storage = options.storage ?? false;
         this._cubemap = options.cubemap ?? false;
-        this.fixCubemapSeams = options.fixCubemapSeams ?? false;
         this._flipY = options.flipY ?? false;
         this._premultiplyAlpha = options.premultiplyAlpha ?? false;
 
@@ -230,16 +256,9 @@ class Texture {
         this._compareOnRead = options.compareOnRead ?? false;
         this._compareFunc = options.compareFunc ?? FUNC_LESS;
 
-        this.type = TEXTURETYPE_DEFAULT;
-        if (options.hasOwnProperty('type')) {
-            this.type = options.type;
-        } else if (options.hasOwnProperty('rgbm')) {
-            Debug.deprecated("options.rgbm is deprecated. Use options.type instead.");
-            this.type = options.rgbm ? TEXTURETYPE_RGBM : TEXTURETYPE_DEFAULT;
-        } else if (options.hasOwnProperty('swizzleGGGR')) {
-            Debug.deprecated("options.swizzleGGGR is deprecated. Use options.type instead.");
-            this.type = options.swizzleGGGR ? TEXTURETYPE_SWIZZLEGGGR : TEXTURETYPE_DEFAULT;
-        }
+        this.type = options.hasOwnProperty('type') ? options.type : TEXTURETYPE_DEFAULT;
+        Debug.assert(!options.hasOwnProperty('rgbm'), 'Use options.type.');
+        Debug.assert(!options.hasOwnProperty('swizzleGGGR'), 'Use options.type.');
 
         this.projection = TEXTUREPROJECTION_NONE;
         if (this._cubemap) {
@@ -389,7 +408,7 @@ class Texture {
     }
 
     /**
-     * The minification filter to be applied to the texture. Can be:
+     * Sets the minification filter to be applied to the texture. Can be:
      *
      * - {@link FILTER_NEAREST}
      * - {@link FILTER_LINEAR}
@@ -406,17 +425,22 @@ class Texture {
                 Debug.warn("Texture#minFilter: minFilter property cannot be changed on an integer texture, will remain FILTER_NEAREST", this);
             } else {
                 this._minFilter = v;
-                this.propertyChanged(1);
+                this.propertyChanged(PROPERTY_MIN_FILTER);
             }
         }
     }
 
+    /**
+     * Gets the minification filter to be applied to the texture.
+     *
+     * @type {number}
+     */
     get minFilter() {
         return this._minFilter;
     }
 
     /**
-     * The magnification filter to be applied to the texture. Can be:
+     * Sets the magnification filter to be applied to the texture. Can be:
      *
      * - {@link FILTER_NEAREST}
      * - {@link FILTER_LINEAR}
@@ -429,17 +453,22 @@ class Texture {
                 Debug.warn("Texture#magFilter: magFilter property cannot be changed on an integer texture, will remain FILTER_NEAREST", this);
             } else {
                 this._magFilter = v;
-                this.propertyChanged(2);
+                this.propertyChanged(PROPERTY_MAG_FILTER);
             }
         }
     }
 
+    /**
+     * Gets the magnification filter to be applied to the texture.
+     *
+     * @type {number}
+     */
     get magFilter() {
         return this._magFilter;
     }
 
     /**
-     * The addressing mode to be applied to the texture horizontally. Can be:
+     * Sets the addressing mode to be applied to the texture horizontally. Can be:
      *
      * - {@link ADDRESS_REPEAT}
      * - {@link ADDRESS_CLAMP_TO_EDGE}
@@ -450,16 +479,21 @@ class Texture {
     set addressU(v) {
         if (this._addressU !== v) {
             this._addressU = v;
-            this.propertyChanged(4);
+            this.propertyChanged(PROPERTY_ADDRESS_U);
         }
     }
 
+    /**
+     * Gets the addressing mode to be applied to the texture horizontally.
+     *
+     * @type {number}
+     */
     get addressU() {
         return this._addressU;
     }
 
     /**
-     * The addressing mode to be applied to the texture vertically. Can be:
+     * Sets the addressing mode to be applied to the texture vertically. Can be:
      *
      * - {@link ADDRESS_REPEAT}
      * - {@link ADDRESS_CLAMP_TO_EDGE}
@@ -470,16 +504,21 @@ class Texture {
     set addressV(v) {
         if (this._addressV !== v) {
             this._addressV = v;
-            this.propertyChanged(8);
+            this.propertyChanged(PROPERTY_ADDRESS_V);
         }
     }
 
+    /**
+     * Gets the addressing mode to be applied to the texture vertically.
+     *
+     * @type {number}
+     */
     get addressV() {
         return this._addressV;
     }
 
     /**
-     * The addressing mode to be applied to the 3D texture depth. Can be:
+     * Sets the addressing mode to be applied to the 3D texture depth. Can be:
      *
      * - {@link ADDRESS_REPEAT}
      * - {@link ADDRESS_CLAMP_TO_EDGE}
@@ -494,10 +533,15 @@ class Texture {
         }
         if (addressW !== this._addressW) {
             this._addressW = addressW;
-            this.propertyChanged(16);
+            this.propertyChanged(PROPERTY_ADDRESS_W);
         }
     }
 
+    /**
+     * Gets the addressing mode to be applied to the 3D texture depth.
+     *
+     * @type {number}
+     */
     get addressW() {
         return this._addressW;
     }
@@ -512,16 +556,21 @@ class Texture {
     set compareOnRead(v) {
         if (this._compareOnRead !== v) {
             this._compareOnRead = v;
-            this.propertyChanged(32);
+            this.propertyChanged(PROPERTY_COMPARE_ON_READ);
         }
     }
 
+    /**
+     * Gets whether you can get filtered results of comparison using texture() in your shader.
+     *
+     * @type {boolean}
+     */
     get compareOnRead() {
         return this._compareOnRead;
     }
 
     /**
-     * Comparison function when compareOnRead is enabled. Possible values:
+     * Sets the comparison function when compareOnRead is enabled. Possible values:
      *
      * - {@link FUNC_LESS}
      * - {@link FUNC_LESSEQUAL}
@@ -535,33 +584,43 @@ class Texture {
     set compareFunc(v) {
         if (this._compareFunc !== v) {
             this._compareFunc = v;
-            this.propertyChanged(64);
+            this.propertyChanged(PROPERTY_COMPARE_FUNC);
         }
     }
 
+    /**
+     * Sets the comparison function when compareOnRead is enabled.
+     *
+     * @type {number}
+     */
     get compareFunc() {
         return this._compareFunc;
     }
 
     /**
-     * Integer value specifying the level of anisotropic to apply to the texture ranging from 1 (no
-     * anisotropic filtering) to the {@link GraphicsDevice} property maxAnisotropy.
+     * Sets the integer value specifying the level of anisotropy to apply to the texture ranging
+     * from 1 (no anisotropic filtering) to the {@link GraphicsDevice} property maxAnisotropy.
      *
      * @type {number}
      */
     set anisotropy(v) {
         if (this._anisotropy !== v) {
             this._anisotropy = v;
-            this.propertyChanged(128);
+            this.propertyChanged(PROPERTY_ANISOTROPY);
         }
     }
 
+    /**
+     * Gets the integer value specifying the level of anisotropy to apply to the texture.
+     *
+     * @type {number}
+     */
     get anisotropy() {
         return this._anisotropy;
     }
 
     /**
-     * Defines if texture should generate/upload mipmaps if possible.
+     * Sets whether the texture should generate/upload mipmaps.
      *
      * @type {boolean}
      */
@@ -580,6 +639,11 @@ class Texture {
         }
     }
 
+    /**
+     * Gets whether the texture should generate/upload mipmaps.
+     *
+     * @type {boolean}
+     */
     get mipmaps() {
         return this._mipmaps;
     }
@@ -623,9 +687,8 @@ class Texture {
     /**
      * The pixel format of the texture. Can be:
      *
-     * - {@link PIXELFORMAT_A8}
-     * - {@link PIXELFORMAT_L8}
-     * - {@link PIXELFORMAT_LA8}
+     * - {@link PIXELFORMAT_R8}
+     * - {@link PIXELFORMAT_RG8}
      * - {@link PIXELFORMAT_RGB565}
      * - {@link PIXELFORMAT_RGBA5551}
      * - {@link PIXELFORMAT_RGBA4}
@@ -696,7 +759,7 @@ class Texture {
     }
 
     /**
-     * Specifies whether the texture should be flipped in the Y-direction. Only affects textures
+     * Sets whether the texture should be flipped in the Y-direction. Only affects textures
      * with a source that is an image, canvas or video element. Does not affect cubemaps,
      * compressed textures or textures set from raw pixel data. Defaults to true.
      *
@@ -709,6 +772,11 @@ class Texture {
         }
     }
 
+    /**
+     * Gets whether the texture should be flipped in the Y-direction.
+     *
+     * @type {boolean}
+     */
     get flipY() {
         return this._flipY;
     }
@@ -742,13 +810,10 @@ class Texture {
                 return 'rgbe';
             case TEXTURETYPE_RGBP:
                 return 'rgbp';
-            default:
-                return (this.format === PIXELFORMAT_RGB16F ||
-                        this.format === PIXELFORMAT_RGB32F ||
-                        this.format === PIXELFORMAT_RGBA16F ||
-                        this.format === PIXELFORMAT_RGBA32F ||
-                        isIntegerPixelFormat(this.format)) ? 'linear' : 'srgb';
         }
+
+        // note that the srgb part only makes sense for texture storing color data
+        return requiresManualGamma(this.format) ? 'srgb' : 'linear';
     }
 
     // Force a full resubmission of the texture to the GPU (used on a context restore event)
@@ -759,7 +824,7 @@ class Texture {
         this._needsMipmapsUpload = this._mipmaps;
         this._mipmapsUploaded = false;
 
-        this.propertyChanged(255);  // 1 | 2 | 4 | 8 | 16 | 32 | 64 | 128
+        this.propertyChanged(PROPERTY_ALL);
     }
 
     /**
@@ -774,7 +839,7 @@ class Texture {
      * - {@link TEXTURELOCK_READ}
      * - {@link TEXTURELOCK_WRITE}
      * Defaults to {@link TEXTURELOCK_WRITE}.
-     * @returns {Uint8Array|Uint16Array|Float32Array} A typed array containing the pixel data of
+     * @returns {Uint8Array|Uint16Array|Uint32Array|Float32Array} A typed array containing the pixel data of
      * the locked mip level.
      */
     lock(options = {}) {
@@ -949,37 +1014,33 @@ class Texture {
     }
 
     /**
-     * Download texture's top level data from graphics memory to local memory.
+     * Download the textures data from the graphics memory to the local memory.
      *
+     * Note a public API yet, as not all options are implemented on all platforms.
+     *
+     * @param {number} x - The left edge of the rectangle.
+     * @param {number} y - The top edge of the rectangle.
+     * @param {number} width - The width of the rectangle.
+     * @param {number} height - The height of the rectangle.
+     * @param {object} [options] - Object for passing optional arguments.
+     * @param {number} [options.renderTarget] - The render target using the texture as a color
+     * buffer. Provide as an optimization to avoid creating a new render target. Important especially
+     * when this function is called with high frequency (per frame). Note that this is only utilized
+     * on the WebGL platform, and ignored on WebGPU.
+     * @param {number} [options.mipLevel] - The mip level to download. Defaults to 0.
+     * @param {number} [options.face] - The face to download. Defaults to 0.
+     * @param {Uint8Array|Uint16Array|Uint32Array|Float32Array} [options.data] - The data buffer to
+     * write the pixel data to. If not provided, a new buffer will be created. The type of the buffer
+     * must match the texture's format.
+     * @param {boolean} [options.immediate] - If true, the read operation will be executed as soon as
+     * possible. This has a performance impact, so it should be used only when necessary. Defaults
+     * to false.
+     * @returns {Promise<Uint8Array|Uint16Array|Uint32Array|Float32Array>} A promise that resolves
+     * with the pixel data of the texture.
      * @ignore
      */
-    async downloadAsync() {
-        const promises = [];
-        for (let i = 0; i < (this.cubemap ? 6 : 1); i++) {
-            const renderTarget = new RenderTarget({
-                colorBuffer: this,
-                depth: false,
-                face: i
-            });
-
-            this.device.setRenderTarget(renderTarget);
-            this.device.initRenderTarget(renderTarget);
-
-            const levels = this.cubemap ? this._levels[i] : this._levels;
-
-            let level = levels[0];
-            if (levels[0] && this.device._isBrowserInterface(levels[0])) {
-                levels[0] = null;
-            }
-
-            level = this.lock({ face: i });
-
-            const promise = this.device.readPixelsAsync?.(0, 0, this.width, this.height, level)
-                .then(() => renderTarget.destroy());
-
-            promises.push(promise);
-        }
-        await Promise.all(promises);
+    read(x, y, width, height, options = {}) {
+        return this.impl.read?.(x, y, width, height, options);
     }
 }
 

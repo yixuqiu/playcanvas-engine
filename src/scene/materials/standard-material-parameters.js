@@ -23,34 +23,35 @@ const standardMaterialParameterTypes = {
     _engine: 'boolean', // internal param for engine-only loading
 
     ambient: 'rgb',
-    ambientTint: 'boolean',
     ..._textureParameter('ao'),
     ..._textureParameter('aoDetail', true, false),
     aoDetailMode: 'string',
+    aoIntensity: 'number',
 
     diffuse: 'rgb',
-    diffuseTint: 'boolean',
     ..._textureParameter('diffuse'),
     ..._textureParameter('diffuseDetail', true, false),
     diffuseDetailMode: 'string',
 
+    vertexColorGamma: 'boolean',
+
     specular: 'rgb',
-    specularTint: 'boolean',
     ..._textureParameter('specular'),
     occludeSpecular: 'enum:occludeSpecular',
     specularityFactor: 'number',
-    specularityFactorTint: 'boolean',
     ..._textureParameter('specularityFactor'),
 
     useMetalness: 'boolean',
     metalness: 'number',
     enableGGXSpecular: 'boolean',
-    anisotropy: 'number',
     metalnessTint: 'boolean',
     ..._textureParameter('metalness'),
     useMetalnessSpecularColor: 'boolean',
 
-    conserveEnergy: 'boolean',
+    anisotropyIntensity: 'number',
+    anisotropyRotation: 'number',
+    ..._textureParameter('anisotropy'),
+
     shininess: 'number',
     gloss: 'number',
     glossInvert: 'boolean',
@@ -66,17 +67,19 @@ const standardMaterialParameterTypes = {
 
     useSheen: 'boolean',
     sheen: 'rgb',
-    sheenTint: 'boolean',
     ..._textureParameter('sheen'),
     sheenGloss: 'number',
-    sheenGlossTint: 'boolean',
     sheenGlossInvert: 'boolean',
     ..._textureParameter('sheenGloss'),
+
+    diffuseTransmission: 'number',
+    ..._textureParameter('diffuseTransmission'),
+    diffuseTransmissionColor: 'rgb',
+    ..._textureParameter('diffuseTransmissionColor'),
 
     fresnelModel: 'number',
 
     emissive: 'rgb',
-    emissiveTint: 'boolean',
     ..._textureParameter('emissive'),
     emissiveIntensity: 'number',
 
@@ -88,10 +91,15 @@ const standardMaterialParameterTypes = {
 
     ..._textureParameter('height', true, false),
     heightMapFactor: 'number',
+    heightMapBase: 'number',
+    parallaxMode: 'string',
+    parallaxSamples: 'number',
+    parallaxShadowSamples: 'number',
 
     alphaToCoverage: 'boolean',
     alphaTest: 'number',
     alphaFade: 'number',
+    alphaDither: 'number',
     opacity: 'number',
     ..._textureParameter('opacity'),
     opacityFadesSpecular: 'boolean',
@@ -135,24 +143,23 @@ const standardMaterialParameterTypes = {
 
     cull: 'enum:cull',
     blendType: 'enum:blendType',
-    shadingModel: 'enum:shadingModel',
 
     useFog: 'boolean',
     useLighting: 'boolean',
     useSkybox: 'boolean',
-    useGammaTonemap: 'boolean',
+    useTonemap: 'boolean',
 
     envAtlas: 'texture',
 
-    twoSidedLighting: 'boolean'
+    twoSidedLighting: 'boolean',
+    flatShading: 'boolean',
+    shadowCatcher: 'boolean'
 
     // nineSlicedMode
     // pixelSnap
     // forceUv1
     // occludeDirect
     // occludeSpecularIntensity
-    // fastTbn
-    // normalizeNormalMap
 
     // msdfMap
     // msdfMapChannel
@@ -191,7 +198,18 @@ const standardMaterialRemovedParameters = {
     opacityMapVertexColor: 'boolean',
     specularAntialias: 'boolean',
     specularMapTint: 'boolean',
-    specularMapVertexColor: 'boolean'
+    specularMapVertexColor: 'boolean',
+    ambientTint: 'boolean',
+    emissiveTint: 'boolean',
+    diffuseTint: 'boolean',
+    specularTint: 'boolean',
+    sheenTint: 'boolean',
+    conserveEnergy: 'boolean',
+    useGamma: 'boolean',
+    useGammaTonemap: 'boolean',
+    sheenGlossTint: 'boolean',
+    specularityFactorTint: 'boolean',
+    anisotropy: 'boolean'
 };
 
 export {

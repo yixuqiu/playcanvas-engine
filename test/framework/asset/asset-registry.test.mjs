@@ -1,15 +1,14 @@
-import { Application } from '../../../src/framework/application.js';
-import { Asset } from '../../../src/framework/asset/asset.js';
-import { AssetRegistry } from '../../../src/framework/asset/asset-registry.js';
-import { GlbContainerResource } from '../../../src/framework/parsers/glb-container-resource.js';
-import { ResourceLoader } from '../../../src/framework/handlers/loader.js';
-import { http, Http } from '../../../src/platform/net/http.js';
-import { NullGraphicsDevice } from '../../../src/platform/graphics/null/null-graphics-device.js';
-
-import { HTMLCanvasElement } from '@playcanvas/canvas-mock';
-
 import { expect } from 'chai';
-import { restore, spy } from 'sinon';
+import { restore, spy, stub } from 'sinon';
+
+import { AssetRegistry } from '../../../src/framework/asset/asset-registry.js';
+import { Asset } from '../../../src/framework/asset/asset.js';
+import { ResourceLoader } from '../../../src/framework/handlers/loader.js';
+import { GlbContainerResource } from '../../../src/framework/parsers/glb-container-resource.js';
+import { Texture } from '../../../src/platform/graphics/texture.js';
+import { http, Http } from '../../../src/platform/net/http.js';
+import { createApp } from '../../app.mjs';
+import { jsdomSetup, jsdomTeardown } from '../../jsdom.mjs';
 
 describe('AssetRegistry', function () {
 
@@ -17,15 +16,19 @@ describe('AssetRegistry', function () {
     let retryDelay;
 
     beforeEach(function () {
+        jsdomSetup();
+        app = createApp();
+
         retryDelay = Http.retryDelay;
         Http.retryDelay = 1;
-        const canvas = new HTMLCanvasElement(500, 500);
-        app = new Application(canvas, { graphicsDevice: new NullGraphicsDevice(canvas) });
     });
 
     afterEach(function () {
-        app.destroy();
         Http.retryDelay = retryDelay;
+
+        app?.destroy();
+        app = null;
+        jsdomTeardown();
         restore();
     });
 
@@ -236,10 +239,10 @@ describe('AssetRegistry', function () {
 
     describe('#loadFromUrl', function () {
 
-        const assetPath = 'http://localhost:3000/test/test-assets/';
+        const assetPath = '/test/assets/';
 
-        it('loads binary assets', function (done) {
-            app.assets.loadFromUrl(`${assetPath}test.bin`, 'binary', function (err, asset) {
+        it('loads binary assets', (done) => {
+            app.assets.loadFromUrl(`${assetPath}test.bin`, 'binary', (err, asset) => {
                 expect(err).to.be.null;
                 expect(asset).to.be.instanceof(Asset);
                 expect(asset.resource).to.be.instanceof(ArrayBuffer);
@@ -252,8 +255,8 @@ describe('AssetRegistry', function () {
             });
         });
 
-        it('loads container assets', function (done) {
-            app.assets.loadFromUrl(`${assetPath}test.glb`, 'container', function (err, asset) {
+        it('loads container assets', (done) => {
+            app.assets.loadFromUrl(`${assetPath}test.glb`, 'container', (err, asset) => {
                 expect(err).to.be.null;
                 expect(asset).to.be.instanceof(Asset);
                 expect(asset.resource).to.be.instanceof(GlbContainerResource);
@@ -261,17 +264,98 @@ describe('AssetRegistry', function () {
             });
         });
 
-        it('supports retry loading of container assets', function (done) {
+        it('waits for GLB meshes before reporting a referenced render asset ready', async function () {
+            const container = new Asset('container', 'container', { url: `${assetPath}test.glb` });
+            const render = new Asset('render', 'render', null, {
+                containerAsset: container.id,
+                renderIndex: 0
+            });
+            app.assets.add(container);
+            app.assets.add(render);
+
+            const ready = new Promise((resolve, reject) => {
+                render.ready(resolve);
+                render.once('error', reject);
+            });
+            app.assets.load(render);
+            await ready;
+
+            expect(container.loaded).to.equal(true);
+            expect(render.resource.meshes).to.be.an('array').that.is.not.empty;
+            expect(render.resource.meshes).to.equal(container.resource.renders[0].resource.meshes);
+        });
+
+        it('supports retry loading of container assets', (done) => {
             spy(http, 'request');
             app.loader.enableRetry(2);
-            app.assets.loadFromUrl(`${assetPath}someurl.glb`, 'container', function (err, asset) {
+            app.assets.loadFromUrl(`${assetPath}someurl.glb`, 'container', (err, asset) => {
                 expect(http.request.callCount).to.equal(3);
                 done();
             });
         });
 
-        it('loads css assets', function (done) {
-            app.assets.loadFromUrl(`${assetPath}test.css`, 'css', function (err, asset) {
+        it('reports a failed load again when its url is requested again', async () => {
+            const load = () => new Promise((resolve) => {
+                app.assets.loadFromUrl(`${assetPath}missing.glb`, 'container', (err, asset) => resolve({ err, asset }));
+            });
+            const first = await load();
+            expect(first.err).to.exist;
+            const again = await load();
+            expect(again.err).to.equal(first.err);
+            expect(again.asset.resource).to.not.exist;
+        });
+
+        it('reports a failed load no more once a forced reload succeeds', async () => {
+            // the first load fails, the forced reload after it succeeds
+            const load = stub(app.loader, 'load');
+            load.onFirstCall().callsFake((url, type, callback) => callback(404));
+            load.onSecondCall().callsFake((url, type, callback) => callback(null, 'reloaded'));
+
+            const url = `${assetPath}flaky.txt`;
+            const results = [];
+            const fromUrl = () => new Promise((resolve) => {
+                app.assets.loadFromUrl(url, 'text', (err, asset) => {
+                    results.push(err);
+                    resolve({ err, asset });
+                });
+            });
+            const first = await fromUrl();
+            expect(first.err).to.equal(404);
+
+            await new Promise((resolve) => {
+                first.asset.once('load', resolve);
+                app.assets.load(first.asset, { force: true });
+            });
+            // the failed request's load listener went with its error: its callback ran once
+            expect(results).to.deep.equal([404]);
+
+            const again = await fromUrl();
+            expect(again.err).to.be.null;
+            expect(again.asset.resource).to.equal('reloaded');
+        });
+
+        it('reports a failed load no more once the asset is unloaded', async () => {
+            // the first load fails, the load after unloading succeeds
+            const load = stub(app.loader, 'load');
+            load.onFirstCall().callsFake((url, type, callback) => callback(404));
+            load.onSecondCall().callsFake((url, type, callback) => callback(null, 'reloaded'));
+
+            const url = `${assetPath}flaky.txt`;
+            const fromUrl = () => new Promise((resolve) => {
+                app.assets.loadFromUrl(url, 'text', (err, asset) => resolve({ err, asset }));
+            });
+            const first = await fromUrl();
+            expect(first.err).to.equal(404);
+
+            first.asset.unload();
+            const again = await fromUrl();
+            expect(again.err).to.be.null;
+            expect(again.asset).to.equal(first.asset);
+            expect(again.asset.resource).to.equal('reloaded');
+        });
+
+        it('loads css assets', (done) => {
+            app.assets.loadFromUrl(`${assetPath}test.css`, 'css', (err, asset) => {
                 expect(err).to.be.null;
                 expect(asset).to.be.instanceof(Asset);
                 expect(asset.resource).to.be.a('string');
@@ -280,8 +364,8 @@ describe('AssetRegistry', function () {
             });
         });
 
-        it.skip('loads html assets', function (done) {
-            app.assets.loadFromUrl(`${assetPath}test.html`, 'html', function (err, asset) {
+        it('loads html assets', (done) => {
+            app.assets.loadFromUrl(`${assetPath}test.html`, 'html', (err, asset) => {
                 expect(err).to.be.null;
                 expect(asset).to.be.instanceof(Asset);
                 expect(asset.resource).to.be.a('string');
@@ -289,8 +373,8 @@ describe('AssetRegistry', function () {
             });
         });
 
-        it('loads json assets', function (done) {
-            app.assets.loadFromUrl(`${assetPath}test.json`, 'json', function (err, asset) {
+        it('loads json assets', (done) => {
+            app.assets.loadFromUrl(`${assetPath}test.json`, 'json', (err, asset) => {
                 expect(err).to.be.null;
                 expect(asset).to.be.instanceof(Asset);
                 expect(asset.resource).to.be.an.instanceof(Object);
@@ -301,8 +385,8 @@ describe('AssetRegistry', function () {
             });
         });
 
-        it('loads shader assets', function (done) {
-            app.assets.loadFromUrl(`${assetPath}test.glsl`, 'shader', function (err, asset) {
+        it('loads shader assets', (done) => {
+            app.assets.loadFromUrl(`${assetPath}test.glsl`, 'shader', (err, asset) => {
                 expect(err).to.be.null;
                 expect(asset).to.be.instanceof(Asset);
                 expect(asset.resource).to.be.a('string');
@@ -310,12 +394,21 @@ describe('AssetRegistry', function () {
             });
         });
 
-        it('loads text assets', function (done) {
-            app.assets.loadFromUrl(`${assetPath}test.txt`, 'text', function (err, asset) {
+        it('loads text assets', (done) => {
+            app.assets.loadFromUrl(`${assetPath}test.txt`, 'text', (err, asset) => {
                 expect(err).to.be.null;
                 expect(asset).to.be.instanceof(Asset);
                 expect(asset.resource).to.be.a('string');
                 expect(asset.resource).to.equal('hello world');
+                done();
+            });
+        });
+
+        it('loads texture assets', (done) => {
+            app.assets.loadFromUrl(`${assetPath}test.png`, 'texture', (err, asset) => {
+                expect(err).to.be.null;
+                expect(asset).to.be.instanceof(Asset);
+                expect(asset.resource).to.be.instanceof(Texture);
                 done();
             });
         });
@@ -353,6 +446,65 @@ describe('AssetRegistry', function () {
 
             expect(assets[0].id).to.equal(asset1.id);
             expect(assets[1].id).to.equal(asset3.id);
+        });
+
+    });
+
+    describe('#destroy', function () {
+
+        it('empties the registry and clears asset references to it', function () {
+            const asset = new Asset('Asset', 'text', {
+                url: 'fake/one/file.txt'
+            });
+            asset.tags.add('tag');
+
+            const registry = new AssetRegistry(new ResourceLoader(app));
+            registry.add(asset);
+            registry.destroy();
+
+            expect(registry.list().length).to.equal(0);
+            expect(registry.get(asset.id)).to.be.undefined;
+            expect(registry.getByUrl('fake/one/file.txt')).to.be.undefined;
+            expect(asset.registry).to.be.null;
+        });
+
+        it('unsubscribes from asset name and tag changes', function () {
+            const asset = new Asset('Asset', 'text', {
+                url: 'fake/one/file.txt'
+            });
+
+            const registry = new AssetRegistry(new ResourceLoader(app));
+            registry.add(asset);
+            registry.destroy();
+
+            // a still subscribed tag handler throws on the released tags cache, and a still
+            // subscribed name handler repopulates the name index
+            asset.tags.add('tag');
+            asset.tags.remove('tag');
+            asset.name = 'Renamed Asset';
+
+            expect(registry.find('Renamed Asset')).to.be.null;
+        });
+
+        it('leaves a registry reference which belongs to another registry', function () {
+            const asset = new Asset('Asset', 'text', {
+                url: 'fake/one/file.txt'
+            });
+
+            const registry = new AssetRegistry(new ResourceLoader(app));
+            registry.add(asset);
+
+            // the asset now belongs to the other registry, which is still live
+            const other = new AssetRegistry(new ResourceLoader(app));
+            other.add(asset);
+
+            registry.destroy();
+
+            expect(asset.registry).to.equal(other);
+            expect(other.get(asset.id)).to.equal(asset);
+
+            other.destroy();
+            expect(asset.registry).to.be.null;
         });
 
     });

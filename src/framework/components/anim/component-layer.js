@@ -1,12 +1,33 @@
 import { Debug } from '../../../core/debug.js';
 import { math } from '../../../core/math/math.js';
-
 import { AnimTrack } from '../../anim/evaluator/anim-track.js';
 import { AnimTransition } from '../../anim/controller/anim-transition.js';
 import { ANIM_LAYER_OVERWRITE } from '../../anim/controller/constants.js';
 
 /**
- * The Anim Component Layer allows managers a single layer of the animation state graph.
+ * @import { AnimComponent } from './component.js'
+ * @import { AnimController } from '../../anim/controller/anim-controller.js'
+ */
+
+/**
+ * An AnimComponentLayer is one layer of an {@link AnimComponent}. It runs the state machine that
+ * the {@link AnimStateGraph} defines for that layer and contributes the result to the entity's
+ * final pose with a {@link weight}, either overwriting the layers beneath it or adding to them
+ * according to `blendType`. A {@link mask} limits which nodes of the hierarchy the layer
+ * animates, which is how an upper-body action plays on top of a full-body locomotion layer. The
+ * first layer is {@link AnimComponent#baseLayer}; add more with {@link AnimComponent#addLayer}.
+ *
+ * Playback is per layer: {@link play} starts a named state, {@link transition} blends to another
+ * state over a given time, {@link pause} and {@link reset} act on the current state, and
+ * {@link activeState}, {@link activeStateProgress} and {@link transitioning} report where the
+ * layer is. {@link assignAnimation} binds an {@link AnimTrack} to a state, or to a node inside a
+ * blend tree using a dotted path, and {@link blendToWeight} fades the whole layer in or out.
+ *
+ * @example
+ * // Fade in an upper-body layer and play its 'Wave' state over the base layer
+ * const layer = entity.anim.findLayer('UpperBody');
+ * layer.blendToWeight(1, 0.3);
+ * layer.play('Wave');
  *
  * @category Animation
  */
@@ -18,13 +39,13 @@ class AnimComponentLayer {
     _name;
 
     /**
-     * @type {import('../../anim/controller/anim-controller.js').AnimController}
+     * @type {AnimController}
      * @private
      */
     _controller;
 
     /**
-     * @type {import('./component.js').AnimComponent}
+     * @type {AnimComponent}
      * @private
      */
     _component;
@@ -60,10 +81,8 @@ class AnimComponentLayer {
      * Create a new AnimComponentLayer instance.
      *
      * @param {string} name - The name of the layer.
-     * @param {import('../../anim/controller/anim-controller.js').AnimController} controller - The
-     * controller to manage this layers animations.
-     * @param {import('./component.js').AnimComponent} component - The component that this layer is
-     * a member of.
+     * @param {AnimController} controller - The controller to manage this layers animations.
+     * @param {AnimComponent} component - The component that this layer is a member of.
      * @param {number} [weight] - The weight of this layer. Defaults to 1.
      * @param {string} [blendType] - The blend type of this layer. Defaults to {@link ANIM_LAYER_OVERWRITE}.
      * @ignore
@@ -86,7 +105,7 @@ class AnimComponentLayer {
     }
 
     /**
-     * Whether this layer is currently playing.
+     * Sets whether this layer is currently playing.
      *
      * @type {boolean}
      */
@@ -94,6 +113,11 @@ class AnimComponentLayer {
         this._controller.playing = value;
     }
 
+    /**
+     * Gets whether this layer is currently playing.
+     *
+     * @type {boolean}
+     */
     get playing() {
         return this._controller.playing;
     }
@@ -109,7 +133,7 @@ class AnimComponentLayer {
     }
 
     /**
-     * Returns the currently active state name.
+     * Gets the currently active state name.
      *
      * @type {string}
      */
@@ -118,7 +142,7 @@ class AnimComponentLayer {
     }
 
     /**
-     * Returns the previously active state name.
+     * Gets the previously active state name.
      *
      * @type {string|null}
      */
@@ -127,7 +151,7 @@ class AnimComponentLayer {
     }
 
     /**
-     * Returns the currently active state's progress as a value normalized by the state's animation
+     * Gets the currently active state's progress as a value normalized by the state's animation
      * duration. Looped animations will return values greater than 1.
      *
      * @type {number}
@@ -137,7 +161,7 @@ class AnimComponentLayer {
     }
 
     /**
-     * Returns the currently active states duration.
+     * Gets the currently active states duration.
      *
      * @type {number}
      */
@@ -146,7 +170,7 @@ class AnimComponentLayer {
     }
 
     /**
-     * The active states time in seconds.
+     * Sets the active state's time in seconds.
      *
      * @type {number}
      */
@@ -161,12 +185,17 @@ class AnimComponentLayer {
         controller.playing = layerPlaying;
     }
 
+    /**
+     * Gets the active state's time in seconds.
+     *
+     * @type {number}
+     */
     get activeStateCurrentTime() {
         return this._controller.activeStateCurrentTime;
     }
 
     /**
-     * Returns whether the anim component layer is currently transitioning between states.
+     * Gets whether the anim component layer is currently transitioning between states.
      *
      * @type {boolean}
      */
@@ -175,7 +204,7 @@ class AnimComponentLayer {
     }
 
     /**
-     * If the anim component layer is currently transitioning between states, returns the progress.
+     * Gets the progress, if the anim component layer is currently transitioning between states.
      * Otherwise returns null.
      *
      * @type {number|null}
@@ -188,7 +217,7 @@ class AnimComponentLayer {
     }
 
     /**
-     * Lists all available states in this layers state graph.
+     * Gets all available states in this layers state graph.
      *
      * @type {string[]}
      */
@@ -197,8 +226,8 @@ class AnimComponentLayer {
     }
 
     /**
-     * The blending weight of this layer. Used when calculating the value of properties that are
-     * animated by more than one layer.
+     * Sets the blending weight of this layer. Used when calculating the value of properties that
+     * are animated by more than one layer.
      *
      * @type {number}
      */
@@ -207,6 +236,11 @@ class AnimComponentLayer {
         this._component.dirtifyTargets();
     }
 
+    /**
+     * Sets the blending weight of this layer.
+     *
+     * @type {number}
+     */
     get weight() {
         return this._weight;
     }
@@ -225,7 +259,7 @@ class AnimComponentLayer {
     }
 
     /**
-     * A mask of bones which should be animated or ignored by this layer.
+     * Sets the mask of bones which should be animated or ignored by this layer.
      *
      * @type {object}
      * @example
@@ -245,6 +279,11 @@ class AnimComponentLayer {
         this._mask = value;
     }
 
+    /**
+     * Gets the mask of bones which should be animated or ignored by this layer.
+     *
+     * @type {object}
+     */
     get mask() {
         return this._mask;
     }
@@ -282,7 +321,12 @@ class AnimComponentLayer {
         this._controller.rebind();
     }
 
-    update(dt) {
+    /**
+     * @param {number} dt - The time elapsed since the last update, in seconds.
+     * @param {boolean} [evaluate] - Whether the animation should be evaluated and applied.
+     * @ignore
+     */
+    update(dt, evaluate = true) {
         if (this._blendTime) {
             if (this._blendTimeElapsed < this._blendTime) {
                 this.weight = math.lerp(this._startingWeight, this._targetWeight, this._blendTimeElapsed / this._blendTime);
@@ -295,7 +339,7 @@ class AnimComponentLayer {
                 this._targetWeight = 0;
             }
         }
-        this._controller.update(dt);
+        this._controller.update(dt, evaluate);
     }
 
 
@@ -310,30 +354,6 @@ class AnimComponentLayer {
         this._targetWeight = weight;
         this._blendTime = Math.max(0, time);
         this._blendTimeElapsed = 0;
-    }
-
-    /**
-     * Add a mask to this layer.
-     *
-     * @param {object} [mask] - The mask to assign to the layer. If not provided the current mask
-     * in the layer will be removed.
-     * @example
-     * entity.anim.baseLayer.assignMask({
-     *     // include the spine of the current model and all of its children
-     *     "path/to/spine": {
-     *         children: true
-     *     },
-     *     // include the hip of the current model but not all of its children
-     *     "path/to/hip": true
-     * });
-     * @ignore
-     */
-    assignMask(mask) {
-        Debug.deprecated('The pc.AnimComponentLayer#assignMask function is now deprecated. Assign masks to the pc.AnimComponentLayer#mask property instead.');
-        if (this._controller.assignMask(mask)) {
-            this._component.rebind();
-        }
-        this._mask = mask;
     }
 
     /**
@@ -382,10 +402,10 @@ class AnimComponentLayer {
     }
 
     /**
-     * Returns the asset that is associated with the given state.
+     * Returns an object holding the animation asset id that is associated with the given state.
      *
      * @param {string} stateName - The name of the state to get the asset for.
-     * @returns {import('../../asset/asset.js').Asset} The asset associated with the given state.
+     * @returns {{ asset: number }} An object containing the animation asset id associated with the given state.
      */
     getAnimationAsset(stateName) {
         return this._component.animationAssets[`${this.name}:${stateName}`];

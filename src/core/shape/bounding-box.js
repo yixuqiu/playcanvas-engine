@@ -1,6 +1,12 @@
 import { Debug } from '../debug.js';
 import { Vec3 } from '../math/vec3.js';
 
+/**
+ * @import { BoundingSphere } from './bounding-sphere.js'
+ * @import { Mat4 } from '../math/mat4.js'
+ * @import { Ray } from './ray.js'
+ */
+
 const tmpVecA = new Vec3();
 const tmpVecB = new Vec3();
 const tmpVecC = new Vec3();
@@ -8,8 +14,36 @@ const tmpVecD = new Vec3();
 const tmpVecE = new Vec3();
 
 /**
- * Axis-Aligned Bounding Box.
+ * Axis-Aligned Bounding Box. An AABB is commonly used for fast overlap tests in collision
+ * detection, spatial indexing and frustum culling.
  *
+ * A box is stored as a {@link center} and {@link halfExtents}. Set it from its extreme corners with
+ * {@link setMinMax} and read them back with {@link getMin} and {@link getMax}. Fit a box to vertex
+ * data with {@link compute}, grow it to enclose another box with {@link add}, and move a local box
+ * into world space with {@link setFromTransformedAabb}, which is how the engine derives a mesh
+ * instance's world bounds from its mesh's local bounds.
+ *
+ * Tests such as {@link intersectsBoundingBox}, {@link containsPoint} and {@link intersectsRay}
+ * return a boolean and allocate nothing. {@link closestPoint} writes into an optional result
+ * vector, while {@link getMin} and {@link getMax} return the box's own cached vectors, which should
+ * be treated as read-only. The constructor copies the vectors it is given.
+ *
+ * @example
+ * // Enclose every mesh instance of a render component in one box
+ * const bounds = new BoundingBox();
+ * entity.render.meshInstances.forEach((meshInstance, i) => {
+ *     if (i === 0) {
+ *         bounds.copy(meshInstance.aabb);
+ *     } else {
+ *         bounds.add(meshInstance.aabb);
+ *     }
+ * });
+ * @example
+ * // Pick against a box; the ray's direction must be normalized
+ * const hit = new Vec3();
+ * if (bounds.intersectsRay(ray, hit)) {
+ *     console.log(`Hit at ${hit}`);
+ * }
  * @category Math
  */
 class BoundingBox {
@@ -17,41 +51,39 @@ class BoundingBox {
      * Center of box.
      *
      * @type {Vec3}
+     * @readonly
      */
-    center;
+    center = new Vec3();
 
     /**
      * Half the distance across the box in each axis.
      *
      * @type {Vec3}
+     * @readonly
      */
-    halfExtents;
+    halfExtents = new Vec3(0.5, 0.5, 0.5);
 
-    /**
-     * @type {Vec3}
-     * @private
-     */
+    /** @private */
     _min = new Vec3();
 
-    /**
-     * @type {Vec3}
-     * @private
-     */
+    /** @private */
     _max = new Vec3();
 
     /**
      * Create a new BoundingBox instance. The bounding box is axis-aligned.
      *
-     * @param {Vec3} [center] - Center of box. The constructor takes a reference of this parameter.
+     * @param {Vec3} [center] - Center of box. The constructor copies this parameter. Defaults to
+     * (0, 0, 0).
      * @param {Vec3} [halfExtents] - Half the distance across the box in each axis. The constructor
-     * takes a reference of this parameter. Defaults to 0.5 on each axis.
+     * copies this parameter. Defaults to (0.5, 0.5, 0.5).
      */
-    constructor(center = new Vec3(), halfExtents = new Vec3(0.5, 0.5, 0.5)) {
-        Debug.assert(!Object.isFrozen(center), 'The constructor of \'BoundingBox\' does not accept a constant (frozen) object as a \'center\' parameter');
-        Debug.assert(!Object.isFrozen(halfExtents), 'The constructor of \'BoundingBox\' does not accept a constant (frozen) object as a \'halfExtents\' parameter');
-
-        this.center = center;
-        this.halfExtents = halfExtents;
+    constructor(center, halfExtents) {
+        if (center) {
+            this.center.copy(center);
+        }
+        if (halfExtents) {
+            this.halfExtents.copy(halfExtents);
+        }
     }
 
     /**
@@ -121,7 +153,17 @@ class BoundingBox {
      * @returns {BoundingBox} A duplicate AABB.
      */
     clone() {
-        return new BoundingBox(this.center.clone(), this.halfExtents.clone());
+        return new BoundingBox(this.center, this.halfExtents);
+    }
+
+    /**
+     * Reports whether two axis-aligned bounding boxes are equal.
+     *
+     * @param {BoundingBox} other - The AABB to compare to.
+     * @returns {boolean} True if the AABBs have the same center and half extents, false otherwise.
+     */
+    equals(other) {
+        return this.center.equals(other.center) && this.halfExtents.equals(other.halfExtents);
     }
 
     /**
@@ -130,7 +172,7 @@ class BoundingBox {
      * @param {BoundingBox} other - Bounding box to test against.
      * @returns {boolean} True if there is an intersection.
      */
-    intersects(other) {
+    intersectsBoundingBox(other) {
         const aMax = this.getMax();
         const aMin = this.getMin();
         const bMax = other.getMax();
@@ -146,23 +188,24 @@ class BoundingBox {
         const tMax = tmpVecB.copy(this.getMax()).sub(ray.origin);
         const dir = ray.direction;
 
-        // Ensure that we are not dividing it by zero
+        // Ensure that we are not dividing it by zero. A ray parallel to a slab is inside it when
+        // min <= origin <= max, so a ray lying in either face plane of the slab is inside it.
         if (dir.x === 0) {
-            tMin.x = tMin.x < 0 ? -Number.MAX_VALUE : Number.MAX_VALUE;
+            tMin.x = tMin.x <= 0 ? -Number.MAX_VALUE : Number.MAX_VALUE;
             tMax.x = tMax.x < 0 ? -Number.MAX_VALUE : Number.MAX_VALUE;
         } else {
             tMin.x /= dir.x;
             tMax.x /= dir.x;
         }
         if (dir.y === 0) {
-            tMin.y = tMin.y < 0 ? -Number.MAX_VALUE : Number.MAX_VALUE;
+            tMin.y = tMin.y <= 0 ? -Number.MAX_VALUE : Number.MAX_VALUE;
             tMax.y = tMax.y < 0 ? -Number.MAX_VALUE : Number.MAX_VALUE;
         } else {
             tMin.y /= dir.y;
             tMax.y /= dir.y;
         }
         if (dir.z === 0) {
-            tMin.z = tMin.z < 0 ? -Number.MAX_VALUE : Number.MAX_VALUE;
+            tMin.z = tMin.z <= 0 ? -Number.MAX_VALUE : Number.MAX_VALUE;
             tMax.z = tMax.z < 0 ? -Number.MAX_VALUE : Number.MAX_VALUE;
         } else {
             tMin.z /= dir.z;
@@ -175,10 +218,13 @@ class BoundingBox {
         const minMax = Math.min(Math.min(realMax.x, realMax.y), realMax.z);
         const maxMin = Math.max(Math.max(realMin.x, realMin.y), realMin.z);
 
-        const intersects = minMax >= maxMin && maxMin >= 0;
+        // the box must not be entirely behind the ray; a ray starting inside the box (maxMin < 0)
+        // intersects it where it leaves the box
+        const intersects = minMax >= maxMin && minMax >= 0;
 
-        if (intersects)
-            point.copy(ray.direction).mulScalar(maxMin).add(ray.origin);
+        if (intersects) {
+            point.copy(ray.direction).mulScalar(maxMin >= 0 ? maxMin : minMax).add(ray.origin);
+        }
 
         return intersects;
     }
@@ -196,37 +242,43 @@ class BoundingBox {
 
         prod.mul2(diff, rayDir);
 
-        if (absDiff.x > this.halfExtents.x && prod.x >= 0)
+        if (absDiff.x > this.halfExtents.x && prod.x >= 0) {
             return false;
+        }
 
-        if (absDiff.y > this.halfExtents.y && prod.y >= 0)
+        if (absDiff.y > this.halfExtents.y && prod.y >= 0) {
             return false;
+        }
 
-        if (absDiff.z > this.halfExtents.z && prod.z >= 0)
+        if (absDiff.z > this.halfExtents.z && prod.z >= 0) {
             return false;
+        }
 
         absDir.set(Math.abs(rayDir.x), Math.abs(rayDir.y), Math.abs(rayDir.z));
         cross.cross(rayDir, diff);
         cross.set(Math.abs(cross.x), Math.abs(cross.y), Math.abs(cross.z));
 
-        if (cross.x > this.halfExtents.y * absDir.z + this.halfExtents.z * absDir.y)
+        if (cross.x > this.halfExtents.y * absDir.z + this.halfExtents.z * absDir.y) {
             return false;
+        }
 
-        if (cross.y > this.halfExtents.x * absDir.z + this.halfExtents.z * absDir.x)
+        if (cross.y > this.halfExtents.x * absDir.z + this.halfExtents.z * absDir.x) {
             return false;
+        }
 
-        if (cross.z > this.halfExtents.x * absDir.y + this.halfExtents.y * absDir.x)
+        if (cross.z > this.halfExtents.x * absDir.y + this.halfExtents.y * absDir.x) {
             return false;
+        }
 
         return true;
     }
 
     /**
-     * Test if a ray intersects with the AABB.
+     * Test if a ray intersects with the AABB. A ray that starts inside the AABB intersects it.
      *
-     * @param {import('./ray.js').Ray} ray - Ray to test against (direction must be normalized).
+     * @param {Ray} ray - Ray to test against (direction must be normalized).
      * @param {Vec3} [point] - If there is an intersection, the intersection point will be copied
-     * into here.
+     * into here. For a ray that starts inside the AABB, this is the point where the ray leaves it.
      * @returns {boolean} True if there is an intersection.
      */
     intersectsRay(ray, point) {
@@ -268,18 +320,18 @@ class BoundingBox {
     }
 
     /**
-     * Test if a point is inside a AABB.
+     * Test if a point is inside an AABB.
      *
      * @param {Vec3} point - Point to test.
      * @returns {boolean} True if the point is inside the AABB and false otherwise.
      */
     containsPoint(point) {
-        const min = this.getMin();
-        const max = this.getMax();
+        const c = this.center;
+        const h = this.halfExtents;
 
-        if (point.x < min.x || point.x > max.x ||
-            point.y < min.y || point.y > max.y ||
-            point.z < min.z || point.z > max.z) {
+        if (point.x < c.x - h.x || point.x > c.x + h.x ||
+            point.y < c.y - h.y || point.y > c.y + h.y ||
+            point.z < c.z - h.z || point.z > c.z + h.z) {
             return false;
         }
 
@@ -287,11 +339,39 @@ class BoundingBox {
     }
 
     /**
+     * Return the point on the AABB closest to a given point. If the point is inside the AABB, the
+     * point itself is returned.
+     *
+     * @param {Vec3} point - Point to find the closest point to.
+     * @param {Vec3} [result] - The vector to store the result in. If not provided, a new Vec3 is
+     * created and returned.
+     * @returns {Vec3} The closest point on the AABB.
+     * @example
+     * const box = new BoundingBox(new Vec3(0, 0, 0), new Vec3(1, 1, 1));
+     * const point = new Vec3(2, 0, 0);
+     * const closest = box.closestPoint(point); // Returns Vec3(1, 0, 0)
+     * @example
+     * // Reuse a result vector to avoid allocations in hot paths
+     * const result = new Vec3();
+     * box.closestPoint(point, result);
+     */
+    closestPoint(point, result = new Vec3()) {
+        const c = this.center;
+        const h = this.halfExtents;
+
+        return result.set(
+            Math.max(c.x - h.x, Math.min(point.x, c.x + h.x)),
+            Math.max(c.y - h.y, Math.min(point.y, c.y + h.y)),
+            Math.max(c.z - h.z, Math.min(point.z, c.z + h.z))
+        );
+    }
+
+    /**
      * Set an AABB to enclose the specified AABB if it were to be transformed by the specified 4x4
      * matrix.
      *
      * @param {BoundingBox} aabb - Box to transform and enclose.
-     * @param {import('../math/mat4.js').Mat4} m - Transformation matrix to apply to source AABB.
+     * @param {Mat4} m - Transformation matrix to apply to source AABB.
      * @param {boolean} ignoreScale - If true is specified, a scale from the matrix is ignored. Defaults to false.
      */
     setFromTransformedAabb(aabb, m, ignoreScale = false) {
@@ -352,7 +432,7 @@ class BoundingBox {
     /**
      * Compute the min and max bounding values to encapsulate all specified vertices.
      *
-     * @param {number[]|Float32Array} vertices - The vertices used to compute the new size for the
+     * @param {ArrayLike<number>} vertices - The vertices used to compute the new size for the
      * AABB.
      * @param {Vec3} min - Stored computed min value.
      * @param {Vec3} max - Stored computed max value.
@@ -387,7 +467,7 @@ class BoundingBox {
     /**
      * Compute the size of the AABB to encapsulate all specified vertices.
      *
-     * @param {number[]|Float32Array} vertices - The vertices used to compute the new size for the
+     * @param {ArrayLike<number>} vertices - The vertices used to compute the new size for the
      * AABB.
      * @param {number} [numVerts] - Number of vertices to use from the beginning of vertices array.
      * All vertices are used if not specified.
@@ -400,7 +480,7 @@ class BoundingBox {
     /**
      * Test if a Bounding Sphere is overlapping, enveloping, or inside this AABB.
      *
-     * @param {import('./bounding-sphere.js').BoundingSphere} sphere - Bounding Sphere to test.
+     * @param {BoundingSphere} sphere - Bounding Sphere to test.
      * @returns {boolean} True if the Bounding Sphere is overlapping, enveloping, or inside the
      * AABB and false otherwise.
      */
@@ -448,6 +528,21 @@ class BoundingBox {
         tmpVecB.add2(this.getMax(), expandMax);
         this.setMinMax(tmpVecA, tmpVecB);
     }
+
+    // ---- deprecated block start ----
+
+    /**
+     * @param {BoundingBox} other - Bounding box to test against.
+     * @returns {boolean} True if there is an intersection.
+     * @deprecated Use {@link BoundingBox#intersectsBoundingBox} instead.
+     * @ignore
+     */
+    intersects(other) {
+        Debug.deprecated('BoundingBox#intersects is deprecated. Use BoundingBox#intersectsBoundingBox instead.');
+        return this.intersectsBoundingBox(other);
+    }
+
+    // ---- deprecated block end ----
 }
 
 export { BoundingBox };

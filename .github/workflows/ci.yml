@@ -3,9 +3,9 @@ name: CI
 on:
   workflow_dispatch:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
-    branches: [ main ]
+    branches: [main]
 
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
@@ -20,155 +20,153 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v7.0.1
 
-    - name: Setup Node.js 18.x
-      uses: actions/setup-node@v4
-      with:
-        node-version: 18.x
-        cache: 'npm'
+      - name: Set up Node.js 26.x
+        uses: actions/setup-node@v7
+        with:
+          node-version: 26.x
+          cache: "npm"
 
-    - name: Install dependencies
-      run: npm clean-install --progress=false --no-fund
+      - name: Install dependencies
+        run: npm clean-install --progress=false --no-fund
 
-    - name: Build PlayCanvas
-      run: npm run build
+      - name: Build PlayCanvas
+        run: npm run build
+
+      - name: Run Publint
+        run: npm run publint
+
+      - name: Run Post-build tests
+        run: npm run test:build
+
+      - name: Compile TypeScript declarations
+        run: npm run test:types
 
   docs:
     name: Docs
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v7.0.1
 
-    - name: Setup Node.js 18.x
-      uses: actions/setup-node@v4
-      with:
-        node-version: 18.x
-        cache: 'npm'
+      - name: Set up Node.js 26.x
+        uses: actions/setup-node@v7
+        with:
+          node-version: 26.x
+          cache: "npm"
 
-    - name: Install dependencies
-      run: npm clean-install --progress=false --no-fund
+      - name: Install dependencies
+        run: npm clean-install --progress=false --no-fund
 
-    - name: Build API reference manual
-      run: npm run docs
+      - name: Build API reference manual
+        run: npm run docs
+
+      - name: Build Scripts API reference manual
+        run: npm run docs:scripts
 
   lint:
     name: Lint
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v7.0.1
 
-    - name: Setup Node.js 18.x
-      uses: actions/setup-node@v4
-      with:
-        node-version: 18.x
-        cache: 'npm'
+      - name: Set up Node.js 26.x
+        uses: actions/setup-node@v7
+        with:
+          node-version: 26.x
+          cache: "npm"
 
-    - name: Install dependencies
-      run: npm clean-install --progress=false --no-fund
+      - name: Install dependencies
+        run: npm clean-install --progress=false --no-fund
 
-    - name: Run ESLint
-      run: npm run lint
+      - name: Run ESLint
+        run: npm run lint
 
-    - name: Run ESLint on examples
-      working-directory: ./examples
-      run: |
-        npm clean-install --progress=false --no-fund
-        npm run lint
-
-  typescript-declarations:
-    name: TypeScript Declarations
+  unit-test:
+    name: Unit Test
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v7.0.1
 
-    - name: Setup Node.js 18.x
-      uses: actions/setup-node@v4
-      with:
-        node-version: 18.x
-        cache: 'npm'
+      - name: Set up Node.js 26.x
+        uses: actions/setup-node@v7
+        with:
+          node-version: 26.x
+          cache: "npm"
 
-    - name: Install dependencies
-      run: npm clean-install --progress=false --no-fund
+      - name: Install dependencies
+        run: npm clean-install --progress=false --no-fund
 
-    - name: Build TypeScript declarations
-      run: npm run build:types
+      - name: Run unit tests
+        run: npm test
 
-    - name: Compile TypeScript declarations
-      run: npm run test:types
-
-  unit-test-node:
-    name: Unit Test (Node)
+  unit-test-webgpu:
+    name: Unit Test (WebGPU)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v7.0.1
 
-    - name: Setup Node.js 18.x
-      uses: actions/setup-node@v4
-      with:
-        node-version: 18.x
-        cache: 'npm'
+      - name: Set up Node.js 26.x
+        uses: actions/setup-node@v7
+        with:
+          node-version: 26.x
+          cache: "npm"
 
-    - name: Install dependencies
-      run: npm clean-install --progress=false --no-fund
+      - name: Install dependencies
+        run: npm clean-install --progress=false --no-fund
 
-    - name: Run unit tests
-      run: npm test
-
-  unit-test-karma:
-    name: Unit Test (Karma)
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Setup Node.js 18.x
-      uses: actions/setup-node@v4
-      with:
-        node-version: 18.x
-        cache: 'npm'
-
-    - name: Install dependencies
-      run: npm clean-install --progress=false --no-fund
-
-    - name: Build PlayCanvas (UMD-only)
-      run: npm run build:umd
-
-    - name: Install X virtual framebuffer
-      run: sudo apt-get install xvfb
-
-    - name: Run unit tests
-      run: xvfb-run --auto-servernum npm run test:karma
+      - name: Run unit tests on WebGPU (Dawn)
+        run: npm run test:webgpu
 
   build-examples:
     name: Build Examples Browser
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v7.0.1
 
-    - name: Setup Node.js 18.x
-      uses: actions/setup-node@v4
-      with:
-        node-version: 18.x
-        cache: 'npm'
+      - name: Set up Node.js 26.x
+        uses: actions/setup-node@v7
+        with:
+          node-version: 26.x
+          cache: "npm"
 
-    - name: Install dependencies
-      run: npm clean-install --progress=false --no-fund
+      - name: Install dependencies
+        run: npm clean-install --progress=false --no-fund
 
-    - name: Build Examples Browser
-      working-directory: ./examples
-      run: |
-        npm clean-install --progress=false --no-fund
-        npm run build
+      - name: Install examples dependencies
+        working-directory: ./examples
+        run: npm clean-install --progress=false --no-fund
+
+      - name: Run Prettier on examples
+        working-directory: ./examples
+        run: npm run fmt
+
+      - name: Run ESLint on examples
+        working-directory: ./examples
+        run: npm run lint
+
+      - name: Check example thumbnails
+        working-directory: ./examples
+        run: npm run check:thumbnails
+
+      - name: Build TypeScript declarations
+        run: npm run build:types
+
+      - name: Type check examples
+        working-directory: ./examples
+        run: npm run typecheck
+
+      - name: Build Examples Browser
+        working-directory: ./examples
+        run: npm run build

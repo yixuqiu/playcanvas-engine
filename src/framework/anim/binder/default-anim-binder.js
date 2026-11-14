@@ -2,10 +2,10 @@ import { Debug } from '../../../core/debug.js';
 import { AnimBinder } from './anim-binder.js';
 import { AnimTarget } from '../evaluator/anim-target.js';
 import { Entity } from '../../entity.js';
+
 /**
  * Implementation of {@link AnimBinder} for animating a skeleton in the graph-node hierarchy.
  *
- * @implements {AnimBinder}
  * @ignore
  */
 class DefaultAnimBinder {
@@ -51,60 +51,65 @@ class DefaultAnimBinder {
             return meshInstances;
         };
 
-        this.nodeCounts = {};               // map of node path -> count
-        this.activeNodes = [];              // list of active nodes
         this.handlers = {
             'localPosition': function (node) {
-                const object = node.localPosition;
                 const func = function (value) {
-                    object.set(...value);
+                    node.setLocalPositionFromArray(value);
                 };
                 return DefaultAnimBinder.createAnimTarget(func, 'vector', 3, node, 'localPosition');
             },
 
             'localRotation': function (node) {
-                const object = node.localRotation;
                 const func = function (value) {
-                    object.set(...value);
+                    node.setLocalRotationFromArray(value);
                 };
                 return DefaultAnimBinder.createAnimTarget(func, 'quaternion', 4, node, 'localRotation');
             },
 
             'localScale': function (node) {
-                const object = node.localScale;
                 const func = function (value) {
-                    object.set(...value);
+                    node.setLocalScaleFromArray(value);
                 };
                 return DefaultAnimBinder.createAnimTarget(func, 'vector', 3, node, 'localScale');
             },
 
             'weight': function (node, weightName) {
+                // Parse weight name: either a named weight ('name.something') or numeric index
                 if (weightName.indexOf('name.') === 0) {
                     weightName = weightName.replace('name.', '');
                 } else {
                     weightName = Number(weightName);
                 }
+
+                // Find all morph instances associated with this node
                 const meshInstances = findMeshInstances(node);
-                let setters;
+                const instances = [];
                 if (meshInstances) {
                     for (let i = 0; i < meshInstances.length; ++i) {
                         if (meshInstances[i].node.name === node.name && meshInstances[i].morphInstance) {
-                            const morphInstance = meshInstances[i].morphInstance;
-                            const func = (value) => {
-                                morphInstance.setWeight(weightName, value[0]);
-                            };
-                            if (!setters) setters = [];
-                            setters.push(func);
+                            instances.push(meshInstances[i].morphInstance);
                         }
                     }
                 }
-                if (setters) {
-                    const callSetters = (value) => {
-                        for (let i = 0; i < setters.length; ++i) {
-                            setters[i](value);
+
+                if (instances.length > 0) {
+                    // resolve the weight names to indices once, to avoid a name lookup every frame
+                    const indices = instances.map(instance => instance._getWeightIndex(weightName));
+
+                    // Provide both get/set functions to support layer blending
+                    const func = {
+                        set: (value) => {
+                            // Apply weight to all morph instances on this node
+                            for (let i = 0; i < instances.length; ++i) {
+                                instances[i].setWeight(indices[i], value[0]);
+                            }
+                        },
+                        get: () => {
+                            // Return current weight from first instance (all should have same value)
+                            return [instances[0].getWeight(weightName)];
                         }
                     };
-                    return DefaultAnimBinder.createAnimTarget(callSetters, 'number', 1, node, `weight.${weightName}`);
+                    return DefaultAnimBinder.createAnimTarget(func, 'number', 1, node, `weight.${weightName}`);
                 }
                 return null;
             },
@@ -150,7 +155,7 @@ class DefaultAnimBinder {
             let currEntityPath = rootNodeNames[j];
             if (this._isPathInMask(currEntityPath, path.entityPath.length === 1)) return true;
             for (let i = 1; i < path.entityPath.length; i++) {
-                currEntityPath += '/' + path.entityPath[i];
+                currEntityPath += `/${path.entityPath[i]}`;
                 if (this._isPathInMask(currEntityPath, i === path.entityPath.length - 1)) return true;
             }
         }
@@ -171,12 +176,12 @@ class DefaultAnimBinder {
             }
         }
         if (!node) {
-            node = this.nodes[path.entityPath[path.entityPath.length - 1] || ""];
+            node = this.nodes[path.entityPath[path.entityPath.length - 1] || ''];
 
             // #if _DEBUG
-            const fallbackGraphPath = AnimBinder.encode(path.entityPath[path.entityPath.length - 1] || "", 'graph', path.propertyPath);
+            const fallbackGraphPath = AnimBinder.encode(path.entityPath[path.entityPath.length - 1] || '', 'graph', path.propertyPath);
             if (this.visitedFallbackGraphPaths[fallbackGraphPath] === 1) {
-                Debug.warn(`Anim Binder: Multiple animation curves with the path ${fallbackGraphPath} are present in the ${this.graph.path} graph which may result in the incorrect binding of animations`);
+                Debug.warnOnce(`Anim Binder: Multiple animation curves with the path ${fallbackGraphPath} are present in the ${this.graph.path} graph which may result in the incorrect binding of animations`);
             }
             if (!Number.isFinite(this.visitedFallbackGraphPaths[fallbackGraphPath])) {
                 this.visitedFallbackGraphPaths[fallbackGraphPath] = 0;
@@ -214,41 +219,14 @@ class DefaultAnimBinder {
         }
 
         this.targetCache[encodedPath] = target;
-
-        if (!this.nodeCounts[node.path]) {
-            this.activeNodes.push(node);
-            this.nodeCounts[node.path] = 1;
-        } else {
-            this.nodeCounts[node.path]++;
-        }
-
         return target;
     }
 
     unresolve(path) {
-        if (path.component !== 'graph')
-            return;
-
-        const node = this.nodes[path.entityPath[path.entityPath.length - 1] || ""];
-
-        this.nodeCounts[node.path]--;
-        if (this.nodeCounts[node.path] === 0) {
-            const activeNodes = this.activeNodes;
-            const i = activeNodes.indexOf(node.node);  // :(
-            const len = activeNodes.length;
-            if (i < len - 1) {
-                activeNodes[i] = activeNodes[len - 1];
-            }
-            activeNodes.pop();
-        }
     }
 
-    // flag animating nodes as dirty
     update(deltaTime) {
-        const activeNodes = this.activeNodes;
-        for (let i = 0; i < activeNodes.length; ++i) {
-            activeNodes[i]._dirtifyLocal();
-        }
+        // the setters of the animated transforms mark their nodes dirty, so there is nothing to do
     }
 
     assignMask(mask) {

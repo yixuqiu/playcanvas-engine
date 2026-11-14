@@ -1,4 +1,5 @@
-import { LitShaderOptions } from "../shader-lib/programs/lit-shader-options.js";
+import { Debug } from '../../core/debug.js';
+import { LitShaderOptions } from '../shader-lib/programs/lit-shader-options.js';
 
 /**
  * The standard material options define a set of options used to control the shader frontend shader
@@ -8,93 +9,77 @@ import { LitShaderOptions } from "../shader-lib/programs/lit-shader-options.js";
  */
 class StandardMaterialOptions {
     /**
+     * The set of defines used to generate the shader.
+     *
+     * @type {Map<string, string>}
+     */
+    defines = new Map();
+
+    /** @ignore */
+    useDualSourceBlending = false;
+
+    /**
      * If UV1 (second set of texture coordinates) is required in the shader. Will be declared as
      * "vUv1" and passed to the fragment shader.
-     *
-     * @type {boolean}
      */
     forceUv1 = false;
 
     /**
-     * The value of {@link StandardMaterial#ambientTint}.
-     *
-     * @type {boolean}
-     */
-    ambientTint = false;
-
-    /**
-     * Defines if {@link StandardMaterial#diffuse} constant should affect diffuse color.
-     *
-     * @type {boolean}
-     */
-    diffuseTint = false;
-
-    /**
-     * Defines if {@link StandardMaterial#specular} constant should affect specular color.
-     *
-     * @type {boolean}
-     */
-    specularTint = false;
-
-    /**
      * Defines if {@link StandardMaterial#metalness} constant should affect metalness value.
-     *
-     * @type {boolean}
      */
     metalnessTint = false;
 
     /**
      * Defines if {@link StandardMaterial#gloss} constant should affect glossiness value.
-     *
-     * @type {boolean}
      */
     glossTint = false;
-
-    /**
-     * Defines if {@link StandardMaterial#emissive} constant should affect emissive color.
-     *
-     * @type {boolean}
-     */
-    emissiveTint = false;
-
-    /**
-     * Defines if {@link StandardMaterial#opacity} constant should affect opacity value.
-     *
-     * @type {boolean}
-     */
-    opacityTint = false;
 
     emissiveEncoding = 'linear';
 
     lightMapEncoding = 'linear';
 
     /**
+     * True if the lightmap comes from the mesh instance rather than from the material, and so is
+     * sampled from the mesh instance's own texture slot. See {@link Lightmapper}.
+     */
+    useInstanceLightMap = false;
+
+    vertexColorGamma = false;
+
+    /**
      * If normal map contains X in RGB, Y in Alpha, and Z must be reconstructed.
-     *
-     * @type {boolean}
      */
     packedNormal = false;
 
     /**
+     * If normal detail map contains X in RGB, Y in Alpha, and Z must be reconstructed.
+     */
+    normalDetailPackedNormal = false;
+
+    /**
+     * If normal clear coat map contains X in RGB, Y in Alpha, and Z must be reconstructed.
+     */
+    clearCoatPackedNormal = false;
+
+    /**
      * Invert the gloss channel.
-     *
-     * @type {boolean}
      */
     glossInvert = false;
 
     /**
      * Invert the sheen gloss channel.
-     *
-     * @type {boolean}
      */
     sheenGlossInvert = false;
 
     /**
      * Invert the clearcoat gloss channel.
-     *
-     * @type {boolean}
      */
     clearCoatGlossInvert = false;
+
+    /**
+     * True to include AO variables even if AO is not used, which allows SSAO to be used in the lit shader.
+     */
+    useAO = false;
 
     /**
      * Storage for the options for lit the shader and material.
@@ -110,3 +95,25 @@ class StandardMaterialOptions {
 }
 
 export { StandardMaterialOptions };
+
+function _defineDeprecatedOption(name, newName) {
+    if (name !== 'pass') {
+        Object.defineProperty(StandardMaterialOptions.prototype, name, {
+            get: function () {
+                Debug.deprecated(`Getting StandardMaterialOptions#${name} is deprecated. Use StandardMaterialOptions#litOptions.${newName || name} instead.`);
+                return this.litOptions[newName || name];
+            },
+            set: function (value) {
+                Debug.deprecated(`Setting StandardMaterialOptions#${name} is deprecated. Use StandardMaterialOptions#litOptions.${newName || name} instead.`);
+                this.litOptions[newName || name] = value;
+            }
+        });
+    }
+}
+_defineDeprecatedOption('refraction', 'useRefraction');
+
+const tempOptions = new LitShaderOptions();
+const litOptionProperties = Object.getOwnPropertyNames(tempOptions);
+for (const litOption in litOptionProperties) {
+    _defineDeprecatedOption(litOptionProperties[litOption]);
+}

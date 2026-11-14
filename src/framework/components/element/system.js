@@ -1,25 +1,44 @@
 import { Color } from '../../../core/math/color.js';
 import { Vec2 } from '../../../core/math/vec2.js';
 import { Vec4 } from '../../../core/math/vec4.js';
-
-import {
-    PIXELFORMAT_RGBA8
-} from '../../../platform/graphics/constants.js';
+import { PIXELFORMAT_SRGBA8 } from '../../../platform/graphics/constants.js';
 import { Texture } from '../../../platform/graphics/texture.js';
-
 import { BLEND_PREMULTIPLIED, SPRITE_RENDERMODE_SLICED, SPRITE_RENDERMODE_TILED } from '../../../scene/constants.js';
 import { StandardMaterial } from '../../../scene/materials/standard-material.js';
-
 import { ComponentSystem } from '../system.js';
-
 import { ELEMENTTYPE_IMAGE, ELEMENTTYPE_TEXT } from './constants.js';
 import { ElementComponent } from './component.js';
-import { ElementComponentData } from './data.js';
-
-const _schema = ['enabled'];
 
 /**
- * Manages creation of {@link ElementComponent}s.
+ * @import { AppBase } from '../../app-base.js'
+ * @import { Entity } from '../../entity.js'
+ */
+
+/**
+ * Options of the `element` component accepted by {@link ElementComponentSystem} that differ from
+ * the properties of {@link ElementComponent}. Each replaces the same-named property of the options
+ * that {@link Entity#addComponent} derives from the component class; see
+ * {@link ComponentOptionsOverrides}.
+ *
+ * @typedef {object} ElementComponentOptionsOverrides
+ * @property {Vec2 | number[]} [alignment] - Same as {@link ElementComponent#alignment}, also
+ * accepting an `[x, y]` array.
+ * @property {Vec4 | number[]} [anchor] - Same as {@link ElementComponent#anchor}, also accepting an
+ * `[x, y, z, w]` array.
+ * @property {number | null} [batchGroupId] - Same as {@link ElementComponent#batchGroupId}. `null`
+ * selects no batch group.
+ * @property {Color | number[]} [color] - Same as {@link ElementComponent#color}, also accepting an
+ * `[r, g, b]` array.
+ * @property {Vec4 | number[]} [margin] - Same as {@link ElementComponent#margin}, also accepting an
+ * `[x, y, z, w]` array.
+ * @property {Vec2 | number[]} [pivot] - Same as {@link ElementComponent#pivot}, also accepting an
+ * `[x, y]` array.
+ * @ignore
+ */
+
+/**
+ * Manages the {@link ElementComponent}s of an application. Reach it through `app.systems.element`;
+ * components are created with {@link Entity#addComponent}, never by calling the system directly.
  *
  * @category User Interface
  */
@@ -27,7 +46,7 @@ class ElementComponentSystem extends ComponentSystem {
     /**
      * Create a new ElementComponentSystem instance.
      *
-     * @param {import('../../app-base.js').AppBase} app - The application.
+     * @param {AppBase} app - The application.
      * @ignore
      */
     constructor(app) {
@@ -36,9 +55,7 @@ class ElementComponentSystem extends ComponentSystem {
         this.id = 'element';
 
         this.ComponentType = ElementComponent;
-        this.DataType = ElementComponentData;
 
-        this.schema = _schema;
         this._unicodeConverter = null;
         this._rtlReorder = null;
 
@@ -46,7 +63,7 @@ class ElementComponentSystem extends ComponentSystem {
         this._defaultTexture = new Texture(app.graphicsDevice, {
             width: 1,
             height: 1,
-            format: PIXELFORMAT_RGBA8,
+            format: PIXELFORMAT_SRGBA8,
             name: 'element-system'
         });
         const pixels = this._defaultTexture.lock();
@@ -77,7 +94,8 @@ class ElementComponentSystem extends ComponentSystem {
 
         this.defaultImageMaterials = [];
 
-        this.on('beforeremove', this.onRemoveComponent, this);
+        this.on('add', this.onAddComponent, this);
+        this.on('beforeremove', this.onBeforeRemove, this);
     }
 
     destroy() {
@@ -107,6 +125,23 @@ class ElementComponentSystem extends ComponentSystem {
 
         const splitHorAnchors = Math.abs(component.anchor.x - component.anchor.z) > 0.001;
         const splitVerAnchors = Math.abs(component.anchor.y - component.anchor.w) > 0.001;
+
+        // On an axis where the anchor is a point, the entity's position places the element, so
+        // unless margins are given for that axis, derive them from the position, as setting a new
+        // size does. Do it first: applying the margins given for the other axis, or binding to a
+        // screen, places the element on both axes, and would move an entity that is already under
+        // a screen to wherever the default margins put it.
+        const position = component.entity.getLocalPosition();
+        const noMargin = data.margin === undefined;
+        if (!splitHorAnchors && noMargin && data.left === undefined && data.right === undefined) {
+            component._margin.x = position.x - component._calculatedWidth * component._pivot.x;
+            component._margin.z = -component._calculatedWidth - component._margin.x;
+        }
+        if (!splitVerAnchors && noMargin && data.bottom === undefined && data.top === undefined) {
+            component._margin.y = position.y - component._calculatedHeight * component._pivot.y;
+            component._margin.w = -component._calculatedHeight - component._margin.y;
+        }
+
         let _marginChange = false;
         let color;
 
@@ -231,6 +266,7 @@ class ElementComponentSystem extends ComponentSystem {
                 component.opacity = data.opacity;
             }
             if (data.spacing !== undefined) component.spacing = data.spacing;
+            if (data.letterSpacing !== undefined) component.letterSpacing = data.letterSpacing;
             if (data.fontSize !== undefined) {
                 component.fontSize = data.fontSize;
                 if (!data.lineHeight) component.lineHeight = data.fontSize;
@@ -238,6 +274,7 @@ class ElementComponentSystem extends ComponentSystem {
             if (data.lineHeight !== undefined) component.lineHeight = data.lineHeight;
             if (data.maxLines !== undefined) component.maxLines = data.maxLines;
             if (data.wrapLines !== undefined) component.wrapLines = data.wrapLines;
+            if (data.justify !== undefined) component.justify = data.justify;
             if (data.minFontSize !== undefined) component.minFontSize = data.minFontSize;
             if (data.maxFontSize !== undefined) component.maxFontSize = data.maxFontSize;
             if (data.autoFitWidth) component.autoFitWidth = data.autoFitWidth;
@@ -260,7 +297,8 @@ class ElementComponentSystem extends ComponentSystem {
             component._updateScreen(result.screen);
         }
 
-        super.initializeComponentData(component, data, properties);
+        // pass an empty properties list as the enabled state is initialized above
+        super.initializeComponentData(component, data, []);
 
         component._beingInitialized = false;
 
@@ -269,8 +307,12 @@ class ElementComponentSystem extends ComponentSystem {
         }
     }
 
-    onRemoveComponent(entity, component) {
-        component.onRemove();
+    onAddComponent(entity, component) {
+        entity.fire('element:add');
+    }
+
+    onBeforeRemove(entity, component) {
+        component.onBeforeRemove();
     }
 
     cloneComponent(entity, clone) {
@@ -301,8 +343,10 @@ class ElementComponentSystem extends ComponentSystem {
             spriteFrame: source.spriteFrame,
             pixelsPerUnit: source.pixelsPerUnit,
             spacing: source.spacing,
+            letterSpacing: source.letterSpacing,
             lineHeight: source.lineHeight,
             wrapLines: source.wrapLines,
+            justify: source.justify,
             layers: source.layers,
             fontSize: source.fontSize,
             minFontSize: source.minFontSize,
@@ -332,10 +376,10 @@ class ElementComponentSystem extends ComponentSystem {
         return this.addComponent(clone, data);
     }
 
-    getTextElementMaterial(screenSpace, msdf, textAttibutes) {
+    getTextElementMaterial(screenSpace, msdf, textAttributes) {
         const hash = (screenSpace && (1 << 0)) |
                           (msdf && (1 << 1)) |
-                 (textAttibutes && (1 << 2));
+                 (textAttributes && (1 << 2));
 
         let material = this._defaultTextMaterials[hash];
 
@@ -343,25 +387,25 @@ class ElementComponentSystem extends ComponentSystem {
             return material;
         }
 
-        let name = "TextMaterial";
+        let name = 'TextMaterial';
 
         material = new StandardMaterial();
+        material.setDefine('MESH_COLOR', true);
 
         if (msdf) {
             material.msdfMap = this._defaultTexture;
-            material.msdfTextAttribute = textAttibutes;
+            material.msdfTextAttribute = textAttributes;
             material.emissive.set(1, 1, 1);
         } else {
-            name = "Bitmap" + name;
-            material.emissive.set(0.5, 0.5, 0.5); // set to non-(1,1,1) so that tint is actually applied
+            name = `Bitmap${name}`;
+            material.emissive.set(1, 1, 1);
             material.emissiveMap = this._defaultTexture;
-            material.emissiveTint = true;
             material.opacityMap = this._defaultTexture;
             material.opacityMapChannel = 'a';
         }
 
         if (screenSpace) {
-            name = 'ScreenSpace' + name;
+            name = `ScreenSpace${name}`;
             material.depthTest = false;
         }
 
@@ -370,13 +414,12 @@ class ElementComponentSystem extends ComponentSystem {
         //  defaultBitmapTextMaterial
         //  defaultScreenSpaceTextMaterial
         //  defaultScreenSpaceBitmapTextMaterial
-        material.name = 'default' + name;
+        material.name = `default${name}`;
         material.useLighting = false;
-        material.useGammaTonemap = false;
+        material.useTonemap = false;
         material.useFog = false;
         material.useSkybox = false;
         material.diffuse.set(0, 0, 0); // black diffuse color to prevent ambient light being included
-        material.opacity = 0.5;
         material.blendType = BLEND_PREMULTIPLIED;
         material.depthWrite = false;
         material.emissiveVertexColor = true;
@@ -389,17 +432,15 @@ class ElementComponentSystem extends ComponentSystem {
 
     _createBaseImageMaterial() {
         const material = new StandardMaterial();
+        material.setDefine('MESH_COLOR', true);
 
         material.diffuse.set(0, 0, 0); // black diffuse color to prevent ambient light being included
-        material.emissive.set(0.5, 0.5, 0.5); // use non-white to compile shader correctly
+        material.emissive.set(1, 1, 1);
         material.emissiveMap = this._defaultTexture;
-        material.emissiveTint = true;
         material.opacityMap = this._defaultTexture;
         material.opacityMapChannel = 'a';
-        material.opacityTint = true;
-        material.opacity = 0; // use non-1 opacity to compile shader correctly
         material.useLighting = false;
-        material.useGammaTonemap = false;
+        material.useTonemap = false;
         material.useFog = false;
         material.useSkybox = false;
         material.blendType = BLEND_PREMULTIPLIED;

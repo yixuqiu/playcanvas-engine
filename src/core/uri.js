@@ -25,11 +25,11 @@ function createURI(options) {
     }
 
     if (options.scheme) {
-        s += options.scheme + ':';
+        s += `${options.scheme}:`;
     }
 
     if (options.authority) {
-        s += '//' + options.authority;
+        s += `//${options.authority}`;
     }
 
     if (options.host) {
@@ -45,18 +45,18 @@ function createURI(options) {
     }
 
     if (options.query) {
-        s += '?' + options.query;
+        s += `?${options.query}`;
     }
 
     if (options.fragment) {
-        s += '#' + options.fragment;
+        s += `#${options.fragment}`;
     }
 
     return s;
 }
 
 // See http://tools.ietf.org/html/rfc2396#appendix-B for details of RegExp
-const re = /^(([^:\/?#]+):)?(\/\/([^\/?#]*))?([^?#]*)(\?([^#]*))?(#(.*))?/;
+const re = /^(([^:/?#]+):)?(\/\/([^/?#]*))?([^?#]*)(\?([^#]*))?(#(.*))?/;
 
 /**
  * A URI object.
@@ -122,21 +122,21 @@ class URI {
         let s = '';
 
         if (this.scheme) {
-            s += this.scheme + ':';
+            s += `${this.scheme}:`;
         }
 
         if (this.authority) {
-            s += '//' + this.authority;
+            s += `//${this.authority}`;
         }
 
         s += this.path;
 
         if (this.query) {
-            s += '?' + this.query;
+            s += `?${this.query}`;
         }
 
         if (this.fragment) {
-            s += '#' + this.fragment;
+            s += `#${this.fragment}`;
         }
 
         return s;
@@ -148,7 +148,7 @@ class URI {
      * @returns {object} The URI's query parameters converted to an Object.
      * @example
      * const s = "http://example.com?a=1&b=2&c=3";
-     * const uri = new pc.URI(s);
+     * const uri = new URI(s);
      * const q = uri.getQuery();
      * console.log(q.a); // logs "1"
      * console.log(q.b); // logs "2"
@@ -169,17 +169,17 @@ class URI {
     }
 
     /**
-     * Set the query section of the URI from a Object.
+     * Set the query section of the URI from an Object.
      *
      * @param {object} params - Key-Value pairs to encode into the query string.
      * @example
      * const s = "http://example.com";
-     * const uri = new pc.URI(s);
+     * const uri = new URI(s);
      * uri.setQuery({
      *     "a": 1,
      *     "b": 2
      * });
-     * console.log(uri.toString()); // logs "http://example.com?a=1&b=2
+     * console.log(uri.toString()); // logs "http://example.com?a=1&b=2"
      */
     setQuery(params) {
         let q = '';
@@ -188,7 +188,7 @@ class URI {
                 if (q !== '') {
                     q += '&';
                 }
-                q += encodeURIComponent(key) + '=' + encodeURIComponent(params[key]);
+                q += `${encodeURIComponent(key)}=${encodeURIComponent(params[key])}`;
             }
         }
 

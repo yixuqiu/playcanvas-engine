@@ -6,7 +6,7 @@ const tempSphere = new BoundingSphere();
 
 // helper class to store all lights including their original state
 class BakeLight {
-    constructor(scene, light) {
+    constructor(scene, light, lightingParams) {
 
         this.scene = scene;
 
@@ -16,8 +16,14 @@ class BakeLight {
         // original light properties
         this.store();
 
-        // don't use cascades
+        // don't use cascades or shadow bounds, the lightmapper fits the shadow to the baked nodes
         light.numCascades = 1;
+        light.shadowBounds = null;
+
+        // if clustered shadows are disabled, disable them on the light
+        if (this.scene.clusteredLightingEnabled && !lightingParams.shadowsEnabled) {
+            light.castShadows = false;
+        }
 
         // bounds for non-directional light
         if (light.type !== LIGHTTYPE_DIRECTIONAL) {
@@ -40,6 +46,8 @@ class BakeLight {
         this.intensity = this.light.intensity;
         this.rotation = this.light._node.getLocalRotation().clone();
         this.numCascades = this.light.numCascades;
+        this.shadowBounds = this.light.shadowBounds?.clone() ?? null;
+        this.castShadows = this.light._castShadows;
     }
 
     restore() {
@@ -50,6 +58,8 @@ class BakeLight {
         light.intensity = this.intensity;
         light._node.setLocalRotation(this.rotation);
         light.numCascades = this.numCascades;
+        light.shadowBounds = this.shadowBounds;
+        light._castShadows = this.castShadows;
     }
 
     startBake() {
@@ -67,8 +77,9 @@ class BakeLight {
 
         if (light.shadowMap) {
             // return shadow map to the cache
-            if (light.shadowMap.cached)
+            if (light.shadowMap.cached) {
                 shadowMapCache.add(light, light.shadowMap);
+            }
 
             light.shadowMap = null;
         }

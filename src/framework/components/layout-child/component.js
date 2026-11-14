@@ -1,41 +1,67 @@
 import { Component } from '../component.js';
 
 /**
- * A LayoutChildComponent enables the Entity to control the sizing applied to it by its parent
- * {@link LayoutGroupComponent}.
+ * The LayoutChildComponent enables an {@link Entity} to control the sizing and fitting behavior
+ * applied to it by its parent {@link LayoutGroupComponent}. It allows per-child overrides of
+ * minimum and maximum dimensions as well as fit proportions.
  *
+ * You should never need to use the LayoutChildComponent constructor directly. To add a
+ * LayoutChildComponent to an {@link Entity}, use {@link Entity#addComponent}:
+ *
+ * ```javascript
+ * const entity = new Entity();
+ * entity.addComponent('element', {
+ *     type: ELEMENTTYPE_IMAGE
+ * });
+ * entity.addComponent('layoutchild', {
+ *     minWidth: 50,
+ *     maxWidth: 200,
+ *     fitWidthProportion: 1
+ * });
+ * ```
+ *
+ * Once the LayoutChildComponent is added to the entity, you can access it via the
+ * {@link Entity#layoutchild} property:
+ *
+ * ```javascript
+ * entity.layoutchild.minWidth = 80; // Increase the minimum width
+ *
+ * console.log(entity.layoutchild.minWidth); // Get the minimum width and print it
+ * ```
+ *
+ * @hideconstructor
  * @category User Interface
  */
 class LayoutChildComponent extends Component {
+    /** @private */
+    _minWidth = 0;
+
+    /** @private */
+    _minHeight = 0;
+
     /**
-     * Create a new LayoutChildComponent.
-     *
-     * @param {import('./system.js').LayoutChildComponentSystem} system - The ComponentSystem that
-     * created this Component.
-     * @param {import('../../entity.js').Entity} entity - The Entity that this Component is
-     * attached to.
+     * @type {number|null}
+     * @private
      */
-    constructor(system, entity) {
-        super(system, entity);
-
-        /** @private */
-        this._minWidth = 0;
-        /** @private */
-        this._minHeight = 0;
-        /** @private */
-        this._maxWidth = null;
-        /** @private */
-        this._maxHeight = null;
-        /** @private */
-        this._fitWidthProportion = 0;
-        /** @private */
-        this._fitHeightProportion = 0;
-        /** @private */
-        this._excludeFromLayout = false;
-    }
+    _maxWidth = null;
 
     /**
-     * The minimum width the element should be rendered at.
+     * @type {number|null}
+     * @private
+     */
+    _maxHeight = null;
+
+    /** @private */
+    _fitWidthProportion = 0;
+
+    /** @private */
+    _fitHeightProportion = 0;
+
+    /** @private */
+    _excludeFromLayout = false;
+
+    /**
+     * Sets the minimum width the element should be rendered at.
      *
      * @type {number}
      */
@@ -46,12 +72,17 @@ class LayoutChildComponent extends Component {
         }
     }
 
+    /**
+     * Gets the minimum width the element should be rendered at.
+     *
+     * @type {number}
+     */
     get minWidth() {
         return this._minWidth;
     }
 
     /**
-     * The minimum height the element should be rendered at.
+     * Sets the minimum height the element should be rendered at.
      *
      * @type {number}
      */
@@ -62,12 +93,17 @@ class LayoutChildComponent extends Component {
         }
     }
 
+    /**
+     * Gets the minimum height the element should be rendered at.
+     *
+     * @type {number}
+     */
     get minHeight() {
         return this._minHeight;
     }
 
     /**
-     * The maximum width the element should be rendered at.
+     * Sets the maximum width the element should be rendered at.
      *
      * @type {number|null}
      */
@@ -78,12 +114,17 @@ class LayoutChildComponent extends Component {
         }
     }
 
+    /**
+     * Gets the maximum width the element should be rendered at.
+     *
+     * @type {number|null}
+     */
     get maxWidth() {
         return this._maxWidth;
     }
 
     /**
-     * The maximum height the element should be rendered at.
+     * Sets the maximum height the element should be rendered at.
      *
      * @type {number|null}
      */
@@ -94,12 +135,17 @@ class LayoutChildComponent extends Component {
         }
     }
 
+    /**
+     * Gets the maximum height the element should be rendered at.
+     *
+     * @type {number|null}
+     */
     get maxHeight() {
         return this._maxHeight;
     }
 
     /**
-     * The amount of additional horizontal space that the element should take up, if necessary to
+     * Sets the amount of additional horizontal space that the element should take up, if necessary to
      * satisfy a Stretch/Shrink fitting calculation. This is specified as a proportion, taking into
      * account the proportion values of other siblings.
      *
@@ -112,12 +158,18 @@ class LayoutChildComponent extends Component {
         }
     }
 
+    /**
+     * Gets the amount of additional horizontal space that the element should take up, if necessary to
+     * satisfy a Stretch/Shrink fitting calculation.
+     *
+     * @type {number}
+     */
     get fitWidthProportion() {
         return this._fitWidthProportion;
     }
 
     /**
-     * The amount of additional vertical space that the element should take up, if necessary to
+     * Sets the amount of additional vertical space that the element should take up, if necessary to
      * satisfy a Stretch/Shrink fitting calculation. This is specified as a proportion, taking into
      * account the proportion values of other siblings.
      *
@@ -130,12 +182,18 @@ class LayoutChildComponent extends Component {
         }
     }
 
+    /**
+     * Gets the amount of additional vertical space that the element should take up, if necessary to
+     * satisfy a Stretch/Shrink fitting calculation.
+     *
+     * @type {number}
+     */
     get fitHeightProportion() {
         return this._fitHeightProportion;
     }
 
     /**
-     * If set to true, the child will be excluded from all layout calculations.
+     * Sets whether the child will be excluded from all layout calculations.
      *
      * @type {boolean}
      */
@@ -146,6 +204,11 @@ class LayoutChildComponent extends Component {
         }
     }
 
+    /**
+     * Gets whether the child will be excluded from all layout calculations.
+     *
+     * @type {boolean}
+     */
     get excludeFromLayout() {
         return this._excludeFromLayout;
     }

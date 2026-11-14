@@ -1,8 +1,22 @@
-import { BLEND_NONE, DITHER_NONE, FOG_NONE, GAMMA_NONE } from '../../constants.js';
+import {
+    BLEND_NONE, DITHER_NONE, FOG_NONE, GAMMA_NONE, LIGHTSHAPE_DISK, LIGHTSHAPE_RECT, LIGHTSHAPE_SPHERE,
+    REFLECTIONSRC_NONE
+} from '../../constants.js';
+
+/**
+ * @import { ShaderChunks } from '../shader-chunks.js';
+ */
 
 /**
  * The lit shader options determines how the lit-shader gets generated. It specifies a set of
  * parameters which triggers different fragment and vertex shader generation in the backend.
+ *
+ * You do not create one. The engine fills a LitShaderOptions from the material and scene state
+ * each time a {@link StandardMaterial} needs a shader variant, and every distinct set of values
+ * produces a distinct compiled shader. Developers rarely need to touch it: the material properties
+ * such as `useFog`, `useLighting` and `useSkybox` on {@link StandardMaterial} cover the usual
+ * cases, and the values here mirror them together with the scene state. It is exposed for the
+ * rare case of customizing shader generation through {@link StandardMaterial#onUpdateShader}.
  *
  * @category Graphics
  */
@@ -10,19 +24,17 @@ class LitShaderOptions {
     hasTangents = false;
 
     /**
-     * Object containing custom shader chunks that will replace default ones.
+     * Custom shader chunks that will replace default ones.
      *
-     * @type {Object<string, string>}
+     * @type {ShaderChunks|null}
      */
-    chunks = {};
+    shaderChunks = null;
 
     // one of the SHADER_ constants
     pass = 0;
 
     /**
      * Enable alpha testing. See {@link Material#alphaTest}.
-     *
-     * @type {boolean}
      */
     alphaTest = false;
 
@@ -39,29 +51,25 @@ class LitShaderOptions {
 
     skin = false;
 
+    batch = false;
+
     /**
      * If hardware instancing compatible shader should be generated. Transform is read from
      * per-instance {@link VertexBuffer} instead of shader's uniforms.
-     *
-     * @type {boolean}
      */
     useInstancing = false;
 
     /**
      * If morphing code should be generated to morph positions.
-     *
-     * @type {boolean}
      */
     useMorphPosition = false;
 
     /**
      * If morphing code should be generated to morph normals.
-     *
-     * @type {boolean}
      */
     useMorphNormal = false;
 
-    useMorphTextureBased = false;
+    useMorphTextureBasedInt = false;
 
     nineSlicedMode = 0;
 
@@ -75,7 +83,18 @@ class LitShaderOptions {
 
     clusteredLightingAreaLightsEnabled = false;
 
+    /**
+     * Bit mask (1 << shape) of the area light shapes the clustered lighting compiles code for.
+     * Defaults to all shapes.
+     *
+     * @type {number}
+     * @ignore
+     */
+    clusteredLightingAreaLightShapes = (1 << LIGHTSHAPE_RECT) | (1 << LIGHTSHAPE_DISK) | (1 << LIGHTSHAPE_SPHERE);
+
     vertexColors = false;
+
+    useVertexColorGamma = false;
 
     lightMapEnabled = false;
 
@@ -89,68 +108,27 @@ class LitShaderOptions {
 
     useAo = false;
 
-    diffuseMapEnabled = false;
-
-    useAmbientTint = false;
-
-    /**
-     * Replaced the whole fragment shader with this string.
-     *
-     * @type {string}
-     */
-    customFragmentShader = null;
-
     pixelSnap = false;
-
-    /**
-     * The value of {@link StandardMaterial#shadingModel}.
-     *
-     * @type {number}
-     */
-    shadingModel = 0;
 
     /**
      * If ambient spherical harmonics are used. Ambient SH replace prefiltered cubemap ambient on
      * certain platforms (mostly Android) for performance reasons.
-     *
-     * @type {boolean}
      */
     ambientSH = false;
 
     /**
-     * Use slightly cheaper normal mapping code (skip tangent space normalization). Can look buggy
-     * sometimes.
-     *
-     * @type {boolean}
+     * Apply SSAO during the lighting.
      */
-    fastTbn = false;
-
-    /**
-     * The value of {@link StandardMaterial#twoSidedLighting}.
-     *
-     * @type {boolean}
-     */
-    twoSidedLighting = false;
-
-    /**
-     * The value of {@link StandardMaterial#occludeDirect}.
-     *
-     * @type {boolean}
-     */
-    occludeDirect = false;
+    ssao = false;
 
     /**
      * The value of {@link StandardMaterial#occludeSpecular}.
-     *
-     * @type {number}
      */
     occludeSpecular = 0;
 
     /**
      * Defines if {@link StandardMaterial#occludeSpecularIntensity} constant should affect specular
      * occlusion.
-     *
-     * @type {boolean}
      */
     occludeSpecularFloat = false;
 
@@ -160,15 +138,11 @@ class LitShaderOptions {
 
     /**
      * Enable alpha to coverage. See {@link Material#alphaToCoverage}.
-     *
-     * @type {boolean}
      */
     alphaToCoverage = false;
 
     /**
      * Enable specular fade. See {@link StandardMaterial#opacityFadesSpecular}.
-     *
-     * @type {boolean}
      */
     opacityFadesSpecular = false;
 
@@ -188,22 +162,11 @@ class LitShaderOptions {
 
     /**
      * The value of {@link StandardMaterial#cubeMapProjection}.
-     *
-     * @type {number}
      */
     cubeMapProjection = 0;
 
     /**
-     * The value of {@link StandardMaterial#conserveEnergy}.
-     *
-     * @type {boolean}
-     */
-    conserveEnergy = false;
-
-    /**
      * If any specular or reflections are needed at all.
-     *
-     * @type {boolean}
      */
     useSpecular = false;
 
@@ -213,15 +176,11 @@ class LitShaderOptions {
 
     /**
      * The value of {@link StandardMaterial#fresnelModel}.
-     *
-     * @type {number}
      */
     fresnelModel = 0;
 
     /**
      * If refraction is used.
-     *
-     * @type {boolean}
      */
     useRefraction = false;
 
@@ -232,9 +191,13 @@ class LitShaderOptions {
     useIridescence = false;
 
     /**
+     * If some of the diffuse light is transmitted through the surface. See
+     * {@link StandardMaterial#diffuseTransmission}.
+     */
+    useDiffuseTransmission = false;
+
+    /**
      * The value of {@link StandardMaterial#useMetalness}.
-     *
-     * @type {boolean}
      */
     useMetalness = false;
 
@@ -251,35 +214,25 @@ class LitShaderOptions {
     fog = FOG_NONE;
 
     /**
-     * The type of gamma correction being applied in the shader. See {@link Scene#gammaCorrection}
-     * for the list of possible values.
+     * The type of gamma correction being applied in the shader. See
+     * {@link CameraComponent#gammaCorrection} for the list of possible values.
      *
      * @type {number}
      */
     gamma = GAMMA_NONE;
 
     /**
-     * The type of tone mapping being applied in the shader. See {@link Scene#toneMapping} for the
-     * list of possible values.
-     *
-     * @type {number}
+     * The type of tone mapping being applied in the shader. See {@link CameraComponent#toneMapping}
+     * for the list of possible values.
      */
     toneMap = -1;
 
     /**
-     * If cubemaps require seam fixing (see the `fixCubemapSeams` property of the options object
-     * passed to the {@link Texture} constructor).
-     *
-     * @type {boolean}
-     */
-    fixSeams = false;
-
-    /**
-     * One of "envAtlasHQ", "envAtlas", "cubeMap", "sphereMap".
+     * One of REFLECTIONSRC_*** constants.
      *
      * @type {string}
      */
-    reflectionSource = null;
+    reflectionSource = REFLECTIONSRC_NONE;
 
     reflectionEncoding = null;
 
@@ -287,8 +240,6 @@ class LitShaderOptions {
 
     /**
      * One of "ambientSH", "envAtlas", "constant".
-     *
-     * @type {string}
      */
     ambientSource = 'constant';
 
@@ -299,17 +250,20 @@ class LitShaderOptions {
 
     /**
      * Skybox intensity factor.
-     *
-     * @type {number}
      */
     skyboxIntensity = 1.0;
 
     /**
      * If cube map rotation is enabled.
-     *
-     * @type {boolean}
      */
     useCubeMapRotation = false;
+
+    /**
+     * If the environment chunks sample the scene environment, published by the renderer as
+     * `scene_envAtlas` and `scene_skybox`, instead of the textures owned by the material
+     * (`texture_envAtlas`, `texture_cubeMap`).
+     */
+    useSceneEnv = false;
 
     lightMapWithoutAmbient = false;
 
@@ -325,6 +279,23 @@ class LitShaderOptions {
      * @type {Object<string, string>}
      */
     userAttributes = {};
+
+    /**
+     * Make vLinearDepth available in the shader.
+     */
+    linearDepth = false;
+
+    /**
+     * Shader outputs the accumulated shadow value, used for shadow catcher materials.
+     */
+    shadowCatcher = false;
+
+    /**
+     * Discard the fragments the clipping planes of the mesh instance clip. See
+     * {@link MeshInstance#clippingPlanes}. The clipping planes of the camera are enabled by the
+     * camera, see {@link CameraComponent#clippingPlanes}.
+     */
+    useClipPlanes = false;
 }
 
 export { LitShaderOptions };

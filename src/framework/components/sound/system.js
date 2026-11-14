@@ -1,17 +1,41 @@
 import { Debug } from '../../../core/debug.js';
-
-import { hasAudioContext } from '../../../platform/audio/capabilities.js';
-
-import { Component } from '../component.js';
 import { ComponentSystem } from '../system.js';
-
 import { SoundComponent } from './component.js';
-import { SoundComponentData } from './data.js';
-
-const _schema = ['enabled'];
 
 /**
- * Manages creation of {@link SoundComponent}s.
+ * @import { AppBase } from '../../app-base.js'
+ * @import { Entity } from '../../entity.js'
+ * @import { SoundManager } from '../../../platform/sound/manager.js'
+ * @import { SoundSlot } from './slot.js'
+ */
+
+/**
+ * Options of the `sound` component accepted by {@link SoundComponentSystem} that differ from the
+ * properties of {@link SoundComponent}. Each replaces the same-named property of the options that
+ * {@link Entity#addComponent} derives from the component class; see
+ * {@link ComponentOptionsOverrides}.
+ *
+ * @typedef {object} SoundComponentOptionsOverrides
+ * @property {{ [name: string]: SoundSlot | { volume?: number, pitch?: number, loop?: boolean, startTime?: number, duration?: number, overlap?: boolean, autoPlay?: boolean, asset?: number } }} [slots] -
+ * Same as {@link SoundComponent#slots}, also accepting the plain {@link SoundSlot} settings of each
+ * slot.
+ * @ignore
+ */
+
+const _properties = [
+    'volume',
+    'pitch',
+    'positional',
+    'refDistance',
+    'maxDistance',
+    'rollOffFactor',
+    'distanceModel',
+    'slots'
+];
+
+/**
+ * Manages the {@link SoundComponent}s of an application. Reach it through `app.systems.sound`;
+ * components are created with {@link Entity#addComponent}, never by calling the system directly.
  *
  * @category Sound
  */
@@ -19,7 +43,7 @@ class SoundComponentSystem extends ComponentSystem {
     /**
      * Create a SoundComponentSystem.
      *
-     * @param {import('../../app-base.js').AppBase} app - The Application.
+     * @param {AppBase} app - The Application.
      * @ignore
      */
     constructor(app) {
@@ -28,17 +52,14 @@ class SoundComponentSystem extends ComponentSystem {
         this.id = 'sound';
 
         this.ComponentType = SoundComponent;
-        this.DataType = SoundComponentData;
-
-        this.schema = _schema;
 
         /**
          * Gets / sets the sound manager.
          *
-         * @type {import('../../../platform/sound/manager.js').SoundManager}
+         * @type {SoundManager}
          */
         this.manager = app.soundManager;
-        Debug.assert(this.manager, "AudioSourceComponentSystem cannot be created without sound manager");
+        Debug.assert(this.manager, 'SoundComponentSystem cannot be created without sound manager');
 
         this.app.systems.on('update', this.onUpdate, this);
 
@@ -46,8 +67,8 @@ class SoundComponentSystem extends ComponentSystem {
     }
 
     /**
-     * Sets / gets the volume for the entire Sound system. All sounds will have their volume
-     * multiplied by this value. Valid between [0, 1].
+     * Sets the volume for the entire Sound system. All sounds will have their volume multiplied by
+     * this value. Valid range is between 0 and 1. Defaults to 1.
      *
      * @type {number}
      */
@@ -55,82 +76,67 @@ class SoundComponentSystem extends ComponentSystem {
         this.manager.volume = volume;
     }
 
+    /**
+     * Gets the volume for the entire Sound system.
+     *
+     * @type {number}
+     */
     get volume() {
         return this.manager.volume;
     }
 
     /**
-     * Gets the AudioContext currently used by the sound manager. Requires Web Audio API support.
-     * Returns null if the device does not support the Web Audio API.
+     * Gets the AudioContext currently used by the sound manager.
      *
      * @type {AudioContext|null}
      */
     get context() {
-        if (!hasAudioContext()) {
-            Debug.warn('WARNING: Audio context is not supported on this browser');
-            return null;
-        }
-
         return this.manager.context;
     }
 
-    initializeComponentData(component, data, properties) {
-        properties = [
-            'volume',
-            'pitch',
-            'positional',
-            'refDistance',
-            'maxDistance',
-            'rollOffFactor',
-            'distanceModel',
-            'slots'
-        ];
-
-        for (let i = 0; i < properties.length; i++) {
-            if (data.hasOwnProperty(properties[i])) {
-                component[properties[i]] = data[properties[i]];
+    initializeComponentData(component, data) {
+        for (let i = 0; i < _properties.length; i++) {
+            if (data.hasOwnProperty(_properties[i])) {
+                component[_properties[i]] = data[_properties[i]];
             }
         }
 
-        super.initializeComponentData(component, data, ['enabled']);
+        super.initializeComponentData(component, data);
     }
 
     cloneComponent(entity, clone) {
-        const srcComponent = entity.sound;
-        const srcSlots = srcComponent.slots;
+        const c = entity.sound;
 
-        // convert 'slots' back to
-        // simple option objects
-        const slots = {};
-        for (const key in srcSlots) {
-            const srcSlot = srcSlots[key];
-            slots[key] = {
-                name: srcSlot.name,
-                volume: srcSlot.volume,
-                pitch: srcSlot.pitch,
-                loop: srcSlot.loop,
-                duration: srcSlot.duration,
-                startTime: srcSlot.startTime,
-                overlap: srcSlot.overlap,
-                autoPlay: srcSlot.autoPlay,
-                asset: srcSlot.asset
-            };
-        }
-
-        const cloneData = {
-            distanceModel: srcComponent.distanceModel,
-            enabled: srcComponent.enabled,
-            maxDistance: srcComponent.maxDistance,
-            pitch: srcComponent.pitch,
-            positional: srcComponent.positional,
-            refDistance: srcComponent.refDistance,
-            rollOffFactor: srcComponent.rollOffFactor,
-            slots: slots,
-            volume: srcComponent.volume
+        const data = {
+            enabled: c.enabled
         };
 
-        // add component with new data
-        return this.addComponent(clone, cloneData);
+        for (let i = 0; i < _properties.length; i++) {
+            const property = _properties[i];
+            if (property === 'slots') {
+                // convert 'slots' back to simple option objects
+                const slots = {};
+                for (const key in c.slots) {
+                    const srcSlot = c.slots[key];
+                    slots[key] = {
+                        name: srcSlot.name,
+                        volume: srcSlot.volume,
+                        pitch: srcSlot.pitch,
+                        loop: srcSlot.loop,
+                        duration: srcSlot.duration,
+                        startTime: srcSlot.startTime,
+                        overlap: srcSlot.overlap,
+                        autoPlay: srcSlot.autoPlay,
+                        asset: srcSlot.asset
+                    };
+                }
+                data.slots = slots;
+            } else {
+                data[property] = c[property];
+            }
+        }
+
+        return this.addComponent(clone, data);
     }
 
     onUpdate(dt) {
@@ -166,7 +172,7 @@ class SoundComponentSystem extends ComponentSystem {
             }
         }
 
-        component.onRemove();
+        component.onBeforeRemove();
     }
 
     destroy() {
@@ -175,7 +181,5 @@ class SoundComponentSystem extends ComponentSystem {
         this.app.systems.off('update', this.onUpdate, this);
     }
 }
-
-Component._buildAccessors(SoundComponent.prototype, _schema);
 
 export { SoundComponentSystem };

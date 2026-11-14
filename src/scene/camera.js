@@ -1,24 +1,48 @@
 import { Color } from '../core/math/color.js';
+import { Debug } from '../core/debug.js';
 import { Mat4 } from '../core/math/mat4.js';
+import { Vec2 } from '../core/math/vec2.js';
 import { Vec3 } from '../core/math/vec3.js';
 import { Vec4 } from '../core/math/vec4.js';
 import { math } from '../core/math/math.js';
-
 import { Frustum } from '../core/shape/frustum.js';
-
+import { MIPMAPFILTER_BOX } from '../platform/graphics/constants.js';
+import { SceneColorMapHandle } from '../platform/graphics/scene-color-map-handle.js';
+import { SceneDepthMapHandle } from '../platform/graphics/scene-depth-map-handle.js';
 import {
-    ASPECT_AUTO, PROJECTION_PERSPECTIVE,
+    VIEW_CENTER, ASPECT_AUTO, PROJECTION_PERSPECTIVE, PROJECTION_ORTHOGRAPHIC,
     LAYERID_WORLD, LAYERID_DEPTH, LAYERID_SKYBOX, LAYERID_UI, LAYERID_IMMEDIATE
 } from './constants.js';
-import { RenderPassColorGrab } from './graphics/render-pass-color-grab.js';
-import { RenderPassDepthGrab } from './graphics/render-pass-depth-grab.js';
+import { FramePassColorGrab } from './graphics/frame-pass-color-grab.js';
+import { FramePassDepthGrab } from './graphics/frame-pass-depth-grab.js';
+import { CameraShaderParams } from './camera-shader-params.js';
+import { ClipPlanes, MAX_CLIP_PLANES } from './clip-planes.js';
+
+/**
+ * @import { FramePass } from '../platform/graphics/frame-pass.js'
+ * @import { GraphicsDevice } from '../platform/graphics/graphics-device.js'
+ * @import { Plane } from '../core/shape/plane.js'
+ * @import { RenderTarget } from '../platform/graphics/render-target.js'
+ * @import { Texture } from '../platform/graphics/texture.js'
+ * @import { FogParams } from './fog-params.js'
+ * @import { Layer } from './layer.js'
+ * @import { RenderView } from './render-view.js'
+ * @import { ShaderPassInfo } from './shader-pass.js'
+ */
 
 // pre-allocated temp variables
 const _deviceCoord = new Vec3();
 const _halfSize = new Vec3();
 const _point = new Vec3();
 const _invViewProjMat = new Mat4();
+const _xrViewProjMat = new Mat4();
+const _xrViewFrustum = new Frustum();
+const _frustumViewInvMat = new Mat4();
+const _frustumViewMat = new Mat4();
+const _frustumViewProjMat = new Mat4();
 const _frustumPoints = [new Vec3(), new Vec3(), new Vec3(), new Vec3(), new Vec3(), new Vec3(), new Vec3(), new Vec3()];
+
+let id = 0;
 
 /**
  * A camera.
@@ -26,38 +50,203 @@ const _frustumPoints = [new Vec3(), new Vec3(), new Vec3(), new Vec3(), new Vec3
  * @ignore
  */
 class Camera {
+    /** @private */
+    static _flipYProjectionMatrix = new Mat4().setScale(1, -1, 1);
+
+    /** @private */
+    static _webGpuDepthRangeMatrix = new Mat4().set([
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 0.5, 0,
+        0, 0, 0.5, 1
+    ]);
+
+    /** @private */
+    static _applyShaderProjectionScratch = new Mat4();
+
     /**
-     * @type {import('./shader-pass.js').ShaderPassInfo|null}
+     * Builds the projection matrix matching shader `matrix_projection` after optional flip-Y
+     * for render targets and optional WebGPU clip-depth range adjustment.
+     *
+     * @param {Mat4} projection - Source projection ({@link Camera#projectionMatrix}).
+     * @param {Mat4} out - Receives the transformed matrix.
+     * @param {boolean} flipY - When true, apply render-target Y flip first.
+     * @param {boolean} applyWebGpuDepthRange - When true, map clip Z from -1..1 to 0..1.
+     * @returns {Mat4} out
+     */
+    static applyShaderProjectionTransform(projection, out, flipY, applyWebGpuDepthRange) {
+        if (!flipY && !applyWebGpuDepthRange) {
+            out.copy(projection);
+            return out;
+        }
+        if (flipY && applyWebGpuDepthRange) {
+            const scratch = Camera._applyShaderProjectionScratch;
+            scratch.mul2(Camera._flipYProjectionMatrix, projection);
+            out.mul2(Camera._webGpuDepthRangeMatrix, scratch);
+            return out;
+        }
+        if (flipY) {
+            out.mul2(Camera._flipYProjectionMatrix, projection);
+            return out;
+        }
+        out.mul2(Camera._webGpuDepthRangeMatrix, projection);
+        return out;
+    }
+
+    /**
+     * @type {ShaderPassInfo|null}
      */
     shaderPassInfo = null;
 
     /**
-     * @type {RenderPassColorGrab|null}
+     * @type {FramePassColorGrab|null}
      */
     renderPassColorGrab = null;
 
     /**
-     * @type {import('../platform/graphics/render-pass.js').RenderPass|null}
+     * @type {FramePassDepthGrab|null}
      */
     renderPassDepthGrab = null;
 
     /**
-     * Render passes used to render this camera. If empty, the camera will render using the default
-     * render passes.
+     * The fog parameters.
      *
-     * @type {import('../platform/graphics/render-pass.js').RenderPass[]}
+     * @type {FogParams|null}
      */
-    renderPasses = [];
+    fogParams = null;
+
+    /**
+     * Shader parameters used to generate and use matching shaders.
+     *
+     * @type {CameraShaderParams}
+     */
+    shaderParams = new CameraShaderParams();
+
+    /**
+     * Frame passes used to render this camera. If empty, the camera will render using the default
+     * frame passes.
+     *
+     * @type {FramePass[]}
+     */
+    framePasses = [];
+
+    /**
+     * Frame passes that execute before this camera's main scene rendering, after the camera's
+     * directional shadow passes. Entries are picked up by the first RenderPassForward rendering
+     * this camera's layers in the frame, including one in the camera's frame passes, so they do
+     * not execute when no RenderPassForward renders the camera. They cannot include a
+     * RenderPassForward, as that would be nested under the one picking them up. When rendering
+     * multiple XR views, they execute for each view, apart from a compute pass, which executes
+     * once, as selected by its xrViewIndex.
+     *
+     * @type {FramePass[]}
+     */
+    beforePasses = [];
+
+    /**
+     * Frame passes that execute after everything this camera renders in the frame, including its
+     * frame passes when it uses those, and before the cameras rendering after it. When rendering
+     * multiple XR views, they execute once, after all the views.
+     *
+     * @type {FramePass[]}
+     */
+    afterPasses = [];
+
+    /**
+     * The handle to the scene depth map most recently published for this camera. The uniform the
+     * depth map is published to is global - the last camera to render owns it - so anything wanting
+     * the depth of one camera in particular reads it from here instead. See {@link SceneDepthReader}.
+     *
+     * @type {SceneDepthMapHandle}
+     * @ignore
+     */
+    sceneDepthMapHandle = new SceneDepthMapHandle();
+
+    /**
+     * The handle to the scene color map most recently published for this camera. The uniform the
+     * color map is published to is global, the same as for the depth map.
+     *
+     * @type {SceneColorMapHandle}
+     * @ignore
+     */
+    sceneColorMapHandle = new SceneColorMapHandle();
+
+    /**
+     * Whether the scene color map has mipmaps. See {@link CameraComponent#sceneColorMapMipmaps}.
+     *
+     * @type {boolean}
+     * @ignore
+     */
+    sceneColorMapMipmaps = true;
+
+    /**
+     * The filter used to generate the mipmaps of the scene color map. See
+     * {@link CameraComponent#sceneColorMapMipmapFilter}.
+     *
+     * @type {string}
+     * @ignore
+     */
+    sceneColorMapMipmapFilter = MIPMAPFILTER_BOX;
 
     /** @type {number} */
     jitter = 0;
 
-    constructor() {
+    /**
+     * The scale of the exposure the camera renders with, multiplying the exposure of the scene, or
+     * of the physical camera with physical units. Set every frame by the effects adapting the
+     * exposure, such as the auto exposure of the camera frame.
+     *
+     * @type {number}
+     */
+    exposureScale = 1;
+
+    /**
+     * Whether the camera renders the sky of the scene. Cleared by the camera frame while one of its
+     * effects renders the sky for the camera in its place.
+     *
+     * @type {boolean}
+     */
+    skyVisible = true;
+
+    /**
+     * The clipping of the camera, see {@link Camera#clippingPlanes}. The renderer sets its uniforms
+     * for each pass of the camera.
+     *
+     * @type {ClipPlanes}
+     * @ignore
+     */
+    _clipPlanes = new ClipPlanes();
+
+    /**
+     * A unique id of the camera, used where the camera needs to be referenced without retaining
+     * it, for example as a key in {@link MeshInstance} draw command maps.
+     *
+     * @type {number}
+     */
+    id = id++;
+
+    /**
+     * The graphics device used by this camera. Required so the camera can compute its aspect
+     * ratio from the backbuffer size when no render target is assigned.
+     *
+     * @type {GraphicsDevice}
+     */
+    device;
+
+    /**
+     * @param {GraphicsDevice} graphicsDevice - The graphics device this camera will use for
+     * automatic aspect ratio calculation against the backbuffer size.
+     */
+    constructor(graphicsDevice) {
+        Debug.assert(graphicsDevice, 'Camera constructor requires a GraphicsDevice.');
+        this.device = graphicsDevice;
+
         this._aspectRatio = 16 / 9;
         this._aspectRatioMode = ASPECT_AUTO;
         this._calculateProjection = null;
         this._calculateTransform = null;
         this._clearColor = new Color(0.75, 0.75, 0.75, 1);
+        this._clearColors = null;
         this._clearColorBuffer = true;
         this._clearDepth = 1;
         this._clearDepthBuffer = true;
@@ -75,6 +264,7 @@ class Camera {
         this._node = null;
         this._orthoHeight = 10;
         this._projection = PROJECTION_PERSPECTIVE;
+        this._projectionOffset = new Vec2();
         this._rect = new Vec4(0, 0, 1, 1);
         this._renderTarget = null;
         this._scissorRect = new Vec4(0, 0, 1, 1);
@@ -100,8 +290,18 @@ class Camera {
 
         this.frustum = new Frustum();
 
-        // Set by XrManager
-        this._xr = null;
+        // Reusable set of layers to cull for this camera in the current frame. Populated through
+        // requestMeshInstanceCull and drained by executeMeshInstanceCull on the renderer's culler;
+        // kept on the camera so the per-camera cull state needs no per-frame allocation.
+        /** @type {Set<Layer>} */
+        this._cullLayers = new Set();
+
+        // Set by XrManager when an XR session takes over this camera: a reference to the manager's
+        // live per-view array (matrices, viewports, updated each frame), or null when not in XR.
+        // `xrActive` is derived from it. This replaces the previous back-pointer to the XrManager,
+        // keeping the scene layer decoupled from the framework XR module.
+        /** @type {RenderView[]|null} */
+        this._xrViews = null;
         this._xrProperties = {
             horizontalFov: this._horizontalFov,
             fov: this._fov,
@@ -119,7 +319,83 @@ class Camera {
         this.renderPassDepthGrab?.destroy();
         this.renderPassDepthGrab = null;
 
-        this.renderPasses.length = 0;
+        this.framePasses.length = 0;
+        this.beforePasses.length = 0;
+        this.afterPasses.length = 0;
+
+        // the handles can outlive the camera, held by whatever consumes the maps, so they record that
+        // their camera is gone instead of just being dropped
+        const depthHandle = this.sceneDepthMapHandle;
+        depthHandle.texture = null;
+        depthHandle.destroyed = true;
+
+        const colorHandle = this.sceneColorMapHandle;
+        colorHandle.texture = null;
+        colorHandle.destroyed = true;
+    }
+
+    /**
+     * Publishes the scene depth texture a producer has rendered for this camera, together with how
+     * it is encoded. Each producer passes its own encoding, as different producers store the depth
+     * differently. The camera parameters, the inverse view projection matrix and the viewport the
+     * depth was rendered with are captured as well. The texture is recorded on the handle of this
+     * camera, and also set to the global uniform, which holds the depth of whichever camera
+     * published last.
+     *
+     * @param {Texture} texture - The texture the depth was rendered to.
+     * @param {number} renderVersion - The render version it was rendered in.
+     * @param {boolean} linear - True when the texture stores the linear camera depth, false when it
+     * stores the depth buffer values.
+     * @param {boolean} packed - True when each linear depth is bit-packed into an RGBA8 texel.
+     * @param {boolean} reciprocal - True when the texture stores the reciprocals of the linear
+     * depths.
+     * @param {boolean} [flipY] - The flipY of the render target the camera rendered the depth with,
+     * which the texture matches the layout of. Defaults to false.
+     * @ignore
+     */
+    publishSceneDepthMap(texture, renderVersion, linear, packed, reciprocal, flipY = false) {
+        const handle = this.sceneDepthMapHandle;
+        handle.texture = texture;
+        handle.renderVersion = renderVersion;
+        handle.linear = linear;
+        handle.packed = linear && packed;
+        handle.reciprocal = linear && reciprocal;
+        this.fillShaderParams(handle.cameraParams);
+
+        // the matrices the shaders were given this frame, captured when the camera first rendered
+        // in it - see Camera#_storeShaderMatrices
+        handle.viewProjectionInverse.copy(this._viewProjInverse);
+
+        // the viewport the camera rendered to, the way Renderer#setupViewport sets it. WebGPU places
+        // it from the top of the target, unless the target stores its rows from the bottom
+        // (RENDERTARGET_ORIGIN_BOTTOM), as its flipY reflects
+        const { width, height } = texture;
+        const rect = this._rect;
+        const viewport = handle.viewport;
+        const y = Math.floor(rect.y * height);
+        viewport[0] = Math.floor(rect.x * width);
+        viewport[2] = Math.floor(rect.z * width);
+        viewport[3] = Math.floor(rect.w * height);
+        viewport[1] = flipY ? y : height - y - viewport[3];
+
+        SceneDepthMapHandle.setUniform(this.device, texture);
+    }
+
+    /**
+     * Publishes the scene color texture a producer has rendered for this camera, together with how
+     * it is encoded. The texture is recorded on the handle of this camera, and also set to the
+     * global uniform, which holds the color of whichever camera published last.
+     *
+     * @param {Texture} texture - The texture the color was rendered to.
+     * @param {boolean} gamma - True when the texture stores gamma encoded colors.
+     * @ignore
+     */
+    publishSceneColorMap(texture, gamma) {
+        const handle = this.sceneColorMapHandle;
+        handle.texture = texture;
+        handle.gamma = gamma;
+
+        SceneColorMapHandle.setUniform(this.device, texture);
     }
 
     /**
@@ -157,7 +433,18 @@ class Camera {
     }
 
     get aspectRatio() {
-        return (this.xr?.active) ? this._xrProperties.aspectRatio : this._aspectRatio;
+        if (this.xrActive) return this._xrProperties.aspectRatio;
+
+        // in ASPECT_AUTO mode, always recompute from current inputs (render target / backbuffer
+        // size and rect). The computation is trivially cheap, and this avoids a few complexities.
+        if (this._aspectRatioMode === ASPECT_AUTO) {
+            const newValue = this.calculateAspectRatio();
+            if (this._aspectRatio !== newValue) {
+                this._aspectRatio = newValue;
+                this._projMatDirty = true;
+            }
+        }
+        return this._aspectRatio;
     }
 
     set aspectRatioMode(newValue) {
@@ -194,6 +481,40 @@ class Camera {
 
     get clearColor() {
         return this._clearColor;
+    }
+
+    /**
+     * Sets the clear color of a color attachment of the render target. Attachment 0 is
+     * {@link Camera#clearColor}, and the other attachments of a multiple render target clear to the
+     * same color unless given their own. Passing null removes the color of an attachment, so it
+     * clears to the attachment 0 color again.
+     *
+     * @param {number} index - The index of the color attachment.
+     * @param {Color|null} color - The clear color, or null to clear to the attachment 0 color.
+     */
+    setClearColor(index, color) {
+        Debug.assert(Number.isInteger(index) && index >= 0, `Invalid color attachment index ${index}.`);
+
+        if (index === 0) {
+            Debug.assert(color, 'The clear color of the color attachment 0 cannot be removed.');
+            this._clearColor.copy(color);
+        } else if (color) {
+            // stored sparsely, most cameras render to a single color attachment
+            this._clearColors ??= [];
+            (this._clearColors[index] ??= new Color()).copy(color);
+        } else if (this._clearColors) {
+            this._clearColors[index] = undefined;
+        }
+    }
+
+    /**
+     * Gets the clear color of a color attachment of the render target.
+     *
+     * @param {number} index - The index of the color attachment.
+     * @returns {Color} The clear color of the attachment.
+     */
+    getClearColor(index) {
+        return this._clearColors?.[index] ?? this._clearColor;
     }
 
     set clearColorBuffer(newValue) {
@@ -236,6 +557,53 @@ class Camera {
         return this._clearStencilBuffer;
     }
 
+    /**
+     * Sets the planes that clip what the camera renders, in world space. The planes are copied.
+     * See {@link CameraComponent#clippingPlanes}.
+     *
+     * @type {Plane[]}
+     */
+    set clippingPlanes(value) {
+        Debug.assert(!value || value.length <= MAX_CLIP_PLANES,
+            `CameraComponent#clippingPlanes supports up to ${MAX_CLIP_PLANES} planes, the rest ` +
+            'are ignored.');
+        this._clipPlanes.set(value);
+        this._updateClipPlanes();
+    }
+
+    get clippingPlanes() {
+        return this._clipPlanes.returned;
+    }
+
+    /**
+     * Sets whether only the parts behind all of the {@link Camera#clippingPlanes} are clipped,
+     * instead of the parts behind any of them.
+     *
+     * @type {boolean}
+     */
+    set clipIntersection(value) {
+        if (this._clipPlanes.intersection !== value) {
+            this._clipPlanes.intersection = value;
+            this._updateClipPlanes();
+        }
+    }
+
+    get clipIntersection() {
+        return this._clipPlanes.intersection;
+    }
+
+    /**
+     * Writes the clipping into the uniforms the shader reads, from the planes as they were
+     * assigned, and enables the clipping shader code when there is any plane.
+     *
+     * @private
+     */
+    _updateClipPlanes() {
+        const clipPlanes = this._clipPlanes;
+        clipPlanes.updateUniforms();
+        this.shaderParams.clipPlanes = clipPlanes.assigned.length > 0;
+    }
+
     set cullFaces(newValue) {
         this._cullFaces = newValue;
     }
@@ -252,7 +620,7 @@ class Camera {
     }
 
     get farClip() {
-        return (this.xr?.active) ? this._xrProperties.farClip : this._farClip;
+        return (this.xrActive) ? this._xrProperties.farClip : this._farClip;
     }
 
     set flipFaces(newValue) {
@@ -271,7 +639,7 @@ class Camera {
     }
 
     get fov() {
-        return (this.xr?.active) ? this._xrProperties.fov : this._fov;
+        return (this.xrActive) ? this._xrProperties.fov : this._fov;
     }
 
     set frustumCulling(newValue) {
@@ -290,7 +658,7 @@ class Camera {
     }
 
     get horizontalFov() {
-        return (this.xr?.active) ? this._xrProperties.horizontalFov : this._horizontalFov;
+        return (this.xrActive) ? this._xrProperties.horizontalFov : this._horizontalFov;
     }
 
     set layers(newValue) {
@@ -298,6 +666,12 @@ class Camera {
         this._layersSet = new Set(this._layers);
     }
 
+    /**
+     * Gets the layer IDs this camera renders. Use the setter to replace the array; do not mutate
+     * the returned array.
+     *
+     * @type {ReadonlyArray<number>}
+     */
     get layers() {
         return this._layers;
     }
@@ -314,7 +688,7 @@ class Camera {
     }
 
     get nearClip() {
-        return (this.xr?.active) ? this._xrProperties.nearClip : this._nearClip;
+        return (this.xrActive) ? this._xrProperties.nearClip : this._nearClip;
     }
 
     set node(newValue) {
@@ -352,8 +726,18 @@ class Camera {
         return this._projMat;
     }
 
+    set projectionOffset(newValue) {
+        this._projectionOffset.copy(newValue);
+        this._projMatDirty = true;
+    }
+
+    get projectionOffset() {
+        return this._projectionOffset;
+    }
+
     set rect(newValue) {
         this._rect.copy(newValue);
+        this._projMatDirty = true;
     }
 
     get rect() {
@@ -362,6 +746,7 @@ class Camera {
 
     set renderTarget(newValue) {
         this._renderTarget = newValue;
+        this._projMatDirty = true;
     }
 
     get renderTarget() {
@@ -409,15 +794,90 @@ class Camera {
         return this._shutter;
     }
 
-    set xr(newValue) {
-        if (this._xr !== newValue) {
-            this._xr = newValue;
+    /**
+     * Sets the list of {@link RenderView}s this camera renders with (one per XR eye/screen), or
+     * null when not rendering an XR session. Set by the XR manager.
+     *
+     * @param {RenderView[]|null} value - The per-view list, or null when not in XR.
+     */
+    set xrViews(value) {
+        // the projection source switches between XR and non-XR when XR activeness changes, so the
+        // cached projection matrix must be invalidated on that transition
+        if ((value !== null) !== (this._xrViews !== null)) {
             this._projMatDirty = true;
         }
+        this._xrViews = value;
     }
 
-    get xr() {
-        return this._xr;
+    /**
+     * @type {RenderView[]|null}
+     */
+    get xrViews() {
+        return this._xrViews;
+    }
+
+    /**
+     * True while an XR session owns this camera (equivalent to {@link Camera#xrViews} being set).
+     *
+     * @type {boolean}
+     */
+    get xrActive() {
+        return this._xrViews !== null;
+    }
+
+    /**
+     * Registers a layer to be culled for this camera in the current frame. Used by the renderer's
+     * request/execute mesh-instance culling.
+     *
+     * @param {Layer} layer - The layer to cull for this camera.
+     * @returns {boolean} True if this is the first layer registered for this camera this frame,
+     * letting the caller track the camera exactly once.
+     * @ignore
+     */
+    addCullLayer(layer) {
+        const first = this._cullLayers.size === 0;
+        this._cullLayers.add(layer);
+        return first;
+    }
+
+    /**
+     * Gets the set of layers registered to be culled for this camera in the current frame. For
+     * read-only iteration; use {@link Camera#addCullLayer} and {@link Camera#clearCullLayers} to
+     * mutate it.
+     *
+     * @type {Set<Layer>}
+     * @ignore
+     */
+    get cullLayers() {
+        return this._cullLayers;
+    }
+
+    /**
+     * Clears the set of layers registered to be culled for this camera, called once the camera's
+     * culling has been performed.
+     *
+     * @ignore
+     */
+    clearCullLayers() {
+        this._cullLayers.clear();
+    }
+
+    /**
+     * Calculates the aspect ratio that should be used for the camera, based on the size of the
+     * given render target (or the backbuffer if no render target is given), and the camera's
+     * `rect`. The `rect` is included so that a camera rendering into a sub-region of a render
+     * target gets the aspect ratio of the actual rendered pixel area (important for split-screen
+     * and similar setups, otherwise rendering would appear stretched).
+     *
+     * @param {RenderTarget|null} [rt] - Optional render target. If unspecified, the camera's
+     * own render target (or, if that is also null, the backbuffer) is used.
+     * @returns {number} The computed aspect ratio.
+     */
+    calculateAspectRatio(rt) {
+        const target = rt ?? this._renderTarget;
+        const width = target ? target.width : this.device.width;
+        const height = target ? target.height : this.device.height;
+        return (width * this._rect.z) / (height * this._rect.w);
     }
 
     /**
@@ -426,7 +886,7 @@ class Camera {
      * @returns {Camera} A cloned Camera.
      */
     clone() {
-        return new Camera().copy(this);
+        return new Camera(this.device).copy(this);
     }
 
     /**
@@ -456,6 +916,8 @@ class Camera {
         this.calculateProjection = other.calculateProjection;
         this.calculateTransform = other.calculateTransform;
         this.clearColor = other.clearColor;
+        this._clearColors = null;
+        other._clearColors?.forEach((color, index) => this.setClearColor(index, color));
         this.clearColorBuffer = other.clearColorBuffer;
         this.clearDepth = other.clearDepth;
         this.clearDepthBuffer = other.clearDepthBuffer;
@@ -467,15 +929,22 @@ class Camera {
         this.layers = other.layers;
         this.orthoHeight = other.orthoHeight;
         this.projection = other.projection;
+        this.projectionOffset = other.projectionOffset;
         this.rect = other.rect;
         this.renderTarget = other.renderTarget;
         this.scissorRect = other.scissorRect;
         this.aperture = other.aperture;
         this.shutter = other.shutter;
         this.sensitivity = other.sensitivity;
+        this.sceneColorMapMipmaps = other.sceneColorMapMipmaps;
+        this.sceneColorMapMipmapFilter = other.sceneColorMapMipmapFilter;
+
+        this._clipPlanes.copy(other._clipPlanes);
+        this._updateClipPlanes();
 
         this.shaderPassInfo = other.shaderPassInfo;
         this.jitter = other.jitter;
+        this.exposureScale = other.exposureScale;
 
         this._projMatDirty = true;
 
@@ -485,7 +954,7 @@ class Camera {
     _enableRenderPassColorGrab(device, enable) {
         if (enable) {
             if (!this.renderPassColorGrab) {
-                this.renderPassColorGrab = new RenderPassColorGrab(device);
+                this.renderPassColorGrab = new FramePassColorGrab(device, this);
             }
         } else {
             this.renderPassColorGrab?.destroy();
@@ -496,7 +965,7 @@ class Camera {
     _enableRenderPassDepthGrab(device, renderer, enable) {
         if (enable) {
             if (!this.renderPassDepthGrab) {
-                this.renderPassDepthGrab = new RenderPassDepthGrab(device, this);
+                this.renderPassDepthGrab = new FramePassDepthGrab(device, this);
             }
         } else {
             this.renderPassDepthGrab?.destroy();
@@ -512,7 +981,96 @@ class Camera {
     }
 
     /**
-     * Convert a point from 3D world space to 2D canvas pixel space.
+     * Refreshes the derived per-view matrices of all {@link Camera#xrViews}, using this camera's
+     * parent world transform. The renderer, the gsplat passes and {@link Camera#updateXrFrustum}
+     * call this before reading the per-view matrices.
+     *
+     * Note: this recomputes on every call. Within a frame the parent transform is stable, so the
+     * several calls per frame could be collapsed to a single recompute by guarding on
+     * `device.renderVersion` (as {@link Camera#_storeShaderMatrices} does) - left as a future
+     * optimization, as it needs checking against cameras that render multiple times per frame
+     * (e.g. multiple render targets).
+     */
+    updateViewTransforms() {
+        const views = this.xrViews;
+        if (!views) {
+            return;
+        }
+        const parentWorldTransform = this._node?.parent?.getWorldTransform() ?? null;
+        for (let i = 0; i < views.length; i++) {
+            views[i].updateTransforms(parentWorldTransform);
+        }
+    }
+
+    /**
+     * Updates {@link Camera#frustum} to the combined volume of all XR views, to avoid culling
+     * objects visible in any view (e.g. the right edge of the right eye in stereo rendering).
+     * The views are merged conservatively via {@link Frustum#add}, which handles the asymmetric
+     * per-eye projections real headsets report (matching planes of the two eyes have different
+     * normals, so a simple outermost-plane selection would over-cull at a distance).
+     *
+     * @returns {boolean} True when XR views were present and the frustum was updated, false
+     * otherwise (the caller should fall back to the mono frustum path).
+     * @ignore
+     */
+    updateXrFrustum() {
+        const views = this.xrViews;
+        if (!views?.length) {
+            return false;
+        }
+
+        // culling runs before the renderer refreshes the derived per-view matrices, so refresh them
+        // here, for the current pose of the views and transform of the camera's parent
+        this.updateViewTransforms();
+
+        // first view establishes the base frustum
+        _xrViewProjMat.mul2(views[0].projMat, views[0].viewOffMat);
+        this.frustum.setFromMat4(_xrViewProjMat);
+
+        // for additional views, expand the frustum to encompass all views
+        for (let v = 1; v < views.length; v++) {
+            _xrViewProjMat.mul2(views[v].projMat, views[v].viewOffMat);
+            _xrViewFrustum.setFromMat4(_xrViewProjMat);
+            this.frustum.add(_xrViewFrustum);
+        }
+        return true;
+    }
+
+    /**
+     * Updates {@link Camera#frustum} for the camera's current transform and projection, for
+     * visibility culling. Uses the combined (VIEW_CENTER) view; XR cameras delegate to
+     * {@link Camera#updateXrFrustum}. Honors the {@link Camera#calculateProjection} and
+     * {@link Camera#calculateTransform} overrides.
+     *
+     * @ignore
+     */
+    updateFrustum() {
+
+        // XR: combined frustum from all views (avoids culling objects visible in only one eye)
+        if (this.updateXrFrustum()) {
+            return;
+        }
+
+        const projMat = this.projectionMatrix;
+        if (this.calculateProjection) {
+            this.calculateProjection(projMat, VIEW_CENTER);
+        }
+
+        if (this.calculateTransform) {
+            this.calculateTransform(_frustumViewInvMat, VIEW_CENTER);
+        } else {
+            const pos = this._node.getPosition();
+            const rot = this._node.getRotation();
+            _frustumViewInvMat.setTRS(pos, rot, Vec3.ONE);
+        }
+        _frustumViewMat.copy(_frustumViewInvMat).invert();
+
+        _frustumViewProjMat.mul2(projMat, _frustumViewMat);
+        this.frustum.setFromMat4(_frustumViewProjMat);
+    }
+
+    /**
+     * Convert a point from 3D world space to 2D canvas pixel space based on the camera's rect.
      *
      * @param {Vec3} worldCoord - The world space coordinate to transform.
      * @param {number} cw - The width of PlayCanvas' canvas element.
@@ -531,14 +1089,20 @@ class Camera {
                 worldCoord.z * vpm[11] +
                            1 * vpm[15];
 
-        screenCoord.x = (screenCoord.x / w + 1) * 0.5 * cw;
-        screenCoord.y = (1 - screenCoord.y / w) * 0.5 * ch;
+        // convert normalized clip space to screen space [0, 1]
+        screenCoord.x = (screenCoord.x / w + 1) * 0.5;
+        screenCoord.y = (1 - screenCoord.y / w) * 0.5;
+
+        // convert screen space [0, 1] to pixel space based on camera rect
+        const { x: rx, y: ry, z: rw, w: rh } = this._rect;
+        screenCoord.x = screenCoord.x * rw * cw + rx * cw;
+        screenCoord.y = screenCoord.y * rh * ch + (1 - ry - rh) * ch;
 
         return screenCoord;
     }
 
     /**
-     * Convert a point from 2D canvas pixel space to 3D world space.
+     * Convert a point from 2D canvas pixel space to 3D world space based on the camera's rect.
      *
      * @param {number} x - X coordinate on PlayCanvas' canvas element.
      * @param {number} y - Y coordinate on PlayCanvas' canvas element.
@@ -549,10 +1113,14 @@ class Camera {
      * @returns {Vec3} The world space coordinate.
      */
     screenToWorld(x, y, z, cw, ch, worldCoord = new Vec3()) {
-
         // Calculate the screen click as a point on the far plane of the normalized device coordinate 'box' (z=1)
+        const { x: rx, y: ry, z: rw, w: rh } = this._rect;
         const range = this.farClip - this.nearClip;
-        _deviceCoord.set(x / cw, (ch - y) / ch, z / range);
+        _deviceCoord.set(
+            (x - rx * cw) / (rw * cw),
+            1 - (y - (1 - ry - rh) * ch) / (rh * ch),
+            z / range
+        );
         _deviceCoord.mulScalar(2);
         _deviceCoord.sub(Vec3.ONE);
 
@@ -561,9 +1129,11 @@ class Camera {
             // calculate half width and height at the near clip plane
             Mat4._getPerspectiveHalfSize(_halfSize, this.fov, this.aspectRatio, this.nearClip, this.horizontalFov);
 
-            // scale by normalized screen coordinates
-            _halfSize.x *= _deviceCoord.x;
-            _halfSize.y *= _deviceCoord.y;
+            // scale by normalized screen coordinates, taking the projection offset into account
+            // (the offset is ignored in XR, where projection matrices are supplied by the XR system)
+            const offset = this.xrActive ? Vec2.ZERO : this._projectionOffset;
+            _halfSize.x *= _deviceCoord.x + offset.x;
+            _halfSize.y *= _deviceCoord.y + offset.y;
 
             // transform to world space
             const invView = this._node.getWorldTransform();
@@ -582,7 +1152,7 @@ class Camera {
             this._updateViewProjMat();
             _invViewProjMat.copy(this._viewProjMat).invert();
 
-                // Transform to world space
+            // Transform to world space
             _invViewProjMat.transformPoint(_deviceCoord, worldCoord);
         }
 
@@ -590,15 +1160,32 @@ class Camera {
     }
 
     _evaluateProjectionMatrix() {
+        // in ASPECT_AUTO, reading the aspectRatio getter recomputes it from current inputs
+        // and marks _projMatDirty if the value changed (e.g. after a backbuffer resize with
+        // no other input changes)
+        const aspect = this.aspectRatio;
         if (this._projMatDirty) {
+            const offset = this._projectionOffset;
             if (this._projection === PROJECTION_PERSPECTIVE) {
-                this._projMat.setPerspective(this.fov, this.aspectRatio, this.nearClip, this.farClip, this.horizontalFov);
+                this._projMat.setPerspective(this.fov, aspect, this.nearClip, this.farClip, this.horizontalFov);
+
+                // off-center projection - the offset is directly the frustum off-center terms
+                // (right+left)/(right-left) and (top+bottom)/(top-bottom), in half-frustum units
+                this._projMat.data[8] = offset.x;
+                this._projMat.data[9] = offset.y;
                 this._projMatSkybox.copy(this._projMat);
             } else {
                 const y = this._orthoHeight;
-                const x = y * this.aspectRatio;
+                const x = y * aspect;
                 this._projMat.setOrtho(-x, x, -y, y, this.nearClip, this.farClip);
-                this._projMatSkybox.setPerspective(this.fov, this.aspectRatio, this.nearClip, this.farClip);
+
+                // off-center projection - translate the ortho window by the offset in half-window
+                // units, matching the perspective sign convention
+                this._projMat.data[12] = -offset.x;
+                this._projMat.data[13] = -offset.y;
+                this._projMatSkybox.setPerspective(this.fov, aspect, this.nearClip, this.farClip);
+                this._projMatSkybox.data[8] = offset.x;
+                this._projMatSkybox.data[9] = offset.y;
             }
 
             this._projMatDirty = false;
@@ -656,39 +1243,63 @@ class Camera {
      */
     getFrustumCorners(near = this.nearClip, far = this.farClip) {
 
-        const fov = this.fov * Math.PI / 180.0;
-        let y = this._projection === PROJECTION_PERSPECTIVE ? Math.tan(fov / 2.0) * near : this._orthoHeight;
-        let x = y * this.aspectRatio;
+        const fov = this.fov * math.DEG_TO_RAD;
+        const offset = this.xrActive ? Vec2.ZERO : this._projectionOffset;
+        let x, y;
+
+        if (this.projection === PROJECTION_PERSPECTIVE) {
+            if (this.horizontalFov) {
+                x = near * Math.tan(fov / 2.0);
+                y = x / this.aspectRatio;
+            } else {
+                y = near * Math.tan(fov / 2.0);
+                x = y * this.aspectRatio;
+            }
+        } else {
+            y = this._orthoHeight;
+            x = y * this.aspectRatio;
+        }
+
+        // center of the projection window, offset for off-center projections
+        let cx = offset.x * x;
+        let cy = offset.y * y;
 
         const points = _frustumPoints;
-        points[0].x = x;
-        points[0].y = -y;
+        points[0].x = cx + x;
+        points[0].y = cy - y;
         points[0].z = -near;
-        points[1].x = x;
-        points[1].y = y;
+        points[1].x = cx + x;
+        points[1].y = cy + y;
         points[1].z = -near;
-        points[2].x = -x;
-        points[2].y = y;
+        points[2].x = cx - x;
+        points[2].y = cy + y;
         points[2].z = -near;
-        points[3].x = -x;
-        points[3].y = -y;
+        points[3].x = cx - x;
+        points[3].y = cy - y;
         points[3].z = -near;
 
         if (this._projection === PROJECTION_PERSPECTIVE) {
-            y = Math.tan(fov / 2.0) * far;
-            x = y * this.aspectRatio;
+            if (this.horizontalFov) {
+                x = far * Math.tan(fov / 2.0);
+                y = x / this.aspectRatio;
+            } else {
+                y = far * Math.tan(fov / 2.0);
+                x = y * this.aspectRatio;
+            }
+            cx = offset.x * x;
+            cy = offset.y * y;
         }
-        points[4].x = x;
-        points[4].y = -y;
+        points[4].x = cx + x;
+        points[4].y = cy - y;
         points[4].z = -far;
-        points[5].x = x;
-        points[5].y = y;
+        points[5].x = cx + x;
+        points[5].y = cy + y;
         points[5].z = -far;
-        points[6].x = -x;
-        points[6].y = y;
+        points[6].x = cx - x;
+        points[6].y = cy + y;
         points[6].z = -far;
-        points[7].x = -x;
-        points[7].y = -y;
+        points[7].x = cx - x;
+        points[7].y = cy - y;
         points[7].z = -far;
 
         return points;
@@ -707,6 +1318,23 @@ class Camera {
     setXrProperties(properties) {
         Object.assign(this._xrProperties, properties);
         this._projMatDirty = true;
+    }
+
+    /**
+     * Fills the provided array with camera parameters for use in shaders.
+     * The array format is: [1/far, far, near, isOrtho].
+     *
+     * @param {Float32Array} output - Array to fill with camera parameters.
+     * @returns {Float32Array} The output array.
+     * @ignore
+     */
+    fillShaderParams(output) {
+        const f = this._farClip;
+        output[0] = 1 / f;
+        output[1] = f;
+        output[2] = this._nearClip;
+        output[3] = this._projection === PROJECTION_ORTHOGRAPHIC ? 1 : 0;
+        return output;
     }
 }
 

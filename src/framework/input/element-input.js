@@ -2,10 +2,16 @@ import { platform } from '../../core/platform.js';
 import { Vec3 } from '../../core/math/vec3.js';
 import { Vec4 } from '../../core/math/vec4.js';
 import { Ray } from '../../core/shape/ray.js';
-
 import { Mouse } from '../../platform/input/mouse.js';
-
+import { acquireTouchAction, releaseTouchAction } from '../../platform/input/touch-action.js';
+import { getTouchTargetCoords } from '../../platform/input/touch-event.js';
 import { getApplication } from '../globals.js';
+
+/**
+ * @import { CameraComponent } from '../components/camera/component.js'
+ * @import { ElementComponent } from '../components/element/component.js'
+ * @import { XrInputSource } from '../xr/xr-input-source.js'
+ */
 
 let targetX, targetY;
 const vecA = new Vec3();
@@ -64,12 +70,14 @@ function intersectLineQuad(p, q, corners) {
     if (v >= 0) {
         // Test intersection against triangle abc
         u = -_pb.dot(_m);
-        if (u < 0)
+        if (u < 0) {
             return -1;
+        }
 
         w = scalarTriple(_pq, _pb, _pa);
-        if (w < 0)
+        if (w < 0) {
             return -1;
+        }
 
         const denom = 1.0 / (u + v + w);
 
@@ -81,12 +89,14 @@ function intersectLineQuad(p, q, corners) {
         // Test intersection against triangle dac
         _pd.sub2(corners[3], p);
         u = _pd.dot(_m);
-        if (u < 0)
+        if (u < 0) {
             return -1;
+        }
 
         w = scalarTriple(_pq, _pa, _pd);
-        if (w < 0)
+        if (w < 0) {
             return -1;
+        }
 
         v = -v;
 
@@ -116,34 +126,34 @@ class ElementInputEvent {
     /**
      * Create a new ElementInputEvent instance.
      *
-     * @param {import('../../platform/input/mouse-event.js').MouseEvent
-     * |import('../../platform/input/touch-event.js').TouchEvent} event - MouseEvent or TouchEvent
-     * that was originally raised.
-     * @param {import('../components/element/component.js').ElementComponent} element - The
-     * ElementComponent that this event was originally raised on.
-     * @param {import('../components/camera/component.js').CameraComponent} camera - The
-     * CameraComponent that this event was originally raised via.
+     * @param {globalThis.MouseEvent|globalThis.TouchEvent|XRInputSourceEvent|null} event - The
+     * browser event that was originally raised, or null if there was none.
+     * @param {ElementComponent} element - The ElementComponent that this event was originally
+     * raised on.
+     * @param {CameraComponent} camera - The CameraComponent that this event was originally raised
+     * via.
      */
     constructor(event, element, camera) {
         /**
-         * MouseEvent or TouchEvent that was originally raised.
+         * The browser event that was originally raised: a MouseEvent, TouchEvent or
+         * XRInputSourceEvent. It is null when no browser event caused this one, as for
+         * `selectmove`.
          *
-         * @type {import('../../platform/input/mouse-event.js').MouseEvent
-         * |import('../../platform/input/touch-event.js').TouchEvent}
+         * @type {globalThis.MouseEvent|globalThis.TouchEvent|XRInputSourceEvent|null}
          */
         this.event = event;
 
         /**
          * The ElementComponent that this event was originally raised on.
          *
-         * @type {import('../components/element/component.js').ElementComponent}
+         * @type {ElementComponent}
          */
         this.element = element;
 
         /**
          * The CameraComponent that this event was originally raised via.
          *
-         * @type {import('../components/camera/component.js').CameraComponent}
+         * @type {CameraComponent}
          */
         this.camera = camera;
 
@@ -172,11 +182,11 @@ class ElementMouseEvent extends ElementInputEvent {
     /**
      * Create an instance of an ElementMouseEvent.
      *
-     * @param {import('../../platform/input/mouse-event.js').MouseEvent} event - The MouseEvent that
-     * was originally raised.
-     * @param {import('../components/element/component.js').ElementComponent} element - The
+     * @param {globalThis.MouseEvent|globalThis.WheelEvent} event - The browser MouseEvent or
+     * WheelEvent that was originally raised.
+     * @param {ElementComponent} element - The
      * ElementComponent that this event was originally raised on.
-     * @param {import('../components/camera/component.js').CameraComponent} camera - The
+     * @param {CameraComponent} camera - The
      * CameraComponent that this event was originally raised via.
      * @param {number} x - The x coordinate.
      * @param {number} y - The y coordinate.
@@ -241,8 +251,6 @@ class ElementMouseEvent extends ElementInputEvent {
 
         /**
          * The amount of the wheel movement.
-         *
-         * @type {number}
          */
         this.wheelDelta = 0;
 
@@ -259,7 +267,8 @@ class ElementMouseEvent extends ElementInputEvent {
 }
 
 /**
- * Represents a TouchEvent fired on a {@link ElementComponent}.
+ * Represents a TouchEvent fired on a {@link ElementComponent}. It carries the browser's own
+ * TouchEvent and Touch objects.
  *
  * @category User Interface
  */
@@ -267,14 +276,14 @@ class ElementTouchEvent extends ElementInputEvent {
     /**
      * Create an instance of an ElementTouchEvent.
      *
-     * @param {import('../../platform/input/touch-event.js').TouchEvent} event - The TouchEvent that was originally raised.
-     * @param {import('../components/element/component.js').ElementComponent} element - The
+     * @param {globalThis.TouchEvent} event - The browser TouchEvent that was originally raised.
+     * @param {ElementComponent} element - The
      * ElementComponent that this event was originally raised on.
-     * @param {import('../components/camera/component.js').CameraComponent} camera - The
+     * @param {CameraComponent} camera - The
      * CameraComponent that this event was originally raised via.
      * @param {number} x - The x coordinate of the touch that triggered the event.
      * @param {number} y - The y coordinate of the touch that triggered the event.
-     * @param {import('../../platform/input/touch-event.js').Touch} touch - The touch object that triggered the event.
+     * @param {globalThis.Touch} touch - The browser Touch that triggered the event.
      */
     constructor(event, element, camera, x, y, touch) {
         super(event, element, camera);
@@ -283,22 +292,23 @@ class ElementTouchEvent extends ElementInputEvent {
          * The Touch objects representing all current points of contact with the surface,
          * regardless of target or changed status.
          *
-         * @type {import('../../platform/input/touch-event.js').Touch[]}
+         * @type {globalThis.TouchList}
          */
         this.touches = event.touches;
         /**
          * The Touch objects representing individual points of contact whose states changed between
          * the previous touch event and this one.
          *
-         * @type {import('../../platform/input/touch-event.js').Touch[]}
+         * @type {globalThis.TouchList}
          */
         this.changedTouches = event.changedTouches;
         this.x = x;
         this.y = y;
         /**
-         * The touch object that triggered the event.
+         * The browser Touch that triggered the event. Match a touch across events by its
+         * `identifier`.
          *
-         * @type {import('../../platform/input/touch-event.js').Touch}
+         * @type {globalThis.Touch}
          */
         this.touch = touch;
     }
@@ -311,14 +321,15 @@ class ElementTouchEvent extends ElementInputEvent {
  */
 class ElementSelectEvent extends ElementInputEvent {
     /**
-     * Create an instance of a ElementSelectEvent.
+     * Create an instance of an ElementSelectEvent.
      *
-     * @param {object} event - The XRInputSourceEvent that was originally raised.
-     * @param {import('../components/element/component.js').ElementComponent} element - The
+     * @param {XRInputSourceEvent|null} event - The XRInputSourceEvent that was originally raised,
+     * or null if there was none.
+     * @param {ElementComponent} element - The
      * ElementComponent that this event was originally raised on.
-     * @param {import('../components/camera/component.js').CameraComponent} camera - The
+     * @param {CameraComponent} camera - The
      * CameraComponent that this event was originally raised via.
-     * @param {import('../xr/xr-input-source.js').XrInputSource} inputSource - The XR input source
+     * @param {XrInputSource} inputSource - The XR input source
      * that this event was originally raised from.
      */
     constructor(event, element, camera, inputSource) {
@@ -327,7 +338,7 @@ class ElementSelectEvent extends ElementInputEvent {
         /**
          * The XR input source that this event was originally raised from.
          *
-         * @type {import('../xr/xr-input-source.js').XrInputSource}
+         * @type {XrInputSource}
          */
         this.inputSource = inputSource;
     }
@@ -336,6 +347,10 @@ class ElementSelectEvent extends ElementInputEvent {
 /**
  * Handles mouse and touch events for {@link ElementComponent}s. When input events occur on an
  * ElementComponent this fires the appropriate events on the ElementComponent.
+ *
+ * Relevant Engine API examples:
+ *
+ * - [Input events](https://playcanvas.github.io/#/user-interface/input-events)
  *
  * @category User Interface
  */
@@ -353,6 +368,7 @@ class ElementInput {
         this._app = null;
         this._attached = false;
         this._target = null;
+        this._touchActionAcquired = false;
 
         // force disable all element input events
         this._enabled = true;
@@ -383,8 +399,9 @@ class ElementInput {
         this._useXr = !options || options.useXr !== false;
         this._selectEventsAttached = false;
 
-        if (platform.touch)
+        if (platform.touch) {
             this._clickedEntities = {};
+        }
 
         this.attach(domElement);
     }
@@ -411,29 +428,36 @@ class ElementInput {
      * @param {Element} domElement - The DOM element.
      */
     attach(domElement) {
+        // moving to another element only moves the DOM listeners. The XR subscriptions do not
+        // depend on the element, and removing them would disconnect an active XR session
         if (this._attached) {
-            this._attached = false;
-            this.detach();
+            this._detachDomEvents();
         }
 
         this._target = domElement;
         this._attached = true;
 
-        const opts = platform.passiveEvents ? { passive: true } : false;
+        /** @type {AddEventListenerOptions} */
+        const options = { passive: true };
         if (this._useMouse) {
-            window.addEventListener('mouseup', this._upHandler, opts);
-            window.addEventListener('mousedown', this._downHandler, opts);
-            window.addEventListener('mousemove', this._moveHandler, opts);
-            window.addEventListener('wheel', this._wheelHandler, opts);
+            window.addEventListener('mouseup', this._upHandler, options);
+            window.addEventListener('mousedown', this._downHandler, options);
+            window.addEventListener('mousemove', this._moveHandler, options);
+            window.addEventListener('wheel', this._wheelHandler, options);
         }
 
         if (this._useTouch && platform.touch) {
-            this._target.addEventListener('touchstart', this._touchstartHandler, opts);
+            this._target.addEventListener('touchstart', this._touchstartHandler, options);
             // Passive is not used for the touchend event because some components need to be
             // able to call preventDefault(). See notes in button/component.js for more details.
             this._target.addEventListener('touchend', this._touchendHandler, false);
             this._target.addEventListener('touchmove', this._touchmoveHandler, false);
             this._target.addEventListener('touchcancel', this._touchcancelHandler, false);
+
+            // a touch drag on an element, such as a scroll view, would otherwise scroll or zoom
+            // the page, which cancels it
+            acquireTouchAction(this._target);
+            this._touchActionAcquired = true;
         }
 
         this.attachSelectEvents();
@@ -441,8 +465,9 @@ class ElementInput {
 
     attachSelectEvents() {
         if (!this._selectEventsAttached && this._useXr && this.app && this.app.xr && this.app.xr.supported) {
-            if (!this._clickedEntities)
+            if (!this._clickedEntities) {
                 this._clickedEntities = {};
+            }
 
             this._selectEventsAttached = true;
             this.app.xr.on('start', this._onXrStart, this);
@@ -454,22 +479,7 @@ class ElementInput {
      */
     detach() {
         if (!this._attached) return;
-        this._attached = false;
-
-        const opts = platform.passiveEvents ? { passive: true } : false;
-        if (this._useMouse) {
-            window.removeEventListener('mouseup', this._upHandler, opts);
-            window.removeEventListener('mousedown', this._downHandler, opts);
-            window.removeEventListener('mousemove', this._moveHandler, opts);
-            window.removeEventListener('wheel', this._wheelHandler, opts);
-        }
-
-        if (this._useTouch) {
-            this._target.removeEventListener('touchstart', this._touchstartHandler, opts);
-            this._target.removeEventListener('touchend', this._touchendHandler, false);
-            this._target.removeEventListener('touchmove', this._touchmoveHandler, false);
-            this._target.removeEventListener('touchcancel', this._touchcancelHandler, false);
-        }
+        this._detachDomEvents();
 
         if (this._selectEventsAttached) {
             this._selectEventsAttached = false;
@@ -485,35 +495,68 @@ class ElementInput {
     }
 
     /**
+     * Removes the mouse and touch listeners from the DOM element, and releases its touch-action.
+     *
+     * @private
+     */
+    _detachDomEvents() {
+        this._attached = false;
+
+        /** @type {AddEventListenerOptions} */
+        const options = { passive: true };
+        if (this._useMouse) {
+            window.removeEventListener('mouseup', this._upHandler, options);
+            window.removeEventListener('mousedown', this._downHandler, options);
+            window.removeEventListener('mousemove', this._moveHandler, options);
+            window.removeEventListener('wheel', this._wheelHandler, options);
+        }
+
+        if (this._useTouch) {
+            this._target.removeEventListener('touchstart', this._touchstartHandler, options);
+            this._target.removeEventListener('touchend', this._touchendHandler, false);
+            this._target.removeEventListener('touchmove', this._touchmoveHandler, false);
+            this._target.removeEventListener('touchcancel', this._touchcancelHandler, false);
+        }
+
+        if (this._touchActionAcquired) {
+            this._touchActionAcquired = false;
+            releaseTouchAction(this._target);
+        }
+    }
+
+    /**
      * Add a {@link ElementComponent} to the internal list of ElementComponents that are being
      * checked for input.
      *
-     * @param {import('../components/element/component.js').ElementComponent} element - The
+     * @param {ElementComponent} element - The
      * ElementComponent.
      */
     addElement(element) {
-        if (this._elements.indexOf(element) === -1)
+        if (this._elements.indexOf(element) === -1) {
             this._elements.push(element);
+        }
     }
 
     /**
      * Remove a {@link ElementComponent} from the internal list of ElementComponents that are being
      * checked for input.
      *
-     * @param {import('../components/element/component.js').ElementComponent} element - The
+     * @param {ElementComponent} element - The
      * ElementComponent.
      */
     removeElement(element) {
         const idx = this._elements.indexOf(element);
-        if (idx !== -1)
+        if (idx !== -1) {
             this._elements.splice(idx, 1);
+        }
     }
 
     _handleUp(event) {
         if (!this._enabled) return;
 
-        if (Mouse.isPointerLocked())
+        if (Mouse.isPointerLocked()) {
             return;
+        }
 
         this._calcMouseCoords(event);
 
@@ -523,8 +566,9 @@ class ElementInput {
     _handleDown(event) {
         if (!this._enabled) return;
 
-        if (Mouse.isPointerLocked())
+        if (Mouse.isPointerLocked()) {
             return;
+        }
 
         this._calcMouseCoords(event);
 
@@ -568,7 +612,7 @@ class ElementInput {
                     continue;
                 }
 
-                const coords = this._calcTouchCoords(event.changedTouches[j]);
+                const coords = getTouchTargetCoords(event.changedTouches[j]);
 
                 const element = this._getTargetElementByCoords(camera, coords.x, coords.y);
                 if (element) {
@@ -627,8 +671,9 @@ class ElementInput {
         for (let i = 0, len = event.changedTouches.length; i < len; i++) {
             const touch = event.changedTouches[i];
             const touchInfo = this._touchedElements[touch.identifier];
-            if (!touchInfo)
+            if (!touchInfo) {
                 continue;
+            }
 
             const element = touchInfo.element;
             const camera = touchInfo.camera;
@@ -640,15 +685,15 @@ class ElementInput {
 
             // check if touch was released over previously touch
             // element in order to fire click event
-            const coords = this._calcTouchCoords(touch);
+            const coords = getTouchTargetCoords(touch);
 
             for (let c = cameras.length - 1; c >= 0; c--) {
                 const hovered = this._getTargetElementByCoords(cameras[c], coords.x, coords.y);
                 if (hovered === element) {
 
-                    if (!this._clickedEntities[element.entity.getGuid()]) {
+                    if (!this._clickedEntities[element.entity.guid]) {
                         this._fireEvent('click', new ElementTouchEvent(event, element, camera, x, y, touch));
-                        this._clickedEntities[element.entity.getGuid()] = Date.now();
+                        this._clickedEntities[element.entity.guid] = Date.now();
                     }
 
                 }
@@ -659,9 +704,11 @@ class ElementInput {
     }
 
     _handleTouchMove(event) {
-        // call preventDefault to avoid issues in Chrome Android:
-        // http://wilsonpage.co.uk/touch-events-in-chrome-android/
-        event.preventDefault();
+        // Stop the browser from scrolling or zooming during the drag. Once the browser has started
+        // a scroll the event is not cancelable, and calling preventDefault only logs a warning.
+        if (event.cancelable) {
+            event.preventDefault();
+        }
 
         if (!this._enabled) return;
 
@@ -673,7 +720,7 @@ class ElementInput {
             const oldTouchInfo = this._touchedElements[touch.identifier];
 
             if (oldTouchInfo) {
-                const coords = this._calcTouchCoords(touch);
+                const coords = getTouchTargetCoords(touch);
 
                 // Fire touchleave if we've left the previously touched element
                 if ((!newTouchInfo || newTouchInfo.element !== oldTouchInfo.element) && !this._touchesForWhichTouchLeaveHasFired[touch.identifier]) {
@@ -709,8 +756,9 @@ class ElementInput {
             camera = cameras[i];
 
             element = this._getTargetElementByCoords(camera, targetX, targetY);
-            if (element)
+            if (element) {
                 break;
+            }
         }
 
         // currently hovered element is whatever's being pointed by mouse (which may be null)
@@ -744,7 +792,7 @@ class ElementInput {
             // click event
             if (this._pressedElement === this._hoveredElement) {
                 // fire click event if it hasn't been fired already by the touchend handler
-                const guid = this._hoveredElement.entity.getGuid();
+                const guid = this._hoveredElement.entity.guid;
                 // Always fire, if there are no clicked entities
                 let fireClick = !this._clickedEntities;
                 // But if there are, we need to check how long ago touchend added a "click brake"
@@ -773,6 +821,7 @@ class ElementInput {
     }
 
     _onXrEnd() {
+        this.app.xr.off('end', this._onXrEnd, this);
         this.app.xr.off('update', this._onXrUpdate, this);
         this.app.xr.input.off('selectstart', this._onSelectStart, this);
         this.app.xr.input.off('selectend', this._onSelectEnd, this);
@@ -825,8 +874,9 @@ class ElementInput {
                 camera = cameras[i];
 
                 element = this._getTargetElementByRay(rayC, camera);
-                if (element)
+                if (element) {
                     break;
+                }
             }
         }
 
@@ -878,15 +928,18 @@ class ElementInput {
         let element = evt.element;
         while (true) {
             element.fire(name, evt);
-            if (evt._stopPropagation)
+            if (evt._stopPropagation) {
                 break;
+            }
 
-            if (!element.entity.parent)
+            if (!element.entity.parent) {
                 break;
+            }
 
             element = element.entity.parent.element;
-            if (!element)
+            if (!element) {
                 break;
+            }
         }
     }
 
@@ -898,43 +951,26 @@ class ElementInput {
         targetY = (event.clientY - top);
     }
 
-    _calcTouchCoords(touch) {
-        let totalOffsetX = 0;
-        let totalOffsetY = 0;
-        let target = touch.target;
-        while (!(target instanceof HTMLElement)) {
-            target = target.parentNode;
-        }
-        let currentElement = target;
-
-        do {
-            totalOffsetX += currentElement.offsetLeft - currentElement.scrollLeft;
-            totalOffsetY += currentElement.offsetTop - currentElement.scrollTop;
-            currentElement = currentElement.offsetParent;
-        } while (currentElement);
-
-        // calculate coords and scale them to the graphicsDevice size
-        return {
-            x: (touch.pageX - totalOffsetX),
-            y: (touch.pageY - totalOffsetY)
-        };
-    }
-
     _sortElements(a, b) {
         const layerOrder = this.app.scene.layers.sortTransparentLayers(a.layers, b.layers);
         if (layerOrder !== 0) return layerOrder;
 
-        if (a.screen && !b.screen)
+        if (a.screen && !b.screen) {
             return -1;
-        if (!a.screen && b.screen)
+        }
+        if (!a.screen && b.screen) {
             return 1;
-        if (!a.screen && !b.screen)
+        }
+        if (!a.screen && !b.screen) {
             return 0;
+        }
 
-        if (a.screen.screen.screenSpace && !b.screen.screen.screenSpace)
+        if (a.screen.screen.screenSpace && !b.screen.screen.screenSpace) {
             return -1;
-        if (b.screen.screen.screenSpace && !a.screen.screen.screenSpace)
+        }
+        if (b.screen.screen.screenSpace && !a.screen.screen.screenSpace) {
             return 1;
+        }
         return b.drawOrder - a.drawOrder;
     }
 
@@ -1192,6 +1228,17 @@ class ElementInput {
         }
 
         return _accumulatedScale;
+    }
+
+    /**
+     * Gets the mouse wheel value.
+     *
+     * @type {number}
+     * @ignore
+     * @deprecated Use {@link ElementMouseEvent#wheelDelta} instead.
+     */
+    get wheel() {
+        return this.wheelDelta * -2;
     }
 }
 

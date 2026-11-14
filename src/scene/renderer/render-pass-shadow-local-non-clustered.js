@@ -1,18 +1,14 @@
-import { DebugHelper } from "../../core/debug.js";
-import { RenderPass } from "../../platform/graphics/render-pass.js";
+import { DebugHelper } from '../../core/debug.js';
+import { RenderPass } from '../../platform/graphics/render-pass.js';
 
 /**
  * A render pass used to render local non-clustered shadows. It represents rendering to a single
  * face of shadow map, as each face is a separate render target.
- *
- * @ignore
  */
 class RenderPassShadowLocalNonClustered extends RenderPass {
     constructor(device, shadowRenderer, light, face, applyVsm) {
         super(device);
         DebugHelper.setName(this, `${this.name}-${light._node.name}`);
-
-        this.requiresCubemaps = false;
 
         this.shadowRenderer = shadowRenderer;
         this.light = light;
@@ -24,12 +20,29 @@ class RenderPassShadowLocalNonClustered extends RenderPass {
         shadowRenderer.setupRenderPass(this, this.shadowCamera, true);
     }
 
+    frameUpdate() {
+        super.frameUpdate();
+        if (this.enabled && this.executeEnabled) {
+            this.shadowRenderer.renderer.culler.requestLocalShadowCull(this.light);
+        }
+    }
+
+    precompile() {
+
+        // the execution renders the shadows and consumes nothing besides what it renders, so it
+        // runs as it is, into a precompile pass of the device which renders nothing
+        this.precompileExecute();
+        if (this.applyVsm) {
+            this.shadowRenderer.renderVsm(this.light, this.shadowCamera, undefined, true);
+        }
+    }
+
     execute() {
         this.shadowRenderer.renderFace(this.light, null, this.face, false);
     }
 
     after() {
-        if (this.applyVsm) {
+        if (this.executeEnabled && this.applyVsm) {
             this.shadowRenderer.renderVsm(this.light, this.shadowCamera);
         }
     }

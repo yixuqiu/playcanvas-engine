@@ -1,18 +1,22 @@
 import { SceneUtils } from './scene-utils.js';
 import { SceneParser } from '../parsers/scene.js';
-
 import { ResourceHandler } from './handler.js';
 
 /**
- * Resource handler used for loading {@link Scene} resources.
+ * @import { AppBase } from '../app-base.js'
+ */
+
+/**
+ * Resource handler for the `scene` asset type. Loads a PlayCanvas scene JSON file, instantiates
+ * its entity hierarchy as the root of {@link AppBase#scene} and applies the scene's settings.
  *
- * @category Graphics
+ * @category Asset
  */
 class SceneHandler extends ResourceHandler {
     /**
      * Create a new SceneHandler instance.
      *
-     * @param {import('../app-base.js').AppBase} app - The running {@link AppBase}.
+     * @param {AppBase} app - The running {@link AppBase}.
      * @ignore
      */
     constructor(app) {

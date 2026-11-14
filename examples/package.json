@@ -5,68 +5,68 @@
   "main": "index.js",
   "type": "module",
   "scripts": {
-    "build": "npm run -s build:pre && cross-env NODE_ENV=production rollup -c",
-    "build:pre": "npm run -s build:metadata && npm run -s build:sharing",
-    "build:metadata": "node ./scripts/metadata.mjs",
-    "build:sharing": "node ./scripts/sharing-html.mjs",
-    "build:standalone": "node ./scripts/standalone-html.mjs",
-    "build:thumbnails": "node ./scripts/thumbnails.mjs",
-    "clean": "node ./scripts/clean.mjs",
-    "develop": "cross-env NODE_ENV=development concurrently --kill-others \"npm run watch\" \"npm run serve\"",
-    "lint": "eslint --ext .js,.mjs .",
-    "serve": "serve dist -l 5000 --no-request-logging --config ../serve.json",
-    "watch": "npm run -s build:pre && cross-env NODE_ENV=development rollup -c -w"
+    "build": "cross-env NODE_ENV=production node build.mjs",
+    "build:metadata": "node build.mjs --metadata",
+    "build:thumbnails": "node build.mjs --thumbnails",
+    "check:thumbnails": "node build.mjs --check-thumbnails",
+    "cert": "node build.mjs --cert",
+    "clean": "node build.mjs --clean",
+    "dev": "npm run -s build:metadata && cross-env NODE_ENV=development vite",
+    "dev:https": "npm run -s build:metadata && cross-env NODE_ENV=development EXAMPLES_HTTPS=1 vite",
+    "develop": "npm run -s build:metadata && cross-env NODE_ENV=development EXAMPLES_AUTO_RELOAD=false vite",
+    "develop:https": "npm run -s build:metadata && cross-env NODE_ENV=development EXAMPLES_AUTO_RELOAD=false EXAMPLES_HTTPS=1 vite",
+    "fmt": "prettier --check \"src/examples/**/*.{mjs,jsx}\"",
+    "fmt:fix": "prettier --write \"src/examples/**/*.{mjs,jsx}\"",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "serve": "vite preview",
+    "typecheck": "npm run -s typecheck:app && npm run -s typecheck:examples",
+    "typecheck:app": "npm run -s build:metadata && tsc -p tsconfig.app.json --pretty false",
+    "typecheck:examples": "node utils/typecheck-examples.mjs"
   },
-  "eslintConfig": {
-    "root": true,
-    "extends": [
-      "@playcanvas/eslint-config"
-    ],
-    "globals": {
-      "ObjModelParser": "readonly",
-      "OutlineEffect": "readonly",
-      "pcx": "readonly"
+  "devDependencies": {
+    "@babel/standalone": "8.0.5",
+    "@monaco-editor/react": "4.7.0",
+    "@playcanvas/eslint-config": "3.0.0",
+    "@playcanvas/inspector": "0.5.0",
+    "@playcanvas/observer": "1.7.1",
+    "@playcanvas/pcui": "6.1.4",
+    "@tweenjs/tween.js": "25.0.0",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@types/react-router-dom": "5.3.3",
+    "3d-tiles-renderer": "0.5.4",
+    "cross-env": "10.1.0",
+    "esbuild": "0.28.2",
+    "eslint": "9.39.5",
+    "eslint-config-prettier": "10.1.8",
+    "examples": "file:./iframe",
+    "fflate": "0.8.3",
+    "fs-extra": "11.4.0",
+    "monaco-editor": "0.55.1",
+    "playcanvas": "file:..",
+    "prettier": "3.9.7",
+    "prop-types": "15.8.1",
+    "puppeteer": "25.11.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "react-router-dom": "7.18.4",
+    "sharp": "0.35.5",
+    "typescript": "5.9.3",
+    "vite": "8.3.3"
+  },
+  "overrides": {
+    "@playcanvas/inspector": {
+      "playcanvas": "$playcanvas"
     },
-    "rules": {
-      "import/no-unresolved": "off"
+    "3d-tiles-renderer": {
+      "playcanvas": "$playcanvas"
     }
   },
-  "eslintIgnore": [
-    "area-light-lut-bin-gen.js",
-    "dist",
-    "lib"
-  ],
-  "devDependencies": {
-    "@babel/standalone": "^7.22.9",
-    "@monaco-editor/react": "^4.5.1",
-    "@playcanvas/eslint-config": "^1.5.0",
-    "@playcanvas/observer": "1.4.0",
-    "@playcanvas/pcui": "^4.1.2",
-    "@rollup/plugin-alias": "^4.0.4",
-    "@rollup/plugin-commonjs": "^22.0.2",
-    "@rollup/plugin-node-resolve": "^13.3.0",
-    "@rollup/plugin-replace": "^4.0.0",
-    "@rollup/plugin-terser": "^0.4.3",
-    "@tweenjs/tween.js": "^21.0.0",
-    "@types/react": "^18.2.18",
-    "@types/react-dom": "^18.2.7",
-    "@types/react-router-dom": "^5.3.3",
-    "concurrently": "^7.6.0",
-    "cross-env": "^7.0.2",
-    "eslint": "^8.46.0",
-    "fflate": "^0.8.0",
-    "fs-extra": "^10.1.0",
-    "monaco-editor": "^0.33.0",
-    "playcanvas": "file:..",
-    "prop-types": "^15.7.2",
-    "puppeteer": "^20.9.0",
-    "react": "^18.2.0",
-    "react-dom": "^18.2.0",
-    "react-es6": "^1.0.0",
-    "react-router-dom": "^5.3.4",
-    "rollup": "^2.79.1",
-    "serve": "^14.2.0",
-    "sharp": "^0.32.6"
+  "allowScripts": {
+    "esbuild": true,
+    "puppeteer": true,
+    "unrs-resolver": true
   },
   "author": "PlayCanvas <support@playcanvas.com>",
   "license": "MIT"

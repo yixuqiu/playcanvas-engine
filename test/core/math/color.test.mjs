@@ -1,6 +1,6 @@
-import { Color } from '../../../src/core/math/color.js';
-
 import { expect } from 'chai';
+
+import { Color } from '../../../src/core/math/color.js';
 
 describe('Color', function () {
 
@@ -123,6 +123,46 @@ describe('Color', function () {
 
     });
 
+    describe('#linear', function () {
+
+        it('converts with the exact sRGB transfer function, leaving alpha unchanged', function () {
+            const c = new Color(0.5, 0.04, 1, 0.25).linear();
+            expect(c.r).to.be.closeTo(0.214041, 1e-6);
+            // below the threshold of 0.04045 the transfer function is linear
+            expect(c.g).to.be.closeTo(0.04 / 12.92, 1e-9);
+            expect(c.b).to.equal(1);
+            expect(c.a).to.equal(0.25);
+        });
+
+        it('leaves the source color unchanged', function () {
+            const src = new Color(0.5, 0.5, 0.5);
+            const c = new Color().linear(src);
+            expect(c.r).to.be.closeTo(0.214041, 1e-6);
+            expect(src.r).to.equal(0.5);
+        });
+
+    });
+
+    describe('#gamma', function () {
+
+        it('converts with the exact sRGB transfer function, leaving alpha unchanged', function () {
+            const c = new Color(0.214041, 0.002, 1, 0.25).gamma();
+            expect(c.r).to.be.closeTo(0.5, 1e-6);
+            expect(c.g).to.be.closeTo(0.002 * 12.92, 1e-9);
+            expect(c.b).to.be.closeTo(1, 1e-9);
+            expect(c.a).to.equal(0.25);
+        });
+
+        it('inverts linear for every 8-bit value', function () {
+            const c = new Color();
+            for (let i = 0; i <= 255; i++) {
+                c.set(i / 255, i / 255, i / 255).linear().gamma();
+                expect(Math.round(c.r * 255)).to.equal(i);
+            }
+        });
+
+    });
+
     describe('#lerp', function () {
 
         it('linearly interpolates between two colors with alpha of 0', function () {
@@ -173,6 +213,28 @@ describe('Color', function () {
 
     });
 
+    describe('#fromArray', function () {
+
+        it('sets a color from an array', function () {
+            const c = new Color();
+            c.fromArray([0.1, 0.2, 0.3, 0.4]);
+            expect(c.r).to.equal(0.1);
+            expect(c.g).to.equal(0.2);
+            expect(c.b).to.equal(0.3);
+            expect(c.a).to.equal(0.4);
+        });
+
+        it('sets a color from an array with an offset', function () {
+            const c = new Color();
+            c.fromArray([0, 0.1, 0.2, 0.3, 0.4, 0.5], 1);
+            expect(c.r).to.equal(0.1);
+            expect(c.g).to.equal(0.2);
+            expect(c.b).to.equal(0.3);
+            expect(c.a).to.equal(0.4);
+        });
+
+    });
+
     describe('#toString', function () {
 
         it('returns a string representation of black (no alpha)', function () {
@@ -196,6 +258,23 @@ describe('Color', function () {
         it('returns a string representation of an arbitrary color (with double digit alpha)', function () {
             const c = new Color(0.1, 0.2, 0.3, 0.4);
             expect(c.toString(true)).to.equal('#1a334d66');
+        });
+
+    });
+
+    describe('#toArray', function () {
+        it('returns an array of 4 values', function () {
+            expect(Color.RED.toArray()).to.eql([1, 0, 0, 1]);
+        });
+
+        it('returns an array of 3 values', function () {
+            expect(Color.RED.toArray(undefined, undefined, false)).to.eql([1, 0, 0]);
+        });
+
+        it('returns an array of 3 values with an offset and target array', function () {
+            const target = [0, 0, 0, 0, 0, 0];
+            Color.RED.toArray(target, 3, false);
+            expect(target).to.eql([0, 0, 0, 1, 0, 0]);
         });
 
     });

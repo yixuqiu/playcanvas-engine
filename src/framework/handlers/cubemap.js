@@ -1,23 +1,40 @@
+import { path } from '../../core/path.js';
 import {
     ADDRESS_CLAMP_TO_EDGE, PIXELFORMAT_RGB8, PIXELFORMAT_RGBA8,
-    TEXTURETYPE_DEFAULT, TEXTURETYPE_RGBM, TEXTURETYPE_RGBP
+    TEXTURETYPE_DEFAULT, TEXTURETYPE_RGBM
 } from '../../platform/graphics/constants.js';
 import { Texture } from '../../platform/graphics/texture.js';
-
 import { Asset } from '../asset/asset.js';
-
 import { ResourceHandler } from './handler.js';
 
 /**
- * Resource handler used for loading cubemap {@link Texture} resources.
+ * @import { AppBase } from '../app-base.js'
+ */
+
+// the texture type of the faces and prelit cubemaps, as the data of the cubemap asset specifies it,
+// or null when it doesn't
+const getAssetDataType = (assetData) => {
+    if (assetData.hasOwnProperty('type')) {
+        return assetData.type;
+    }
+    if (assetData.hasOwnProperty('rgbm')) {
+        return assetData.rgbm ? TEXTURETYPE_RGBM : TEXTURETYPE_DEFAULT;
+    }
+    return null;
+};
+
+/**
+ * Resource handler for the `cubemap` asset type. Assembles a cube map {@link Texture} from six
+ * face texture assets, from a prefiltered environment file, or both, and stores the results in
+ * {@link Asset#resources}.
  *
- * @category Graphics
+ * @category Asset
  */
 class CubemapHandler extends ResourceHandler {
     /**
      * Create a new CubemapHandler instance.
      *
-     * @param {import('../app-base.js').AppBase} app - The running {@link AppBase}.
+     * @param {AppBase} app - The running {@link AppBase}.
      * @ignore
      */
     constructor(app) {
@@ -39,11 +56,11 @@ class CubemapHandler extends ResourceHandler {
     }
 
     patch(asset, registry) {
-        this.loadAssets(asset, function (err, result) {
+        this.loadAssets(asset, (err, result) => {
             if (err) {
                 // fire error event if patch failed
                 registry.fire('error', asset);
-                registry.fire('error:' + asset.id, err, asset);
+                registry.fire(`error:${asset.id}`, err, asset);
                 asset.fire('error', asset);
             }
             // nothing to do since asset:change would have been raised if
@@ -93,17 +110,7 @@ class CubemapHandler extends ResourceHandler {
         // faces, prelit cubemap 128, 64, 32, 16, 8, 4
         const resources = [null, null, null, null, null, null, null];
 
-        // texture type used for faces and prelit cubemaps are both taken from
-        // cubemap.data.rgbm
-        const getType = function () {
-            if (assetData.hasOwnProperty('type')) {
-                return assetData.type;
-            }
-            if (assetData.hasOwnProperty('rgbm')) {
-                return assetData.rgbm ? TEXTURETYPE_RGBM : TEXTURETYPE_DEFAULT;
-            }
-            return null;
-        };
+        const type = getAssetDataType(assetData);
 
         // handle the prelit data
         if (!cubemapAsset.loaded || assets[0] !== oldAssets[0]) {
@@ -113,15 +120,14 @@ class CubemapHandler extends ResourceHandler {
                 if (tex.cubemap) {
                     for (i = 0; i < 6; ++i) {
                         resources[i + 1] = new Texture(this._device, {
-                            name: cubemapAsset.name + '_prelitCubemap' + (tex.width >> i),
+                            name: `${cubemapAsset.name}_prelitCubemap${tex.width >> i}`,
                             cubemap: true,
                             // assume prefiltered data has same encoding as the faces asset
-                            type: getType() || tex.type,
+                            type: type || tex.type,
                             width: tex.width >> i,
                             height: tex.height >> i,
                             format: tex.format,
                             levels: [tex._levels[i]],
-                            fixCubemapSeams: true,
                             addressU: ADDRESS_CLAMP_TO_EDGE,
                             addressV: ADDRESS_CLAMP_TO_EDGE,
                             // generate cubemaps on the top level only
@@ -130,10 +136,6 @@ class CubemapHandler extends ResourceHandler {
                     }
                 } else {
                     // prefiltered data is an env atlas
-                    tex.type = TEXTURETYPE_RGBP;
-                    tex.addressU = ADDRESS_CLAMP_TO_EDGE;
-                    tex.addressV = ADDRESS_CLAMP_TO_EDGE;
-                    tex.mipmaps = false;
                     resources[1] = tex;
                 }
             }
@@ -152,12 +154,12 @@ class CubemapHandler extends ResourceHandler {
             // face assets have changed
             if (faceAssets.indexOf(null) === -1) {
                 // extract cubemap level data from face textures
-                const faceTextures = faceAssets.map(function (asset) {
+                const faceTextures = faceAssets.map((asset) => {
                     return asset.resource;
                 });
                 const faceLevels = [];
                 for (mip = 0; mip < faceTextures[0]._levels.length; ++mip) {
-                    faceLevels.push(faceTextures.map(function (faceTexture) {  // eslint-disable-line no-loop-func
+                    faceLevels.push(faceTextures.map((faceTexture) => {  // eslint-disable-line no-loop-func
                         return faceTexture._levels[mip];
                     }));
                 }
@@ -168,9 +170,9 @@ class CubemapHandler extends ResourceHandler {
                 const format = faceTextures[0].format;
 
                 const faces = new Texture(this._device, {
-                    name: cubemapAsset.name + '_faces',
+                    name: `${cubemapAsset.name}_faces`,
                     cubemap: true,
-                    type: getType() || faceTextures[0].type,
+                    type: type || faceTextures[0].type,
                     width: faceTextures[0].width,
                     height: faceTextures[0].height,
                     format: format === PIXELFORMAT_RGB8 ? PIXELFORMAT_RGBA8 : format,
@@ -180,8 +182,7 @@ class CubemapHandler extends ResourceHandler {
                     magFilter: assetData.hasOwnProperty('magFilter') ? assetData.magFilter : faceTextures[0].magFilter,
                     anisotropy: assetData.hasOwnProperty('anisotropy') ? assetData.anisotropy : 1,
                     addressU: ADDRESS_CLAMP_TO_EDGE,
-                    addressV: ADDRESS_CLAMP_TO_EDGE,
-                    fixCubemapSeams: !!assets[0]
+                    addressV: ADDRESS_CLAMP_TO_EDGE
                 });
 
                 resources[0] = faces;
@@ -270,13 +271,20 @@ class CubemapHandler extends ResourceHandler {
 
         // process the texture asset
         const processTexAsset = function (index, texAsset) {
+            // the cubemap can share the resource of a dependent texture asset (the env atlas), in
+            // which case unloading the cubemap destroys that resource while the dependent asset
+            // stays marked as loaded - unload it to force a reload of valid data
+            if (texAsset.loaded && texAsset.resource && !texAsset.resource.device) {
+                texAsset.unload();
+            }
+
             if (texAsset.loaded) {
                 // asset already exists
                 onLoad(index, texAsset);
             } else {
                 // asset is not loaded, register for load and error events
-                registry.once('load:' + texAsset.id, onLoad.bind(self, index));
-                registry.once('error:' + texAsset.id, onError.bind(self, index));
+                registry.once(`load:${texAsset.id}`, onLoad.bind(self, index));
+                registry.once(`error:${texAsset.id}`, onError.bind(self, index));
                 if (!texAsset.loading) {
                     // kick off load if it's not already
                     registry.load(texAsset);
@@ -293,7 +301,7 @@ class CubemapHandler extends ResourceHandler {
                 onLoad(i, null);
             } else if (self.compareAssetIds(assetId, loadedAssetIds[i])) {
                 // asset id hasn't changed from what is currently set
-                onLoad(i, loadedAssets[i]);
+                processTexAsset(i, loadedAssets[i]);
             } else if (parseInt(assetId, 10) === assetId) {
                 // assetId is an asset id
                 texAsset = registry.get(assetId);
@@ -304,14 +312,14 @@ class CubemapHandler extends ResourceHandler {
                     // asynchronous step. this gives the caller (for example the scene loader)
                     // a chance to add the dependent scene texture to registry before we attempt
                     // to get the asset again.
-                    setTimeout(function (index, assetId_) {
+                    setTimeout(((index, assetId_) => {
                         const texAsset = registry.get(assetId_);
                         if (texAsset) {
                             processTexAsset(index, texAsset);
                         } else {
-                            onError(index, 'failed to find dependent cubemap asset=' + assetId_);
+                            onError(index, `failed to find dependent cubemap asset=${assetId_}`);
                         }
-                    }.bind(null, i, assetId));
+                    }).bind(null, i, assetId));
                 }
             } else {
                 // assetId is a url or file object and we're responsible for creating it
@@ -319,11 +327,29 @@ class CubemapHandler extends ResourceHandler {
                     url: assetId,
                     filename: assetId
                 } : assetId;
-                texAsset = new Asset(cubemapAsset.name + '_part_' + i, 'texture', file);
+
+                let data = null;
+                if (i === 0) {
+                    // if the referenced prefiltered texture is not a dds file, then we're loading an
+                    // envAtlas. In this case we must specify the correct texture state.
+                    if (path.getExtension(file.url).toLowerCase() !== '.dds') {
+                        data = {
+                            type: 'rgbp',
+                            addressu: 'clamp',
+                            addressv: 'clamp',
+                            mipmaps: false
+                        };
+                    }
+                } else {
+                    // a face is a color image, which is sRGB unless the cubemap specifies an
+                    // encoding for it (such as rgbm), as encoded data is decoded from linear values
+                    const type = getAssetDataType(cubemapAsset.data || {});
+                    data = { srgb: !type || type === TEXTURETYPE_DEFAULT };
+                }
+
+                texAsset = new Asset(`${cubemapAsset.name}_part_${i}`, 'texture', file, data);
                 registry.add(texAsset);
-                registry.once('load:' + texAsset.id, onLoad.bind(self, i));
-                registry.once('error:' + texAsset.id, onError.bind(self, i));
-                registry.load(texAsset);
+                processTexAsset(i, texAsset);
             }
         }
     }

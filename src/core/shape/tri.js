@@ -1,5 +1,9 @@
 import { Vec3 } from '../math/vec3.js';
 
+/**
+ * @import { Ray } from './ray.js'
+ */
+
 const e1 = new Vec3();
 const e2 = new Vec3();
 const h = new Vec3();
@@ -10,8 +14,19 @@ const q = new Vec3();
 const EPSILON = 1e-6;
 
 /**
- * A triangle.
+ * A triangle defined by three {@link Vec3} vectors.
  *
+ * The vertices are {@link v0}, {@link v1} and {@link v2}; the constructor and {@link set} copy the
+ * vectors they are given. {@link intersectsRay} tests a {@link Ray} whose direction is normalized
+ * against either face of the triangle and writes the hit point into an optional vector. It is the
+ * building block for precise picking against mesh geometry.
+ *
+ * @example
+ * const tri = new Tri(new Vec3(0, 0, 0), new Vec3(1, 0, 0), new Vec3(0, 1, 0));
+ * const hit = new Vec3();
+ * if (tri.intersectsRay(ray, hit)) {
+ *     console.log(`Hit the triangle at ${hit}`);
+ * }
  * @category Math
  */
 class Tri {
@@ -19,6 +34,7 @@ class Tri {
      * The first 3-dimensional vector of the triangle.
      *
      * @type {Vec3}
+     * @readonly
      */
     v0 = new Vec3();
 
@@ -26,6 +42,7 @@ class Tri {
      * The second 3-dimensional vector of the triangle.
      *
      * @type {Vec3}
+     * @readonly
      */
     v1 = new Vec3();
 
@@ -33,6 +50,7 @@ class Tri {
      * The third 3-dimensional vector of the triangle.
      *
      * @type {Vec3}
+     * @readonly
      */
     v2 = new Vec3();
 
@@ -43,10 +61,10 @@ class Tri {
      * @param {Vec3} [v1] - The second 3-dimensional vector.
      * @param {Vec3} [v2] - The third 3-dimensional vector.
      * @example
-     * const v0 = new pc.Vec3(1, 0, 0);
-     * const v1 = new pc.Vec3(0, 1, 0);
-     * const v2 = new pc.Vec3(2, 2, 1);
-     * const t = new pc.Tri(v0, v1, v2);
+     * const v0 = new Vec3(1, 0, 0);
+     * const v1 = new Vec3(0, 1, 0);
+     * const v2 = new Vec3(2, 2, 1);
+     * const t = new Tri(v0, v1, v2);
      */
     constructor(v0 = Vec3.ZERO, v1 = Vec3.ZERO, v2 = Vec3.ZERO) {
         this.set(v0, v1, v2);
@@ -58,12 +76,12 @@ class Tri {
      * @param {Vec3} v0 - The value set on the first 3-dimensional vector of the triangle.
      * @param {Vec3} v1 - The value set on the second 3-dimensional vector of the triangle.
      * @param {Vec3} v2 - The value set on the third 3-dimensional vector of the triangle.
-     * @returns {Tri} Self for chaining
+     * @returns {Tri} Self for chaining.
      * @example
-     * const t = new pc.Tri(pc.Vec3.UP, pc.Vec3.RIGHT, pc.Vec3.BACK);
-     * const v0 = new pc.Vec3(1, 0, 0);
-     * const v1 = new pc.Vec3(0, 1, 0);
-     * const v2 = new pc.Vec3(2, 2, 1);
+     * const t = new Tri(Vec3.UP, Vec3.RIGHT, Vec3.BACK);
+     * const v0 = new Vec3(1, 0, 0);
+     * const v1 = new Vec3(0, 1, 0);
+     * const v2 = new Vec3(2, 2, 1);
      * t.set(v0, v1, v2);
      *
      * // Outputs [[1, 0, 0], [0, 1, 0], [2, 2, 1]]
@@ -80,7 +98,7 @@ class Tri {
     /**
      * Test if a ray intersects with the triangle.
      *
-     * @param {import('./ray.js').Ray} ray - Ray to test against (direction must be normalized).
+     * @param {Ray} ray - Ray to test against (direction must be normalized).
      * @param {Vec3} [point] - If there is an intersection, the intersection point will be copied
      * into here.
      * @returns {boolean} True if there is an intersection.
@@ -123,12 +141,12 @@ class Tri {
      *
      * @returns {string} The triangle in string form.
      * @example
-     * const t = new pc.Tri(pc.Vec3.UP, pc.Vec3.RIGHT, pc.Vec3.BACK);
+     * const t = new Tri(Vec3.UP, Vec3.RIGHT, Vec3.BACK);
      * // Outputs [[0, 1, 0], [1, 0, 0], [0, 0, 1]]
      * console.log(t.toString());
      */
     toString() {
-        return '[' + this.v0.toString() + ', ' + this.v1.toString() + ', ' + this.v2.toString() + ']';
+        return `[${this.v0.toString()}, ${this.v1.toString()}, ${this.v2.toString()}]`;
     }
 }
 

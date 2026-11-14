@@ -1,12 +1,18 @@
+import { Debug } from '../../core/debug.js';
 import { EventHandler } from '../../core/event-handler.js';
 import { Mat4 } from '../../core/math/mat4.js';
 import { Quat } from '../../core/math/quat.js';
 import { Vec3 } from '../../core/math/vec3.js';
 import { Ray } from '../../core/shape/ray.js';
-
 import { XrHand } from './xr-hand.js';
-
 import { now } from '../../core/time.js';
+
+/**
+ * @import { Entity } from '../entity.js'
+ * @import { XrHitTestSource } from './xr-hit-test-source.js'
+ * @import { XrHitTestStartCallback } from './xr-hit-test.js'
+ * @import { XrManager } from './xr-manager.js'
+ */
 
 const vec3A = new Vec3();
 const quat = new Quat();
@@ -34,12 +40,13 @@ class XrInputSource extends EventHandler {
 
     /**
      * Fired when input source has triggered primary action. This could be pressing a trigger
-     * button, or touching a screen. The handler is passed an {@link XRInputSourceEvent} object
-     * from the WebXR API.
+     * button, or touching a screen. The handler is passed an
+     * [XRInputSourceEvent](https://developer.mozilla.org/en-US/docs/Web/API/XRInputSourceEvent)
+     * object from the WebXR API.
      *
      * @event
      * @example
-     * const ray = new pc.Ray();
+     * const ray = new Ray();
      * inputSource.on('select', (evt) => {
      *     ray.set(inputSource.getOrigin(), inputSource.getDirection());
      *     if (obj.intersectsRay(ray)) {
@@ -51,7 +58,8 @@ class XrInputSource extends EventHandler {
 
     /**
      * Fired when input source has started to trigger primary action. The handler is passed an
-     * {@link XRInputSourceEvent} object from the WebXR API.
+     * [XRInputSourceEvent](https://developer.mozilla.org/en-US/docs/Web/API/XRInputSourceEvent)
+     * object from the WebXR API.
      *
      * @event
      * @example
@@ -63,7 +71,8 @@ class XrInputSource extends EventHandler {
 
     /**
      * Fired when input source has ended triggering primary action. The handler is passed an
-     * {@link XRInputSourceEvent} object from the WebXR API.
+     * [XRInputSourceEvent](https://developer.mozilla.org/en-US/docs/Web/API/XRInputSourceEvent)
+     * object from the WebXR API.
      *
      * @event
      * @example
@@ -75,8 +84,9 @@ class XrInputSource extends EventHandler {
 
     /**
      * Fired when input source has triggered squeeze action. This is associated with "grabbing"
-     * action on the controllers. The handler is passed an {@link XRInputSourceEvent} object from
-     * the WebXR API.
+     * action on the controllers. The handler is passed an
+     * [XRInputSourceEvent](https://developer.mozilla.org/en-US/docs/Web/API/XRInputSourceEvent)
+     * object from the WebXR API.
      *
      * @event
      * @example
@@ -88,7 +98,8 @@ class XrInputSource extends EventHandler {
 
     /**
      * Fired when input source has started to trigger squeeze action. The handler is passed an
-     * {@link XRInputSourceEvent} object from the WebXR API.
+     * [XRInputSourceEvent](https://developer.mozilla.org/en-US/docs/Web/API/XRInputSourceEvent)
+     * object from the WebXR API.
      *
      * @event
      * @example
@@ -102,7 +113,8 @@ class XrInputSource extends EventHandler {
 
     /**
      * Fired when input source has ended triggering squeeze action. The handler is passed an
-     * {@link XRInputSourceEvent} object from the WebXR API.
+     * [XRInputSourceEvent](https://developer.mozilla.org/en-US/docs/Web/API/XRInputSourceEvent)
+     * object from the WebXR API.
      *
      * @event
      * @example
@@ -125,12 +137,12 @@ class XrInputSource extends EventHandler {
     static EVENT_HITTESTADD = 'hittest:add';
 
     /**
-     * Fired when {@link XrHitTestSource} is removed to the the input source. The handler is passed
+     * Fired when {@link XrHitTestSource} is removed from the input source. The handler is passed
      * the {@link XrHitTestSource} object that has been removed.
      *
      * @event
      * @example
-     * inputSource.on('remove', (hitTestSource) => {
+     * inputSource.on('hittest:remove', (hitTestSource) => {
      *     // hit test source is removed
      * });
      */
@@ -140,7 +152,8 @@ class XrInputSource extends EventHandler {
      * Fired when hit test source receives new results. It provides transform information that
      * tries to match real world picked geometry. The handler is passed the {@link XrHitTestSource}
      * object that produced the hit result, the {@link Vec3} position, the {@link Quat}
-     * rotation and the {@link XRHitTestResult} object that is created by the WebXR API.
+     * rotation and the [XRHitTestResult](https://developer.mozilla.org/en-US/docs/Web/API/XRHitTestResult)
+     * object that is created by the WebXR API.
      *
      * @event
      * @example
@@ -158,7 +171,7 @@ class XrInputSource extends EventHandler {
     _id;
 
     /**
-     * @type {import('./xr-manager.js').XrManager}
+     * @type {XrManager}
      * @private
      */
     _manager;
@@ -169,22 +182,13 @@ class XrInputSource extends EventHandler {
      */
     _xrInputSource;
 
-    /**
-     * @type {Ray}
-     * @private
-     */
+    /** @private */
     _ray = new Ray();
 
-    /**
-     * @type {Ray}
-     * @private
-     */
+    /** @private */
     _rayLocal = new Ray();
 
-    /**
-     * @type {boolean}
-     * @private
-     */
+    /** @private */
     _grip = false;
 
     /**
@@ -193,16 +197,10 @@ class XrInputSource extends EventHandler {
      */
     _hand = null;
 
-    /**
-     * @type {boolean}
-     * @private
-     */
+    /** @private */
     _velocitiesAvailable = false;
 
-    /**
-     * @type {number}
-     * @private
-     */
+    /** @private */
     _velocitiesTimestamp = now();
 
     /**
@@ -217,16 +215,10 @@ class XrInputSource extends EventHandler {
      */
     _worldTransform = null;
 
-    /**
-     * @type {Vec3}
-     * @private
-     */
+    /** @private */
     _position = new Vec3();
 
-    /**
-     * @type {Quat}
-     * @private
-     */
+    /** @private */
     _rotation = new Quat();
 
     /**
@@ -254,43 +246,36 @@ class XrInputSource extends EventHandler {
     _linearVelocity = null;
 
     /**
-     * @type {boolean}
+     * Linear velocity relative to the parent of the XR camera.
+     *
+     * @type {Vec3|null}
      * @private
      */
+    _localLinearVelocity = null;
+
+    /** @private */
     _dirtyLocal = true;
 
-    /**
-     * @type {boolean}
-     * @private
-     */
+    /** @private */
     _dirtyRay = false;
 
-    /**
-     * @type {boolean}
-     * @private
-     */
+    /** @private */
     _selecting = false;
 
-    /**
-     * @type {boolean}
-     * @private
-     */
+    /** @private */
     _squeezing = false;
 
-    /**
-     * @type {boolean}
-     * @private
-     */
+    /** @private */
     _elementInput = true;
 
     /**
-     * @type {import('../entity.js').Entity|null}
+     * @type {Entity|null}
      * @private
      */
     _elementEntity = null;
 
     /**
-     * @type {import('./xr-hit-test-source.js').XrHitTestSource[]}
+     * @type {XrHitTestSource[]}
      * @private
      */
     _hitTestSources = [];
@@ -298,9 +283,8 @@ class XrInputSource extends EventHandler {
     /**
      * Create a new XrInputSource instance.
      *
-     * @param {import('./xr-manager.js').XrManager} manager - WebXR Manager.
-     * @param {*} xrInputSource - [XRInputSource](https://developer.mozilla.org/en-US/docs/Web/API/XRInputSource)
-     * object that is created by WebXR API.
+     * @param {XrManager} manager - WebXR Manager.
+     * @param {XRInputSource} xrInputSource - A WebXR input source.
      * @ignore
      */
     constructor(manager, xrInputSource) {
@@ -311,8 +295,9 @@ class XrInputSource extends EventHandler {
         this._manager = manager;
         this._xrInputSource = xrInputSource;
 
-        if (xrInputSource.hand)
+        if (xrInputSource.hand) {
             this._hand = new XrHand(this);
+        }
     }
 
     /**
@@ -328,7 +313,7 @@ class XrInputSource extends EventHandler {
     /**
      * XRInputSource object that is associated with this input source.
      *
-     * @type {object}
+     * @type {XRInputSource}
      */
     get inputSource() {
         return this._xrInputSource;
@@ -426,29 +411,36 @@ class XrInputSource extends EventHandler {
     }
 
     /**
-     * Set to true to allow input source to interact with Element components. Defaults to true.
+     * Sets whether the input source can interact with {@link ElementComponent}s. Defaults to true.
      *
      * @type {boolean}
      */
     set elementInput(value) {
-        if (this._elementInput === value)
+        if (this._elementInput === value) {
             return;
+        }
 
         this._elementInput = value;
 
-        if (!this._elementInput)
+        if (!this._elementInput) {
             this._elementEntity = null;
+        }
     }
 
+    /**
+     * Gets whether the input source can interact with {@link ElementComponent}s.
+     *
+     * @type {boolean}
+     */
     get elementInput() {
         return this._elementInput;
     }
 
     /**
-     * If {@link XrInputSource#elementInput} is true, this property will hold entity with Element
+     * If {@link elementInput} is true, this property will hold entity with Element
      * component at which this input source is hovering, or null if not hovering over any element.
      *
-     * @type {import('../entity.js').Entity|null}
+     * @type {Entity|null}
      */
     get elementEntity() {
         return this._elementEntity;
@@ -457,14 +449,14 @@ class XrInputSource extends EventHandler {
     /**
      * List of active {@link XrHitTestSource} instances associated with this input source.
      *
-     * @type {import('./xr-hit-test-source.js').XrHitTestSource[]}
+     * @type {XrHitTestSource[]}
      */
     get hitTestSources() {
         return this._hitTestSources;
     }
 
     /**
-     * @param {*} frame - XRFrame from requestAnimationFrame callback.
+     * @param {XRFrame} frame - XRFrame from requestAnimationFrame callback.
      * @ignore
      */
     update(frame) {
@@ -488,6 +480,7 @@ class XrInputSource extends EventHandler {
                         this._localRotation = new Quat();
 
                         this._linearVelocity = new Vec3();
+                        this._localLinearVelocity = new Vec3();
                     }
 
                     const timestamp = now();
@@ -500,13 +493,18 @@ class XrInputSource extends EventHandler {
                     this._localPosition.copy(gripPose.transform.position);
                     this._localRotation.copy(gripPose.transform.orientation);
 
-                    this._velocitiesAvailable = true;
                     if (this._manager.input.velocitiesSupported && gripPose.linearVelocity) {
-                        this._linearVelocity.copy(gripPose.linearVelocity);
+                        this._localLinearVelocity.copy(gripPose.linearVelocity);
+                    } else if (!this._velocitiesAvailable) {
+                        // the first pose, and the first once tracking resumes, have no previous
+                        // position to estimate the velocity from
+                        this._localLinearVelocity.set(0, 0, 0);
                     } else if (dt > 0) {
                         vec3A.sub2(this._localPosition, this._localPositionLast).divScalar(dt);
-                        this._linearVelocity.lerp(this._linearVelocity, vec3A, 0.15);
+                        this._localLinearVelocity.lerp(this._localLinearVelocity, vec3A, 0.15);
                     }
+
+                    this._velocitiesAvailable = true;
                 } else {
                     this._velocitiesAvailable = false;
                 }
@@ -531,7 +529,8 @@ class XrInputSource extends EventHandler {
             this._localTransform.setTRS(this._localPosition, this._localRotation, Vec3.ONE);
         }
 
-        const parent = this._manager.camera.parent;
+        // the camera is null once the session has ended
+        const parent = this._manager.camera?.parent;
         if (parent) {
             this._worldTransform.mul2(parent.getWorldTransform(), this._localTransform);
         } else {
@@ -544,16 +543,12 @@ class XrInputSource extends EventHandler {
         const dirty = this._dirtyRay;
         this._dirtyRay = false;
 
-        const parent = this._manager.camera.parent;
+        const parent = this._manager.camera?.parent;
         if (parent) {
-            const parentTransform = this._manager.camera.parent.getWorldTransform();
-
-            parentTransform.getTranslation(this._position);
-            this._rotation.setFromMat4(parentTransform);
-
-            this._rotation.transformVector(this._rayLocal.origin, this._ray.origin);
-            this._ray.origin.add(this._position);
-            this._rotation.transformVector(this._rayLocal.direction, this._ray.direction);
+            // the full transform of the parent, as for the grip, so the ray also follows its scale
+            const parentTransform = parent.getWorldTransform();
+            parentTransform.transformPoint(this._rayLocal.origin, this._ray.origin);
+            parentTransform.transformVector(this._rayLocal.direction, this._ray.direction).normalize();
         } else if (dirty) {
             this._ray.origin.copy(this._rayLocal.origin);
             this._ray.direction.copy(this._rayLocal.direction);
@@ -561,13 +556,13 @@ class XrInputSource extends EventHandler {
     }
 
     /**
-     * Get the world space position of input source if it is handheld ({@link XrInputSource#grip}
-     * is true). Otherwise it will return null.
+     * Get the world space position of input source if it is handheld ({@link grip} is true).
+     * Otherwise it will return null.
      *
      * @returns {Vec3|null} The world space position of handheld input source.
      */
     getPosition() {
-        if (!this._position) return null;
+        if (!this._grip) return null;
 
         this._updateTransforms();
         this._worldTransform.getTranslation(this._position);
@@ -576,23 +571,23 @@ class XrInputSource extends EventHandler {
     }
 
     /**
-     * Get the local space position of input source if it is handheld ({@link XrInputSource#grip}
-     * is true). Local space is relative to parent of the XR camera. Otherwise it will return null.
+     * Get the local space position of input source if it is handheld ({@link grip} is true). Local
+     * space is relative to parent of the XR camera. Otherwise it will return null.
      *
-     * @returns {Vec3|null} The world space position of handheld input source.
+     * @returns {Vec3|null} The local space position of handheld input source.
      */
     getLocalPosition() {
         return this._localPosition;
     }
 
     /**
-     * Get the world space rotation of input source if it is handheld ({@link XrInputSource#grip}
-     * is true). Otherwise it will return null.
+     * Get the world space rotation of input source if it is handheld ({@link grip} is true).
+     * Otherwise it will return null.
      *
      * @returns {Quat|null} The world space rotation of handheld input source.
      */
     getRotation() {
-        if (!this._rotation) return null;
+        if (!this._grip) return null;
 
         this._updateTransforms();
         this._rotation.setFromMat4(this._worldTransform);
@@ -601,10 +596,10 @@ class XrInputSource extends EventHandler {
     }
 
     /**
-     * Get the local space rotation of input source if it is handheld ({@link XrInputSource#grip}
-     * is true). Local space is relative to parent of the XR camera. Otherwise it will return null.
+     * Get the local space rotation of input source if it is handheld ({@link grip} is true). Local
+     * space is relative to parent of the XR camera. Otherwise it will return null.
      *
-     * @returns {Quat|null} The world space rotation of handheld input source.
+     * @returns {Quat|null} The local space rotation of handheld input source.
      */
     getLocalRotation() {
         return this._localRotation;
@@ -612,13 +607,22 @@ class XrInputSource extends EventHandler {
 
     /**
      * Get the linear velocity (units per second) of the input source if it is handheld
-     * ({@link XrInputSource#grip} is true). Otherwise it will return null.
+     * ({@link grip} is true). Otherwise it will return null. The velocity is relative to the
+     * parent of the XR camera, so it does not include the motion of the parent.
      *
      * @returns {Vec3|null} The world space linear velocity of the handheld input source.
      */
     getLinearVelocity() {
-        if (!this._velocitiesAvailable)
+        if (!this._velocitiesAvailable) {
             return null;
+        }
+
+        const parent = this._manager.camera?.parent;
+        if (parent) {
+            parent.getWorldTransform().transformVector(this._localLinearVelocity, this._linearVelocity);
+        } else {
+            this._linearVelocity.copy(this._localLinearVelocity);
+        }
 
         return this._linearVelocity;
     }
@@ -648,7 +652,7 @@ class XrInputSource extends EventHandler {
      *
      * @param {object} [options] - Object for passing optional arguments.
      * @param {string[]} [options.entityTypes] - Optional list of underlying entity types against
-     * which hit tests will be performed. Defaults to [ {@link XRTRACKABLE_PLANE} ]. Can be any
+     * which hit tests will be performed. Defaults to [{@link XRTRACKABLE_PLANE}]. Can be any
      * combination of the following:
      *
      * - {@link XRTRACKABLE_POINT}: Point - indicates that the hit test results will be computed
@@ -659,14 +663,14 @@ class XrInputSource extends EventHandler {
      * based on the meshes detected by the underlying Augmented Reality system.
      *
      * @param {Ray} [options.offsetRay] - Optional ray by which hit test ray can be offset.
-     * @param {import('./xr-hit-test.js').XrHitTestStartCallback} [options.callback] - Optional
-     * callback function called once hit test source is created or failed.
+     * @param {XrHitTestStartCallback} [options.callback] - Optional callback function called once
+     * hit test source is created or failed.
      * @example
-     * app.xr.input.on('add', function (inputSource) {
+     * app.xr.input.on('add', (inputSource) => {
      *     inputSource.hitTestStart({
-     *         callback: function (err, hitTestSource) {
+     *         callback: (err, hitTestSource) => {
      *             if (err) return;
-     *             hitTestSource.on('result', function (position, rotation, inputSource, hitTestResult) {
+     *             hitTestSource.on('result', (position, rotation, inputSource, hitTestResult) => {
      *                 // position and rotation of hit test result
      *                 // that will be created from touch on mobile devices
      *             });
@@ -688,8 +692,7 @@ class XrInputSource extends EventHandler {
     }
 
     /**
-     * @param {import('./xr-hit-test-source.js').XrHitTestSource} hitTestSource - Hit test source
-     * to be added.
+     * @param {XrHitTestSource} hitTestSource - Hit test source to be added.
      * @private
      */
     onHitTestSourceAdd(hitTestSource) {
@@ -708,13 +711,48 @@ class XrInputSource extends EventHandler {
     }
 
     /**
-     * @param {import('./xr-hit-test-source.js').XrHitTestSource} hitTestSource - Hit test source
-     * to be removed.
+     * @param {XrHitTestSource} hitTestSource - Hit test source to be removed.
      * @private
      */
     onHitTestSourceRemove(hitTestSource) {
         const ind = this._hitTestSources.indexOf(hitTestSource);
         if (ind !== -1) this._hitTestSources.splice(ind, 1);
+    }
+
+    /**
+     * Gets the local space ray of the input source.
+     *
+     * @type {Ray}
+     * @ignore
+     * @deprecated Use {@link XrInputSource#getOrigin} and {@link XrInputSource#getDirection} instead.
+     */
+    get ray() {
+        Debug.deprecated('XrInputSource#ray is deprecated. Use XrInputSource#getOrigin and XrInputSource#getDirection instead.');
+        return this._rayLocal;
+    }
+
+    /**
+     * Gets the local space position of the input source.
+     *
+     * @type {Vec3|null}
+     * @ignore
+     * @deprecated Use {@link XrInputSource#getLocalPosition} instead.
+     */
+    get position() {
+        Debug.deprecated('XrInputSource#position is deprecated. Use XrInputSource#getLocalPosition instead.');
+        return this._localPosition;
+    }
+
+    /**
+     * Gets the local space rotation of the input source.
+     *
+     * @type {Quat|null}
+     * @ignore
+     * @deprecated Use {@link XrInputSource#getLocalRotation} instead.
+     */
+    get rotation() {
+        Debug.deprecated('XrInputSource#rotation is deprecated. Use XrInputSource#getLocalRotation instead.');
+        return this._localRotation;
     }
 }
 

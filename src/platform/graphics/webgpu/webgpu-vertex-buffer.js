@@ -1,5 +1,5 @@
-import { BUFFERUSAGE_STORAGE, BUFFERUSAGE_VERTEX } from "../constants.js";
-import { WebgpuBuffer } from "./webgpu-buffer.js";
+import { BUFFERUSAGE_STORAGE, BUFFERUSAGE_VERTEX } from '../constants.js';
+import { WebgpuBuffer } from './webgpu-buffer.js';
 
 /**
  * A WebGPU implementation of the VertexBuffer.
@@ -11,10 +11,10 @@ class WebgpuVertexBuffer extends WebgpuBuffer {
         super(BUFFERUSAGE_VERTEX | (options?.storage ? BUFFERUSAGE_STORAGE : 0));
     }
 
-    unlock(vertexBuffer) {
+    unlock(vertexBuffer, byteOffset, byteLength) {
 
         const device = vertexBuffer.device;
-        super.unlock(device, vertexBuffer.storage);
+        super.unlock(device, vertexBuffer.storage, byteOffset, byteLength);
     }
 }
 

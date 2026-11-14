@@ -1,10 +1,12 @@
 import { ShaderProcessorOptions } from '../../platform/graphics/shader-processor-options.js';
-import { DITHER_NONE, FRESNEL_SCHLICK, SPECOCC_AO, SPECULAR_BLINN } from "../constants.js";
+import { DITHER_NONE, FRESNEL_SCHLICK, SPECOCC_AO } from '../constants.js';
 import { Material } from './material.js';
 import { LitMaterialOptions } from './lit-material-options.js';
 import { LitMaterialOptionsBuilder } from './lit-material-options-builder.js';
-import { getProgramLibrary } from "../shader-lib/get-program-library.js";
+import { getProgramLibrary } from '../shader-lib/get-program-library.js';
 import { lit } from '../shader-lib/programs/lit.js';
+import { ShaderUtils } from '../shader-lib/shader-utils.js';
+import { getViewTextures } from '../renderer/view-textures.js';
 
 const options = new LitMaterialOptions();
 
@@ -19,29 +21,28 @@ const options = new LitMaterialOptions();
  * @ignore
  */
 class LitMaterial extends Material {
+    /** @ignore */
+    _usesViewTextures = true;
+
     usedUvs = [true];
 
-    shaderChunk = 'void evaluateFrontend() {}\n';
+    shaderChunkGLSL = null;
 
-    chunks = null;
+    shaderChunkWGSL = null;
 
     useLighting = true;
 
     useFog = true;
 
-    useGammaTonemap = true;
+    useTonemap = true;
 
     useSkybox = true;
-
-    shadingModel = SPECULAR_BLINN;
 
     ambientSH = null;
 
     pixelSnap = false;
 
     nineSlicedMode = null;
-
-    fastTbn = false;
 
     twoSidedLighting = false;
 
@@ -57,7 +58,7 @@ class LitMaterial extends Material {
 
     opacityShadowDither = DITHER_NONE;
 
-    conserveEnergy = true;
+    shadowCatcher = false;
 
     ggxSpecular = false;
 
@@ -74,6 +75,8 @@ class LitMaterial extends Material {
 
     hasLighting = false;
 
+    dirLightMap = false;
+
     hasHeights = false;
 
     hasNormals = false;
@@ -82,7 +85,11 @@ class LitMaterial extends Material {
 
     hasRefraction = false;
 
-    hasIrridescence = false;
+    hasDispersion = false;
+
+    hasIridescence = false;
+
+    hasDiffuseTransmission = false;
 
     hasMetalness = false;
 
@@ -90,13 +97,31 @@ class LitMaterial extends Material {
 
     hasClearCoatNormals = false;
 
-    getShaderVariant(device, scene, objDefs, unused, pass, sortedLights, viewUniformFormat, viewBindGroupFormat, vertexFormat) {
-        options.usedUvs = this.usedUvs.slice();
-        options.shaderChunk = this.shaderChunk;
+    /** @ignore */
+    updateUniforms(device, scene) {
+        super.updateUniforms(device, scene);
 
-        LitMaterialOptionsBuilder.update(options.litOptions, this, scene, objDefs, pass, sortedLights);
-        const processingOptions = new ShaderProcessorOptions(viewUniformFormat, viewBindGroupFormat, vertexFormat);
-        const library = getProgramLibrary(device);
+        // a uniform, the shader always contains both ways of applying the ambient occlusion
+        this.setParameter('material_occludeDirect', this.occludeDirect ? 1 : 0);
+
+        // a uniform, the shader always contains the flip of the normals of the back faces
+        this.setParameter('material_twoSidedLighting', this.twoSidedLighting ? 1 : 0);
+
+        // a uniform, the shader always applies the intensity of the specular occlusion
+        this.setParameter('material_occludeSpecularIntensity', this.occludeSpecularIntensity);
+    }
+
+    /** @ignore */
+    getShaderVariant(params) {
+
+        options.usedUvs = this.usedUvs.slice();
+        options.shaderChunkGLSL = this.shaderChunkGLSL;
+        options.shaderChunkWGSL = this.shaderChunkWGSL;
+        options.defines = ShaderUtils.getCoreDefines(this, params);
+
+        LitMaterialOptionsBuilder.update(options.litOptions, this, params.scene, params.cameraShaderParams, params.objDefs, params.pass, params.lightList);
+        const processingOptions = new ShaderProcessorOptions(params.viewUniformFormat, params.vertexFormat, getViewTextures(params.viewUniformFormat));
+        const library = getProgramLibrary(params.device);
         library.register('lit', lit);
         const shader = library.getProgram('lit', options, processingOptions, this.userId);
         return shader;

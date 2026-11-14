@@ -2,18 +2,9 @@ import { Debug } from '../../core/debug.js';
 import { math } from '../../core/math/math.js';
 
 /**
- * A base class representing a single per platform buffer.
- *
- * @ignore
+ * @import { DynamicBuffer } from './dynamic-buffer.js'
+ * @import { GraphicsDevice } from './graphics-device.js'
  */
-class DynamicBuffer {
-    /** @type {import('./graphics-device.js').GraphicsDevice} */
-    device;
-
-    constructor(device) {
-        this.device = device;
-    }
-}
 
 /**
  * A container for storing the used areas of a pair of staging and gpu buffers.
@@ -28,7 +19,7 @@ class UsedBuffer {
     stagingBuffer;
 
     /**
-     * The beginning position of the used area that needs to be copied from staging to to the GPU
+     * The beginning position of the used area that needs to be copied from staging to the GPU
      * buffer.
      *
      * @type {number}
@@ -50,11 +41,18 @@ class UsedBuffer {
  */
 class DynamicBufferAllocation {
     /**
-     * The storage access to the allocated data in the staging buffer.
+     * The buffer the allocation is inside, whose storage views give CPU access to the data.
      *
-     * @type {Int32Array}
+     * @type {DynamicBuffer}
      */
-    storage;
+    storageBuffer;
+
+    /**
+     * Where the allocation starts in the storage views of the buffer, in 4 byte elements.
+     *
+     * @type {number}
+     */
+    storageOffset;
 
     /**
      * The gpu buffer this allocation will be copied to.
@@ -110,14 +108,14 @@ class DynamicBuffers {
     usedBuffers = [];
 
     /**
-     * @type {UsedBuffer}
+     * @type {UsedBuffer|null}
      */
     activeBuffer = null;
 
     /**
      * Create the system of dynamic buffers.
      *
-     * @param {import('./graphics-device.js').GraphicsDevice} device - The graphics device.
+     * @param {GraphicsDevice} device - The graphics device.
      * @param {number} bufferSize - The size of the underlying large buffers.
      * @param {number} bufferAlignment - Alignment of each allocation.
      */
@@ -125,6 +123,16 @@ class DynamicBuffers {
         this.device = device;
         this.bufferSize = bufferSize;
         this.bufferAlignment = bufferAlignment;
+    }
+
+    /**
+     * Number of backing GPU uniform buffers, including free and in-flight buffers.
+     * Staging buffers and individual suballocations are excluded.
+     *
+     * @type {number}
+     */
+    get bufferCount() {
+        return (this.gpuBuffers?.length ?? 0) + (this.usedBuffers?.length ?? 0) + (this.activeBuffer ? 1 : 0);
     }
 
     /**
@@ -194,7 +202,8 @@ class DynamicBuffers {
 
         allocation.gpuBuffer = activeBuffer.gpuBuffer;
         allocation.offset = alignedStart;
-        allocation.storage = activeBuffer.stagingBuffer.alloc(alignedStart, size);
+        allocation.storageBuffer = activeBuffer.stagingBuffer;
+        allocation.storageOffset = alignedStart / 4;
 
         // take the allocation from the buffer
         activeBuffer.size = alignedStart + size;
@@ -215,4 +224,4 @@ class DynamicBuffers {
     }
 }
 
-export { DynamicBuffer, DynamicBuffers, DynamicBufferAllocation };
+export { DynamicBuffers, DynamicBufferAllocation };

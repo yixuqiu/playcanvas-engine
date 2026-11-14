@@ -1,57 +1,75 @@
-import * as pc from 'playcanvas';
-import { deviceType, rootPath } from '@examples/utils';
+import {
+    AppBase,
+    AppOptions,
+    CameraComponentSystem,
+    CollisionComponentSystem,
+    Color,
+    ContainerHandler,
+    ElementComponentSystem,
+    Entity,
+    FILLMODE_FILL_WINDOW,
+    FontHandler,
+    JsonHandler,
+    Keyboard,
+    LightComponentSystem,
+    RESOLUTION_AUTO,
+    RenderComponentSystem,
+    RigidBodyComponentSystem,
+    ScriptComponentSystem,
+    ScriptHandler,
+    StandardMaterial,
+    TextureHandler,
+    WasmModule,
+    createGraphicsDevice
+} from 'playcanvas';
 
-const canvas = document.getElementById('application-canvas');
-if (!(canvas instanceof HTMLCanvasElement)) {
-    throw new Error('No canvas found');
-}
+import { deviceType } from 'examples/context';
 
-pc.WasmModule.setConfig('Ammo', {
-    glueUrl: rootPath + '/static/lib/ammo/ammo.wasm.js',
-    wasmUrl: rootPath + '/static/lib/ammo/ammo.wasm.wasm',
-    fallbackUrl: rootPath + '/static/lib/ammo/ammo.js'
+/**
+ * @import { RenderComponent, RigidBodyComponent } from 'playcanvas'
+ */
+
+const canvas = /** @type {HTMLCanvasElement} */ (document.getElementById('application-canvas'));
+window.focus();
+
+WasmModule.setConfig('Ammo', {
+    glueUrl: './assets/wasm/ammo/ammo.wasm.js',
+    wasmUrl: './assets/wasm/ammo/ammo.wasm.wasm',
+    fallbackUrl: './assets/wasm/ammo/ammo.js'
 });
 await new Promise((resolve) => {
-    pc.WasmModule.getInstance('Ammo', () => resolve());
+    WasmModule.getInstance('Ammo', () => resolve());
 });
 
 const gfxOptions = {
-    deviceTypes: [deviceType],
-    glslangUrl: rootPath + '/static/lib/glslang/glslang.js',
-    twgslUrl: rootPath + '/static/lib/twgsl/twgsl.js'
+    deviceTypes: [deviceType]
 };
 
-const device = await pc.createGraphicsDevice(canvas, gfxOptions);
+const device = await createGraphicsDevice(canvas, gfxOptions);
 device.maxPixelRatio = Math.min(window.devicePixelRatio, 2);
 
-const createOptions = new pc.AppOptions();
+const createOptions = new AppOptions();
 createOptions.graphicsDevice = device;
-createOptions.keyboard = new pc.Keyboard(document.body);
+createOptions.keyboard = new Keyboard(document.body);
 
 createOptions.componentSystems = [
-    pc.RenderComponentSystem,
-    pc.CameraComponentSystem,
-    pc.LightComponentSystem,
-    pc.ScriptComponentSystem,
-    pc.CollisionComponentSystem,
-    pc.RigidBodyComponentSystem,
-    pc.ElementComponentSystem
+    RenderComponentSystem,
+    CameraComponentSystem,
+    LightComponentSystem,
+    ScriptComponentSystem,
+    CollisionComponentSystem,
+    RigidBodyComponentSystem,
+    ElementComponentSystem
 ];
-createOptions.resourceHandlers = [
-    pc.TextureHandler,
-    pc.ContainerHandler,
-    pc.ScriptHandler,
-    pc.JsonHandler,
-    pc.FontHandler
-];
+createOptions.resourceHandlers = [TextureHandler, ContainerHandler, ScriptHandler, JsonHandler, FontHandler];
 
-const app = new pc.AppBase(canvas);
+const app = new AppBase(canvas);
 app.init(createOptions);
 app.start();
 
 // Set the canvas to fill the window and automatically change resolution to be the same as the canvas size
-app.setCanvasFillMode(pc.FILLMODE_FILL_WINDOW);
-app.setCanvasResolution(pc.RESOLUTION_AUTO);
+app.setCanvasFillMode(FILLMODE_FILL_WINDOW);
+app.setCanvasResolution(RESOLUTION_AUTO);
 
 // Ensure canvas is resized when window changes size
 const resize = () => app.resizeCanvas();
@@ -60,28 +78,39 @@ app.on('destroy', () => {
     window.removeEventListener('resize', resize);
 });
 
-app.scene.ambientLight = new pc.Color(0.2, 0.2, 0.2);
+app.scene.ambientLight = new Color(0.2, 0.2, 0.2);
 /**
- * @param {pc.Color} color - The diffuse color.
- * @returns {pc.StandardMaterial} The standard material.
+ * @param {Color} color - The diffuse color.
+ * @returns {StandardMaterial} The standard material.
  */
 function createMaterial(color) {
-    const material = new pc.StandardMaterial();
+    const material = new StandardMaterial();
     material.diffuse = color;
     material.update();
     return material;
 }
 
 // Create a couple of materials for our objects
-const red = createMaterial(new pc.Color(0.7, 0.3, 0.3));
-const gray = createMaterial(new pc.Color(0.7, 0.7, 0.7));
+const red = createMaterial(new Color(0.7, 0.3, 0.3));
+const gray = createMaterial(new Color(0.7, 0.7, 0.7));
+
+/**
+ * @typedef {object} EntityData
+ * @property {string} name - The entity name.
+ * @property {number[]} [pos] - The local position.
+ * @property {number[]} [rot] - The local euler angles.
+ * @property {number[]} [scl] - The local scale.
+ * @property {{ type: string, options: object }[]} [components] - The components to add.
+ * @property {EntityData[]} [children] - The child entities.
+ */
 
 // Define a scene hierarchy in JSON format. This is loaded/parsed in
 // the parseScene function below
+/** @type {EntityData[]} */
 const scene = [
     {
         // The Chair entity has a collision component of type 'compound' and a
-        // rigidbody component. This means that any descendent entity with a
+        // rigidbody component. This means that any descendant entity with a
         // collision component is added to a compound collision shape on the
         // Chair entity. You can use compound collision shapes to define
         // complex, rigid shapes.
@@ -338,7 +367,7 @@ const scene = [
             {
                 type: 'camera',
                 options: {
-                    color: [0.5, 0.5, 0.5]
+                    clearColor: new Color(0.5, 0.5, 0.5)
                 }
             }
         ]
@@ -346,13 +375,13 @@ const scene = [
 ];
 
 /**
- * Convert an entity definition in the structure above to a pc.Entity object
+ * Convert an entity definition in the structure above to a Entity object
  *
- * @param {typeof scene} e - The scene definition.
- * @returns {pc.Entity} The entity.
+ * @param {EntityData} e - The scene definition.
+ * @returns {Entity} The entity.
  */
 function parseEntity(e) {
-    const entity = new pc.Entity(e.name);
+    const entity = new Entity(e.name);
 
     if (e.pos) {
         entity.setLocalPosition(e.pos[0], e.pos[1], e.pos[2]);
@@ -365,13 +394,13 @@ function parseEntity(e) {
     }
 
     if (e.components) {
-        e.components.forEach(function (c) {
+        e.components.forEach((c) => {
             entity.addComponent(c.type, c.options);
         });
     }
 
     if (e.children) {
-        e.children.forEach(function (/** @type {typeof scene} */ child) {
+        e.children.forEach((child) => {
             entity.addChild(parseEntity(child));
         });
     }
@@ -381,7 +410,7 @@ function parseEntity(e) {
 
 // Parse the scene data above into entities and add them to the scene's root entity
 function parseScene(s) {
-    s.forEach(function (e) {
+    s.forEach((e) => {
         app.root.addChild(parseEntity(e));
     });
 }
@@ -392,8 +421,7 @@ let numChairs = 0;
 
 // Clone the chair entity hierarchy and add it to the scene root
 function spawnChair() {
-    /** @type {pc.Entity} */
-    const chair = app.root.findByName('Chair');
+    const chair = /** @type {Entity} */ (app.root.findByName('Chair'));
     const clone = chair.clone();
     clone.setLocalPosition(Math.random() * 1 - 0.5, Math.random() * 2 + 1, Math.random() * 1 - 0.5);
     app.root.addChild(clone);
@@ -402,7 +430,7 @@ function spawnChair() {
 
 // Set an update function on the application's update event
 let time = 0;
-app.on('update', function (dt) {
+app.on('update', (dt) => {
     // Add a new chair every 250 ms
     time += dt;
     if (time > 0.25 && numChairs < 20) {
@@ -411,11 +439,9 @@ app.on('update', function (dt) {
     }
 
     // Show active bodies in red and frozen bodies in gray
-    app.root.findComponents('rigidbody').forEach(function (/** @type {pc.RigidBodyComponent} */ body) {
-        body.entity.findComponents('render').forEach(function (/** @type {pc.RenderComponent} */ render) {
+    app.root.findComponents('rigidbody').forEach((/** @type {RigidBodyComponent} */ body) => {
+        body.entity.findComponents('render').forEach((/** @type {RenderComponent} */ render) => {
             render.material = body.isActive() ? red : gray;
         });
     });
 });
-
-export { app };

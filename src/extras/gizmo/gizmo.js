@@ -1,40 +1,48 @@
 import { math } from '../../core/math/math.js';
+import { Quat } from '../../core/math/quat.js';
 import { Vec3 } from '../../core/math/vec3.js';
 import { Mat4 } from '../../core/math/mat4.js';
 import { Ray } from '../../core/shape/ray.js';
 import { EventHandler } from '../../core/event-handler.js';
-import { PROJECTION_PERSPECTIVE } from '../../scene/constants.js';
+import { acquireTouchAction, releaseTouchAction } from '../../platform/input/touch-action.js';
+import { PROJECTION_PERSPECTIVE, SORTMODE_MANUAL, SORTMODE_NONE } from '../../scene/constants.js';
 import { Entity } from '../../framework/entity.js';
+import { Layer } from '../../scene/layer.js';
 
-// temporary variables
-const tmpV1 = new Vec3();
-const tmpM1 = new Mat4();
-const tmpM2 = new Mat4();
-const tmpR1 = new Ray();
+/**
+ * @import { AppBase } from '../../framework/app-base.js'
+ * @import { CameraComponent } from '../../framework/components/camera/component.js';
+ * @import { GraphNode } from '../../scene/graph-node.js'
+ * @import { GraphicsDevice } from '../../platform/graphics/graphics-device.js'
+ * @import { MeshInstance } from '../../scene/mesh-instance.js'
+ * @import { EventHandle } from '../../core/event-handle.js'
+ * @import { Shape } from './shape/shape.js'
+ * @import { GizmoSpace } from './constants.js'
+ */
 
-// constants
-const MIN_GIZMO_SCALE = 1e-4;
+const v = new Vec3();
+const position = new Vec3();
+const dir = new Vec3();
+const hit = new Vec3();
+const rotation = new Quat();
+const m1 = new Mat4();
+const m2 = new Mat4();
+const ray = new Ray();
+const claimed = new WeakSet();
+
+const MIN_SCALE = 1e-4;
 const PERS_SCALE_RATIO = 0.3;
 const ORTHO_SCALE_RATIO = 0.32;
-
-/**
- * Local coordinate space.
- *
- * @type {string}
- * @category Gizmo
- */
-export const GIZMO_LOCAL = 'local';
-
-/**
- * World coordinate space.
- *
- * @type {string}
- * @category Gizmo
- */
-export const GIZMO_WORLD = 'world';
+const UPDATE_EPSILON = 1e-6;
+const DIST_EPSILON = 1e-4;
 
 /**
  * The base class for all gizmos.
+ *
+ * A gizmo draws in its own {@link Layer} (see {@link createLayer}) for a {@link CameraComponent},
+ * acts on the {@link GraphNode}s passed to {@link attach}, and updates itself each frame until
+ * {@link destroy}. Where gizmos overlap, a press goes to the first one created that it hits, so
+ * create the gizmos that should win, such as transform gizmos, first.
  *
  * @category Gizmo
  */
@@ -44,7 +52,7 @@ class Gizmo extends EventHandler {
      *
      * @event
      * @example
-     * const gizmo = new pc.Gizmo(app, camera, layer);
+     * const gizmo = new Gizmo(camera, layer);
      * gizmo.on('pointer:down', (x, y, meshInstance) => {
      *     console.log(`Pointer was down on ${meshInstance.node.name} at ${x}, ${y}`);
      * });
@@ -56,7 +64,7 @@ class Gizmo extends EventHandler {
      *
      * @event
      * @example
-     * const gizmo = new pc.Gizmo(app, camera, layer);
+     * const gizmo = new Gizmo(camera, layer);
      * gizmo.on('pointer:move', (x, y, meshInstance) => {
      *     console.log(`Pointer was moving on ${meshInstance.node.name} at ${x}, ${y}`);
      * });
@@ -68,7 +76,7 @@ class Gizmo extends EventHandler {
      *
      * @event
      * @example
-     * const gizmo = new pc.Gizmo(app, camera, layer);
+     * const gizmo = new Gizmo(camera, layer);
      * gizmo.on('pointer:up', (x, y, meshInstance) => {
      *     console.log(`Pointer was up on ${meshInstance.node.name} at ${x}, ${y}`);
      * })
@@ -80,7 +88,7 @@ class Gizmo extends EventHandler {
      *
      * @event
      * @example
-     * const gizmo = new pc.Gizmo(app, camera, layer);
+     * const gizmo = new Gizmo(camera, layer);
      * gizmo.on('position:update', (position) => {
      *     console.log(`The gizmo's position was updated to ${position}`);
      * })
@@ -92,7 +100,7 @@ class Gizmo extends EventHandler {
      *
      * @event
      * @example
-     * const gizmo = new pc.Gizmo(app, camera, layer);
+     * const gizmo = new Gizmo(camera, layer);
      * gizmo.on('rotation:update', (rotation) => {
      *     console.log(`The gizmo's rotation was updated to ${rotation}`);
      * });
@@ -104,7 +112,7 @@ class Gizmo extends EventHandler {
      *
      * @event
      * @example
-     * const gizmo = new pc.Gizmo(app, camera, layer);
+     * const gizmo = new Gizmo(camera, layer);
      * gizmo.on('scale:update', (scale) => {
      *     console.log(`The gizmo's scale was updated to ${scale}`);
      * });
@@ -116,7 +124,7 @@ class Gizmo extends EventHandler {
      *
      * @event
      * @example
-     * const gizmo = new pc.Gizmo(app, camera, layer);
+     * const gizmo = new Gizmo(camera, layer);
      * gizmo.on('nodes:attach', () => {
      *     console.log('Graph nodes attached');
      * });
@@ -128,7 +136,7 @@ class Gizmo extends EventHandler {
      *
      * @event
      * @example
-     * const gizmo = new pc.Gizmo(app, camera, layer);
+     * const gizmo = new Gizmo(camera, layer);
      * gizmo.on('nodes:detach', () => {
      *     console.log('Graph nodes detached');
      * });
@@ -136,11 +144,11 @@ class Gizmo extends EventHandler {
     static EVENT_NODESDETACH = 'nodes:detach';
 
     /**
-     * Fired when when the gizmo render has updated.
+     * Fired when the gizmo render has updated.
      *
      * @event
      * @example
-     * const gizmo = new pc.TransformGizmo(app, camera, layer);
+     * const gizmo = new TransformGizmo(camera, layer);
      * gizmo.on('render:update', () => {
      *     console.log('Gizmo render has been updated');
      * });
@@ -148,177 +156,323 @@ class Gizmo extends EventHandler {
     static EVENT_RENDERUPDATE = 'render:update';
 
     /**
-     * Internal device start size.
+     * The gizmo size.
      *
-     * @type {number}
-     * @private
-     */
-    _deviceStartSize;
-
-    /**
-     * Internal version of the gizmo size. Defaults to 1.
-     *
-     * @type {number}
      * @private
      */
     _size = 1;
 
     /**
-     * Internal version of the gizmo scale. Defaults to 1.
+     * The gizmo scale.
      *
-     * @type {number}
      * @protected
      */
     _scale = 1;
 
     /**
-     * Internal version of coordinate space. Defaults to {@link GIZMO_WORLD}.
+     * The coordinate space.
      *
-     * @type {string}
+     * @type {GizmoSpace}
      * @protected
      */
-    _coordSpace = GIZMO_WORLD;
+    _coordSpace = 'world';
 
     /**
-     * Internal reference to the app containing the gizmo.
+     * The app.
      *
-     * @type {import('../../framework/app-base.js').AppBase}
+     * @type {AppBase}
      * @protected
      */
     _app;
 
     /**
-     * Internal reference to the graphics device of the app.
+     * The graphics device.
      *
-     * @type {import('../../platform/graphics/graphics-device.js').GraphicsDevice}
+     * @type {GraphicsDevice}
      * @protected
      */
     _device;
 
     /**
-     * Internal reference to camera component to view the gizmo.
+     * The app event handles.
      *
-     * @type {import('../../framework/components/camera/component.js').CameraComponent}
+     * @type {EventHandle[]}
+     * @protected
+     */
+    _handles = [];
+
+    /**
+     * The mouse buttons that interact.
+     *
+     * @type {[boolean, boolean, boolean]}
+     * @protected
+     */
+    _mouseButtons = [true, true, true];
+
+    /**
+     * The camera viewing the gizmo.
+     *
+     * @type {CameraComponent}
      * @protected
      */
     _camera;
 
     /**
-     * Internal reference to layer to render the gizmo..
+     * The render layer.
      *
-     * @type {import('../../scene/layer.js').Layer}
+     * @type {Layer}
      * @protected
      */
     _layer;
 
     /**
+     * Whether a render update is due.
+     *
+     * @protected
+     */
+    _renderUpdate = false;
+
+    /**
+     * The enabled state the user requested.
+     *
+     * @private
+     */
+    _enabled = true;
+
+    /**
+     * The id of the interacting pointer.
+     *
+     * @private
+     */
+    _pointerId = -1;
+
+    /**
+     * Whether the gizmo is destroyed.
+     *
+     * @private
+     */
+    _destroyed = false;
+
+    /**
      * The graph nodes attached to the gizmo.
      *
-     * @type {import('../../scene/graph-node.js').GraphNode[]}
+     * @type {GraphNode[]}
      */
     nodes = [];
 
     /**
      * The root gizmo entity.
      *
-     * @type {import('../../framework/entity.js').Entity}
+     * @type {Entity}
      */
     root;
 
     /**
-     * @typedef IntersectData
-     * @property {import('./tri-data.js').TriData[]} triData - The array of {@link TriData}
-     * @property {import('../../scene/graph-node.js').GraphNode} parent - The mesh parent node.
-     * @property {import('../../scene/mesh-instance.js').MeshInstance[]} meshInstances -
-     * array of mesh instances for rendering
-     */
-    /**
-     * The intersection data object.
+     * The shapes the gizmo picks.
      *
-     * @type {IntersectData[]}
+     * @type {Shape[]}
      */
-    intersectData = [];
+    intersectShapes = [];
+
+    /**
+     * Whether to call `preventDefault` on pointer events.
+     */
+    preventDefault = true;
+
+    /**
+     * Creates a new gizmo layer and adds it to the scene.
+     *
+     * @param {AppBase} app - The app.
+     * @param {string} [layerName] - The layer name. Defaults to 'Gizmo'.
+     * @param {number} [layerIndex] - The layer index. Defaults to the end of the layer list.
+     * @param {boolean} [depth] - Whether the layer keeps the scene depth and sorts transparent mesh
+     * instances manually, as overlay gizmos need so occluded parts draw faint. Otherwise it clears
+     * depth and draws on top, as transform gizmos need. Defaults to false.
+     * @returns {Layer} The new layer.
+     * @example
+     * const layer = Gizmo.createLayer(app, 'Overlays', undefined, true);
+     */
+    static createLayer(app, layerName = 'Gizmo', layerIndex = app.scene.layers.layerList.length, depth = false) {
+        const layer = new Layer({
+            name: layerName,
+            clearDepthBuffer: !depth,
+            opaqueSortMode: SORTMODE_NONE,
+            transparentSortMode: depth ? SORTMODE_MANUAL : SORTMODE_NONE
+        });
+        app.scene.layers.insert(layer, layerIndex);
+        return layer;
+    }
 
     /**
      * Creates a new Gizmo object.
      *
-     * @param {import('../../framework/app-base.js').AppBase} app - The application instance.
-     * @param {import('../../framework/components/camera/component.js').CameraComponent} camera -
-     * The camera component.
-     * @param {import('../../scene/layer.js').Layer} layer - The render layer.
+     * @param {CameraComponent} camera - The camera component.
+     * @param {Layer} layer - The render layer, added to the camera. Gizmos can share it; it leaves
+     * the camera with the last gizmo using it there.
+     * @param {string} [name] - The name of the gizmo. Defaults to 'gizmo'.
      * @example
-     * const gizmo = new pc.Gizmo(app, camera, layer);
+     * const gizmo = new Gizmo(camera, layer);
      */
-    constructor(app, camera, layer) {
+    constructor(camera, layer, name = 'gizmo') {
         super();
 
-        this._app = app;
-        this._device = app.graphicsDevice;
-        this._deviceStartSize = Math.max(this._device.width, this._device.height);
-        this._camera = camera;
         this._layer = layer;
+        this._camera = camera;
+        this._camera.layers = this._camera.layers.concat(this._layer.id);
 
-        this._createGizmo();
+        this._app = this._camera.system.app;
+        this._device = this._app.graphicsDevice;
+
+        this.root = new Entity(name);
+        this._app.root.addChild(this.root);
+        this.root.enabled = false;
 
         this._updateScale();
 
-        this._onPointerDown = (e) => {
-            if (!this.root.enabled || document.pointerLockElement) {
-                return;
-            }
-            const selection = this._getSelection(e.offsetX, e.offsetY);
-            if (selection[0]) {
-                e.preventDefault();
-            }
-            this.fire(Gizmo.EVENT_POINTERDOWN, e.offsetX, e.offsetY, selection[0]);
-        };
-        this._onPointerMove = (e) => {
-            if (!this.root.enabled || document.pointerLockElement) {
-                return;
-            }
-            const selection = this._getSelection(e.offsetX, e.offsetY);
-            if (selection[0]) {
-                e.preventDefault();
-            }
-            this.fire(Gizmo.EVENT_POINTERMOVE, e.offsetX, e.offsetY, selection[0]);
-        };
-        this._onPointerUp = (e) => {
-            if (!this.root.enabled || document.pointerLockElement) {
-                return;
-            }
-            this.fire(Gizmo.EVENT_POINTERUP);
-        };
+        this._onPointerDown = this._onPointerDown.bind(this);
+        this._onPointerMove = this._onPointerMove.bind(this);
+        this._onPointerUp = this._onPointerUp.bind(this);
 
         this._device.canvas.addEventListener('pointerdown', this._onPointerDown);
         this._device.canvas.addEventListener('pointermove', this._onPointerMove);
         this._device.canvas.addEventListener('pointerup', this._onPointerUp);
+        this._device.canvas.addEventListener('pointercancel', this._onPointerUp);
 
-        app.on('update', () => this._updateScale());
+        // a touch drag on a gizmo would otherwise scroll or zoom the page, which cancels it
+        acquireTouchAction(this._device.canvas);
 
-        app.on('destroy', () => this.destroy());
+        this._handles.push(this._app.on('prerender', () => this.prerender()));
+        this._handles.push(this._app.on('update', () => this.update()));
+        this._handles.push(this._app.on('destroy', () => this.destroy()));
     }
 
     /**
-     * The gizmo coordinate space. Can be:
+     * Gets whether the gizmo shows only with attached nodes. A getter, so a subclass's value
+     * applies while the base constructor runs.
      *
-     * - {@link GIZMO_LOCAL}
-     * - {@link GIZMO_WORLD}
+     * @type {boolean}
+     * @protected
+     */
+    get _requiresNodes() {
+        return true;
+    }
+
+    /**
+     * Sets the gizmo enabled state.
      *
-     * Defaults to {@link GIZMO_WORLD}.
+     * @type {boolean}
+     */
+    set enabled(state) {
+        this._enabled = state;
+        const cameraDist = this.root.getLocalPosition().distance(this.camera.entity.getPosition());
+
+        // gizmos without nodes draw away from the root, so the camera can sit on it
+        const enabled = state && (!this._requiresNodes || (this.nodes.length > 0 && cameraDist > DIST_EPSILON));
+        if (enabled !== this.root.enabled) {
+            this.root.enabled = enabled;
+            this._renderUpdate = true;
+        }
+    }
+
+    /**
+     * Gets the gizmo enabled state.
      *
-     * @type {string}
+     * @type {boolean}
+     */
+    get enabled() {
+        return this.root.enabled;
+    }
+
+    /**
+     * The mouse buttons that interact with the gizmo, by
+     * {@link https://developer.mozilla.org/en-US/docs/Web/API/MouseEvent/button | button index}:
+     * 0 left, 1 middle, 2 right.
+     *
+     * @type {[boolean, boolean, boolean]}
+     */
+    get mouseButtons() {
+        return this._mouseButtons;
+    }
+
+    /**
+     * Sets the gizmo render layer.
+     *
+     * @param {Layer} layer - The layer to render the gizmo.
+     */
+    set layer(layer) {
+        if (this._layer === layer) {
+            return;
+        }
+        this._releaseCameraLayer();
+        this._layer = layer;
+        this._camera.layers = this._camera.layers.concat(this._layer.id);
+
+        const ids = [layer.id];
+        this.root.forEach((node) => {
+            const { render } = /** @type {Entity} */ (node);
+            if (render) {
+                render.layers = ids;
+            }
+        });
+
+        this.enabled = this._enabled;
+    }
+
+    /**
+     * Gets the gizmo render layer.
+     *
+     * @type {Layer}
+     */
+    get layer() {
+        return this._layer;
+    }
+
+    /**
+     * Sets the camera component to view the gizmo.
+     *
+     * @type {CameraComponent} camera - The camera component.
+     */
+    set camera(camera) {
+        if (this._camera === camera) {
+            return;
+        }
+        this._releaseCameraLayer();
+        this._camera = camera;
+        this._camera.layers = this._camera.layers.concat(this._layer.id);
+
+        this.enabled = this._enabled;
+    }
+
+    /**
+     * Gets the camera component to view the gizmo.
+     *
+     * @type {CameraComponent} The camera component.
+     */
+    get camera() {
+        return this._camera;
+    }
+
+    /**
+     * Sets the gizmo coordinate space. Defaults to 'world'.
+     *
+     * @type {GizmoSpace}
      */
     set coordSpace(value) {
-        this._coordSpace = value ?? GIZMO_WORLD;
+        this._coordSpace = value ?? this._coordSpace;
         this._updateRotation();
     }
 
+    /**
+     * Gets the gizmo coordinate space.
+     *
+     * @type {GizmoSpace}
+     */
     get coordSpace() {
         return this._coordSpace;
     }
 
     /**
-     * The gizmo size. Defaults to 1.
+     * Sets the gizmo size. Defaults to 1.
      *
      * @type {number}
      */
@@ -327,161 +481,400 @@ class Gizmo extends EventHandler {
         this._updateScale();
     }
 
+    /**
+     * Gets the gizmo size.
+     *
+     * @type {number}
+     */
     get size() {
         return this._size;
     }
 
-    _getProjFrustumWidth() {
-        const gizmoPos = this.root.getPosition();
-        const cameraPos = this._camera.entity.getPosition();
-        const dist = tmpV1.copy(gizmoPos).sub(cameraPos).dot(this._camera.entity.forward);
-        return dist * Math.tan(0.5 * this._camera.fov * math.DEG_TO_RAD);
-    }
-
-    _createGizmo() {
-        this.root = new Entity('gizmo');
-        this._app.root.addChild(this.root);
-        this.root.enabled = false;
-    }
-
-    _updatePosition() {
-        tmpV1.set(0, 0, 0);
-        for (let i = 0; i < this.nodes.length; i++) {
-            const node = this.nodes[i];
-            tmpV1.add(node.getPosition());
-        }
-        tmpV1.mulScalar(1.0 / (this.nodes.length || 1));
-        this.root.setPosition(tmpV1);
-
-        this.fire(Gizmo.EVENT_POSITIONUPDATE, tmpV1);
-    }
-
-    _updateRotation() {
-        tmpV1.set(0, 0, 0);
-        if (this._coordSpace === GIZMO_LOCAL && this.nodes.length !== 0) {
-            tmpV1.copy(this.nodes[this.nodes.length - 1].getEulerAngles());
-        }
-        this.root.setEulerAngles(tmpV1);
-
-        this.fire(Gizmo.EVENT_ROTATIONUPDATE, tmpV1);
-    }
-
-    _updateScale() {
+    /**
+     * @type {Vec3}
+     * @protected
+     */
+    get facingDir() {
         if (this._camera.projection === PROJECTION_PERSPECTIVE) {
-            let canvasMult = 1;
-            if (this._device.width > 0 && this._device.height > 0) {
-                canvasMult = this._deviceStartSize / Math.min(this._device.width, this._device.height);
-            }
-            this._scale = this._getProjFrustumWidth() * canvasMult * PERS_SCALE_RATIO;
-        } else {
-            this._scale = this._camera.orthoHeight * ORTHO_SCALE_RATIO;
+            const gizmoPos = this.root.getLocalPosition();
+            const cameraPos = this._camera.entity.getPosition();
+            return dir.sub2(cameraPos, gizmoPos).normalize();
         }
-        this._scale = Math.max(this._scale * this._size, MIN_GIZMO_SCALE);
-        this.root.setLocalScale(this._scale, this._scale, this._scale);
-
-        this.fire(Gizmo.EVENT_SCALEUPDATE, this._scale);
+        return dir.copy(this._camera.entity.forward).mulScalar(-1);
     }
 
-    _getSelection(x, y) {
-        const start = this._camera.screenToWorld(x, y, 1);
-        const end = this._camera.screenToWorld(x, y, this._camera.farClip);
-        const dir = end.clone().sub(start).normalize();
+    /**
+     * @type {Vec3}
+     * @protected
+     */
+    get cameraDir() {
+        const cameraPos = this._camera.entity.getPosition();
+        const gizmoPos = this.root.getLocalPosition();
+        return dir.sub2(cameraPos, gizmoPos).normalize();
+    }
 
-        const selection = [];
-        for (let i = 0; i < this.intersectData.length; i++) {
-            const { triData, parent, meshInstances } = this.intersectData[i];
-            const wtm = parent.getWorldTransform().clone();
-            for (let j = 0; j < triData.length; j++) {
-                const { tris, ptm, priority } = triData[j];
-                tmpM1.copy(wtm).mul(ptm);
-                tmpM2.copy(tmpM1).invert();
-                tmpM2.transformPoint(start, tmpR1.origin);
-                tmpM2.transformVector(dir, tmpR1.direction);
-                tmpR1.direction.normalize();
+    /**
+     * @param {PointerEvent} e - The pointer event.
+     * @private
+     */
+    _onPointerDown(e) {
+        if (!this.enabled || document.pointerLockElement) {
+            return;
+        }
+        if (!this.mouseButtons[e.button]) {
+            return;
+        }
+
+        // ignore other pointers while one is pressed
+        const { canvas } = this._device;
+        if (e.pointerId !== this._pointerId && canvas.hasPointerCapture(this._pointerId)) {
+            return;
+        }
+
+        // the first gizmo hit claims the press, so overlapping gizmos don't drag together
+        if (claimed.has(e)) {
+            return;
+        }
+        const selection = this._getSelection(e.offsetX, e.offsetY);
+        if (selection[0]) {
+            claimed.add(e);
+            if (this.preventDefault) {
+                e.preventDefault();
+            }
+            e.stopPropagation();
+        }
+
+        this._pointerId = e.pointerId;
+        canvas.setPointerCapture(e.pointerId);
+
+        this.fire(Gizmo.EVENT_POINTERDOWN, e.offsetX, e.offsetY, selection[0]);
+    }
+
+    /**
+     * @param {PointerEvent} e - The pointer event.
+     * @private
+     */
+    _onPointerMove(e) {
+        if (!this.enabled || document.pointerLockElement) {
+            return;
+        }
+        if (e.pointerId !== this._pointerId && this._device.canvas.hasPointerCapture(this._pointerId)) {
+            return;
+        }
+        const selection = this._getSelection(e.offsetX, e.offsetY);
+        if (selection[0]) {
+            if (this.preventDefault) {
+                e.preventDefault();
+            }
+            e.stopPropagation();
+        }
+        this.fire(Gizmo.EVENT_POINTERMOVE, e.offsetX, e.offsetY, selection[0]);
+    }
+
+    /**
+     * @param {PointerEvent} e - The pointer event.
+     * @private
+     */
+    _onPointerUp(e) {
+        // a canceled pointer has no button, and ends the drag without a hit
+        const cancel = e.type === 'pointercancel';
+        if ((!cancel && !this.mouseButtons[e.button]) || e.pointerId !== this._pointerId) {
+            return;
+        }
+
+        // end the drag even if disabled or pointer locked mid-drag
+        const active = !cancel && this.enabled && !document.pointerLockElement;
+        const selection = active ? this._getSelection(e.offsetX, e.offsetY) : [];
+        if (selection[0]) {
+            if (this.preventDefault) {
+                e.preventDefault();
+            }
+            e.stopPropagation();
+        }
+
+        const { canvas } = this._device;
+        canvas.releasePointerCapture(e.pointerId);
+
+        this.fire(Gizmo.EVENT_POINTERUP, e.offsetX, e.offsetY, selection[0]);
+    }
+
+    /**
+     * Removes one reference to the layer from the camera, which other gizmos may share.
+     *
+     * @private
+     */
+    _releaseCameraLayer() {
+        const ids = this._camera.layers.slice();
+        const index = ids.indexOf(this._layer.id);
+        if (index !== -1) {
+            ids.splice(index, 1);
+        }
+        this._camera.layers = ids;
+    }
+
+    /**
+     * @protected
+     */
+    _updatePosition() {
+        position.set(0, 0, 0);
+        if (this._coordSpace === 'local' && this.nodes.length !== 0) {
+            position.copy(this.nodes[this.nodes.length - 1].getPosition());
+        } else {
+            for (let i = 0; i < this.nodes.length; i++) {
+                const node = this.nodes[i];
+                position.add(node.getPosition());
+            }
+            position.mulScalar(1.0 / (this.nodes.length || 1));
+        }
+
+        if (position.equalsApprox(this.root.getLocalPosition(), UPDATE_EPSILON)) {
+            return;
+        }
+
+        this.root.setLocalPosition(position);
+        this.fire(Gizmo.EVENT_POSITIONUPDATE, position);
+
+        this._renderUpdate = true;
+    }
+
+    /**
+     * @protected
+     */
+    _updateRotation() {
+        rotation.set(0, 0, 0, 1);
+        if (this._coordSpace === 'local' && this.nodes.length !== 0) {
+            rotation.copy(this.nodes[this.nodes.length - 1].getRotation());
+        }
+
+        if (rotation.equalsApprox(this.root.getRotation(), UPDATE_EPSILON)) {
+            return;
+        }
+
+        this.root.setRotation(rotation);
+        this.fire(Gizmo.EVENT_ROTATIONUPDATE, rotation.getEulerAngles());
+
+        this._renderUpdate = true;
+    }
+
+    /**
+     * Gets the scale keeping geometry at a world position a constant size on screen.
+     *
+     * @param {Vec3} pos - The world position.
+     * @returns {number} The scale.
+     * @protected
+     */
+    _getScreenScale(pos) {
+        let scale;
+        if (this._camera.projection === PROJECTION_PERSPECTIVE) {
+            const cameraPos = this._camera.entity.getPosition();
+            const dist = v.sub2(pos, cameraPos).dot(this._camera.entity.forward);
+            scale = Math.tan(0.5 * this._camera.fov * math.DEG_TO_RAD) * dist * PERS_SCALE_RATIO;
+        } else {
+            scale = this._camera.orthoHeight * ORTHO_SCALE_RATIO;
+        }
+        return Math.max(scale * this._size, MIN_SCALE);
+    }
+
+    /**
+     * @protected
+     */
+    _updateScale() {
+        this._scale = this._getScreenScale(this.root.getLocalPosition());
+
+        if (Math.abs(this._scale - this.root.getLocalScale().x) < UPDATE_EPSILON) {
+            return;
+        }
+
+        this.root.setLocalScale(this._scale, this._scale, this._scale);
+        this.fire(Gizmo.EVENT_SCALEUPDATE, this._scale);
+
+        this._renderUpdate = true;
+    }
+
+    /**
+     * @param {Vec3} mouseWPos - The mouse world position.
+     * @returns {Ray} - The ray.
+     * @protected
+     */
+    _createRay(mouseWPos) {
+        if (this._camera.projection === PROJECTION_PERSPECTIVE) {
+            ray.origin.copy(this._camera.entity.getPosition());
+            ray.direction.sub2(mouseWPos, ray.origin).normalize();
+            return ray;
+        }
+        const orthoDepth = this._camera.farClip - this._camera.nearClip;
+        ray.origin.sub2(mouseWPos, v.copy(this._camera.entity.forward).mulScalar(orthoDepth));
+        ray.direction.copy(this._camera.entity.forward);
+        return ray;
+    }
+
+    /**
+     * @param {number} x - The x coordinate.
+     * @param {number} y - The y coordinate.
+     * @returns {MeshInstance[]} - The mesh instances.
+     * @private
+     */
+    _getSelection(x, y) {
+        const start = this._camera.screenToWorld(x, y, 0);
+        const end = this._camera.screenToWorld(x, y, this._camera.farClip - this._camera.nearClip);
+        const dir = v.copy(end).sub(start).normalize();
+
+        /**
+         * @type {MeshInstance[] | null}
+         */
+        let best = null;
+        let bestDist = 0;
+        let bestPriority = 0;
+        for (let i = 0; i < this.intersectShapes.length; i++) {
+            const shape = this.intersectShapes[i];
+            if (shape.disabled || !shape.entity.enabled) {
+                continue;
+            }
+
+            const parentTM = shape.entity.getWorldTransform();
+            for (let j = 0; j < shape.triData.length; j++) {
+                const { tris, transform, priority } = shape.triData[j];
+
+                const triWTM = m1.copy(parentTM).mul(transform);
+                const invTriWTM = m2.copy(triWTM).invert();
+
+                invTriWTM.transformPoint(start, ray.origin);
+                invTriWTM.transformVector(dir, ray.direction);
+                ray.direction.normalize();
 
                 for (let k = 0; k < tris.length; k++) {
-                    if (tris[k].intersectsRay(tmpR1, tmpV1)) {
-                        selection.push({
-                            dist: tmpM1.transformPoint(tmpV1).sub(start).length(),
-                            meshInstances: meshInstances,
-                            priority: priority
-                        });
+                    if (tris[k].intersectsRay(ray, hit)) {
+                        const dist = triWTM.transformPoint(hit).sub(start).length();
+
+                        // priority decides between prioritized hits, otherwise distance
+                        const wins = !best || (bestPriority !== 0 && priority !== 0 && priority !== bestPriority ?
+                            priority > bestPriority : dist < bestDist);
+                        if (wins) {
+                            best = shape.meshInstances;
+                            bestDist = dist;
+                            bestPriority = priority;
+                        }
                     }
                 }
             }
         }
 
-        if (selection.length) {
-            selection.sort((s0, s1) => {
-                if (s0.priority !== 0 && s1.priority !== 0) {
-                    return s1.priority - s0.priority;
-                }
-                return s0.dist - s1.dist;
-            });
-            return selection[0].meshInstances;
-        }
-
-        return [];
+        return best ?? [];
     }
 
     /**
      * Attach an array of graph nodes to the gizmo.
      *
-     * @param {import('../../scene/graph-node.js').GraphNode[]} [nodes] - The graph nodes. Defaults to [].
+     * @param {GraphNode[] | GraphNode} [nodes] - The graph nodes. Defaults to [].
      * @example
-     * const gizmo = new pc.Gizmo(app, camera, layer);
+     * const gizmo = new Gizmo(camera, layer);
      * gizmo.attach([boxA, boxB]);
      */
     attach(nodes = []) {
-        if (nodes.length === 0) {
-            return;
+        if (Array.isArray(nodes)) {
+            if (nodes.length === 0) {
+                return;
+            }
+            this.nodes = nodes;
+        } else {
+            this.nodes = [nodes];
         }
 
-        this.nodes = nodes;
         this._updatePosition();
         this._updateRotation();
+        this._updateScale();
 
         this.fire(Gizmo.EVENT_NODESATTACH);
 
-        this.root.enabled = true;
-
-        this.fire(Gizmo.EVENT_RENDERUPDATE);
+        this.enabled = true;
     }
 
     /**
      * Detaches all graph nodes from the gizmo.
      *
      * @example
-     * const gizmo = new pc.Gizmo(app, camera, layer);
+     * const gizmo = new Gizmo(camera, layer);
      * gizmo.attach([boxA, boxB]);
      * gizmo.detach();
      */
     detach() {
-        this.root.enabled = false;
+        this.enabled = false;
 
-        this.fire(Gizmo.EVENT_RENDERUPDATE);
         this.fire(Gizmo.EVENT_NODESDETACH);
 
         this.nodes = [];
     }
 
     /**
-     * Destroys the gizmo instance; detaches
-     * all graph nodes.
+     * Called before the gizmo renders.
      *
      * @example
-     * const gizmo = new pc.Gizmo(app, camera, layer);
+     * const gizmo = new Gizmo(camera, layer);
+     * gizmo.attach([boxA, boxB]);
+     * gizmo.prerender();
+     */
+    prerender() {
+    }
+
+    /**
+     * Updates the gizmo position, rotation, and scale.
+     *
+     * @example
+     * const gizmo = new Gizmo(camera, layer);
+     * gizmo.attach([boxA, boxB]);
+     * gizmo.update();
+     */
+    update() {
+
+        // recheck a gizmo hidden only because the camera sat on it
+        if (this._enabled && !this.root.enabled) {
+            this.enabled = true;
+        }
+
+        if (this._renderUpdate) {
+            this._renderUpdate = false;
+            this.fire(Gizmo.EVENT_RENDERUPDATE);
+        }
+
+        if (!this.enabled) {
+            return;
+        }
+
+        this._updatePosition();
+        this._updateRotation();
+        this._updateScale();
+    }
+
+    /**
+     * Detaches all graph nodes and destroys the gizmo instance.
+     *
+     * @example
+     * const gizmo = new Gizmo(camera, layer);
      * gizmo.attach([boxA, boxB]);
      * gizmo.destroy();
      */
     destroy() {
+
+        // the app destroy event may call this again
+        if (this._destroyed) {
+            return;
+        }
+        this._destroyed = true;
+
         this.detach();
+
+        this._releaseCameraLayer();
 
         this._device.canvas.removeEventListener('pointerdown', this._onPointerDown);
         this._device.canvas.removeEventListener('pointermove', this._onPointerMove);
         this._device.canvas.removeEventListener('pointerup', this._onPointerUp);
+        this._device.canvas.removeEventListener('pointercancel', this._onPointerUp);
+        releaseTouchAction(this._device.canvas);
+
+        this._handles.forEach(handle => handle.off());
 
         this.root.destroy();
+
     }
 }
 

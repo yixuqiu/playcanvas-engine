@@ -4,10 +4,12 @@ import { AnimBlend } from './anim-blend.js';
 import { math } from '../../../core/math/math.js';
 
 /**
+ * @import { AnimComponent } from '../../components/anim/component.js'
+ */
+
+/**
  * Used to store and update the value of an animation target. This combines the values of multiple
  * layer targets into a single value.
- *
- * @ignore
  */
 class AnimTargetValue {
     static TYPE_QUAT = 'quaternion';
@@ -84,6 +86,15 @@ class AnimTargetValue {
     }
 
     updateValue(index, value) {
+        // fast path: when a single fully weighted overwrite layer drives this target, the blended
+        // result is the layer value itself, so skip resetting and blending with the base value
+        if (this.layerCounter === 1 && this.mask[index] &&
+            this._component.layers[index].blendType === ANIM_LAYER_OVERWRITE && this.getWeight(index) === 1) {
+            // the evaluator already normalized the value, so it is passed to the setter as is
+            if (this.setter) this.setter(value);
+            return;
+        }
+
         // always reset the value of the target when the counter is 0
         if (this.counter === 0) {
             AnimBlend.set(this.value, AnimTargetValue.IDENTITY_QUAT_ARR, this.valueType);

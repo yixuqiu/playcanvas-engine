@@ -1,44 +1,31 @@
+import { SEMANTIC_POSITION, SHADERLANGUAGE_GLSL, SHADERLANGUAGE_WGSL } from '../../platform/graphics/constants.js';
 import { RenderPassShaderQuad } from '../../scene/graphics/render-pass-shader-quad.js';
+import { ShaderUtils } from '../../scene/shader-lib/shader-utils.js';
+import glslUpsamplePS from './glsl/upsample-ps.js';
+import wgslUpsamplePS from './wgsl/upsample-ps.js';
+import { ShaderChunks } from '../../scene/shader-lib/shader-chunks.js';
 
 /**
+ * Render pass implementation of an up-sample filter.
+ *
  * @category Graphics
+ * @ignore
  */
 class RenderPassUpsample extends RenderPassShaderQuad {
     constructor(device, sourceTexture) {
         super(device);
         this.sourceTexture = sourceTexture;
 
-        this.shader = this.createQuadShader('UpSampleShader', /* glsl */`
+        // register shader chunks
+        ShaderChunks.get(device, SHADERLANGUAGE_GLSL).set('upsamplePS', glslUpsamplePS);
+        ShaderChunks.get(device, SHADERLANGUAGE_WGSL).set('upsamplePS', wgslUpsamplePS);
 
-            uniform sampler2D sourceTexture;
-            uniform vec2 sourceInvResolution;
-            varying vec2 uv0;
-
-            void main()
-            {
-                float x = sourceInvResolution.x;
-                float y = sourceInvResolution.y;
-
-                vec3 a = texture2D (sourceTexture, vec2 (uv0.x - x, uv0.y + y)).rgb;
-                vec3 b = texture2D (sourceTexture, vec2 (uv0.x,     uv0.y + y)).rgb;
-                vec3 c = texture2D (sourceTexture, vec2 (uv0.x + x, uv0.y + y)).rgb;
-
-                vec3 d = texture2D (sourceTexture, vec2 (uv0.x - x, uv0.y)).rgb;
-                vec3 e = texture2D (sourceTexture, vec2 (uv0.x,     uv0.y)).rgb;
-                vec3 f = texture2D (sourceTexture, vec2 (uv0.x + x, uv0.y)).rgb;
-
-                vec3 g = texture2D (sourceTexture, vec2 (uv0.x - x, uv0.y - y)).rgb;
-                vec3 h = texture2D (sourceTexture, vec2 (uv0.x,     uv0.y - y)).rgb;
-                vec3 i = texture2D (sourceTexture, vec2 (uv0.x + x, uv0.y - y)).rgb;
-
-                vec3 value = e * 4.0;
-                value += (b + d + f + h) * 2.0;
-                value += (a + c + g + i);
-                value *= 1.0 / 16.0;
-
-                gl_FragColor = vec4(value, 1.0);
-            }`
-        );
+        this.shader = ShaderUtils.createShader(device, {
+            uniqueName: 'UpSampleShader',
+            attributes: { aPosition: SEMANTIC_POSITION },
+            vertexChunk: 'quadVS',
+            fragmentChunk: 'upsamplePS'
+        });
 
         this.sourceTextureId = device.scope.resolve('sourceTexture');
         this.sourceInvResolutionId = device.scope.resolve('sourceInvResolution');

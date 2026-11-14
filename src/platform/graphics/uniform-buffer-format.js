@@ -1,7 +1,7 @@
 import { Debug } from '../../core/debug.js';
 import { math } from '../../core/math/math.js';
 import {
-    uniformTypeToName, bindGroupNames,
+    uniformTypeToName,
     UNIFORMTYPE_BOOL, UNIFORMTYPE_INT, UNIFORMTYPE_FLOAT, UNIFORMTYPE_UINT, UNIFORMTYPE_VEC2,
     UNIFORMTYPE_VEC3, UNIFORMTYPE_VEC4, UNIFORMTYPE_IVEC2, UNIFORMTYPE_UVEC2, UNIFORMTYPE_IVEC3,
     UNIFORMTYPE_IVEC4, UNIFORMTYPE_BVEC2, UNIFORMTYPE_BVEC3, UNIFORMTYPE_UVEC3, UNIFORMTYPE_BVEC4,
@@ -11,6 +11,11 @@ import {
     UNIFORMTYPE_BVEC2ARRAY, UNIFORMTYPE_IVEC3ARRAY, UNIFORMTYPE_UVEC3ARRAY, UNIFORMTYPE_BVEC3ARRAY,
     UNIFORMTYPE_IVEC4ARRAY, UNIFORMTYPE_UVEC4ARRAY, UNIFORMTYPE_BVEC4ARRAY
 } from './constants.js';
+
+/**
+ * @import { GraphicsDevice } from './graphics-device.js'
+ * @import { ScopeId } from './scope-id.js'
+ */
 
 // map of UNIFORMTYPE_*** to number of 32bit components
 const uniformTypeToNumComponents = [];
@@ -37,6 +42,8 @@ uniformTypeToNumComponents[UNIFORMTYPE_UVEC4] = 4;
 
 /**
  * A class storing description of an individual uniform, stored inside a uniform buffer.
+ *
+ * @category Graphics
  */
 class UniformFormat {
     /**
@@ -67,7 +74,7 @@ class UniformFormat {
     offset;
 
     /**
-     * @type {import('./scope-id.js').ScopeId}
+     * @type {ScopeId}
      * @ignore
      */
     scopeId;
@@ -156,8 +163,9 @@ class UniformFormat {
         this.count = count;
         Debug.assert(!isNaN(count), `Unsupported uniform: ${name}[${count}]`);
         Debug.call(() => {
-            if (isNaN(count))
+            if (isNaN(count)) {
                 this.invalid = true;
+            }
         });
 
         let componentSize = this.numComponents;
@@ -168,8 +176,9 @@ class UniformFormat {
         }
 
         this.byteSize = componentSize * 4;
-        if (count)
+        if (count) {
             this.byteSize *= count;
+        }
 
         Debug.assert(this.byteSize, `Unknown byte size for uniform format ${type} used for ${name}`);
     }
@@ -182,8 +191,9 @@ class UniformFormat {
         let alignment = this.byteSize <= 8 ? this.byteSize : 16;
 
         // arrays have vec4 alignments
-        if (this.count)
+        if (this.count) {
             alignment = 16;
+        }
 
         // align the start offset
         offset = math.roundUp(offset, alignment);
@@ -192,13 +202,59 @@ class UniformFormat {
 }
 
 /**
- * A descriptor that defines the layout of of data inside the uniform buffer.
+ * Orders uniforms to minimize the padding of the std140 layout: uniforms occupying whole 16-byte
+ * rows first (vec4, matrices and arrays), then each vec3 followed by a scalar, filling the 4 bytes
+ * a vec3 leaves in its row, then vec2s and the remaining scalars. Uniforms of the same kind keep
+ * their relative order.
+ *
+ * @param {UniformFormat[]} uniforms - The uniforms.
+ * @returns {UniformFormat[]} The uniforms in packing order.
+ */
+const packUniforms = (uniforms) => {
+    const packed = [];
+    const vec3s = [];
+    const vec2s = [];
+    const scalars = [];
+    for (let i = 0; i < uniforms.length; i++) {
+        const uniform = uniforms[i];
+        const byteSize = uniform.byteSize;
+        if (uniform.count || byteSize >= 16) {
+            packed.push(uniform);
+        } else if (byteSize === 12) {
+            vec3s.push(uniform);
+        } else if (byteSize === 8) {
+            vec2s.push(uniform);
+        } else {
+            scalars.push(uniform);
+        }
+    }
+
+    // a scalar after each vec3 completes its row
+    let nextScalar = 0;
+    for (let i = 0; i < vec3s.length; i++) {
+        packed.push(vec3s[i]);
+        if (nextScalar < scalars.length) {
+            packed.push(scalars[nextScalar++]);
+        }
+    }
+
+    // vec2s pair up in rows, the remaining scalars fill what is left
+    for (let i = 0; i < vec2s.length; i++) {
+        packed.push(vec2s[i]);
+    }
+    for (; nextScalar < scalars.length; nextScalar++) {
+        packed.push(scalars[nextScalar]);
+    }
+    return packed;
+};
+
+/**
+ * A descriptor that defines the layout of data inside the uniform buffer.
+ *
+ * @category Graphics
  */
 class UniformBufferFormat {
-    /**
-     * @type {number}
-     * @ignore
-     */
+    /** @ignore */
     byteSize = 0;
 
     /**
@@ -208,18 +264,37 @@ class UniformBufferFormat {
     map = new Map();
 
     /**
+     * A string uniquely describing the layout of the buffer (the names, types and array sizes
+     * of its uniforms, in layout order), used to key caches of shaders processed against this
+     * format.
+     *
+     * @type {string}
+     * @ignore
+     */
+    key;
+
+    /**
      * Create a new UniformBufferFormat instance.
      *
-     * @param {import('./graphics-device.js').GraphicsDevice} graphicsDevice - The graphics device.
-     * @param {UniformFormat[]} uniforms - An array of uniforms to be stored in the buffer
+     * @param {GraphicsDevice} graphicsDevice - The graphics device.
+     * @param {UniformFormat[]} uniforms - An array of uniforms to be stored in the buffer.
+     * @param {object} [options] - Options.
+     * @param {boolean} [options.pack] - Reorder the uniforms to minimize the padding of the std140
+     * layout: uniforms occupying whole 16-byte rows first (vec4, matrices and arrays), then each
+     * vec3 followed by a scalar, then vec2s and the remaining scalars. The uniforms of the format
+     * are then in layout order rather than in the order of the array. Only use it when the shader
+     * declaration of the buffer is generated from this format, and never against a hand-written
+     * declaration, whose member order has to match the array. Defaults to false.
      */
-    constructor(graphicsDevice, uniforms) {
+    constructor(graphicsDevice, uniforms, options = {}) {
         this.scope = graphicsDevice.scope;
+
+        if (options.pack) {
+            uniforms = packUniforms(uniforms);
+        }
 
         /** @type {UniformFormat[]} */
         this.uniforms = uniforms;
-
-        // TODO: optimize uniforms ordering
 
         let offset = 0;
         for (let i = 0; i < uniforms.length; i++) {
@@ -229,11 +304,18 @@ class UniformBufferFormat {
 
             uniform.scopeId = this.scope.resolve(uniform.name);
 
+            // an array is found by its scope name `name[0]` and by its declared name, which is
+            // what the shader processors look up
             this.map.set(uniform.name, uniform);
+            if (uniform.count) {
+                this.map.set(uniform.shortName, uniform);
+            }
         }
 
         // round up buffer size
         this.byteSize = math.roundUp(offset, 16);
+
+        this.key = uniforms.map(uniform => `${uniform.name}:${uniform.type}:${uniform.count}`).join(',');
     }
 
     /**
@@ -244,20 +326,6 @@ class UniformBufferFormat {
      */
     get(name) {
         return this.map.get(name);
-    }
-
-    getShaderDeclaration(bindGroup, bindIndex) {
-
-        const name = bindGroupNames[bindGroup];
-        let code = `layout(set = ${bindGroup}, binding = ${bindIndex}, std140) uniform ub_${name} {\n`;
-
-        this.uniforms.forEach((uniform) => {
-            const typeString = uniformTypeToName[uniform.type];
-            Debug.assert(typeString.length > 0, `Uniform type ${uniform.type} is not handled.`);
-            code += `    ${typeString} ${uniform.shortName}${uniform.count ? `[${uniform.count}]` : ''};\n`;
-        });
-
-        return code + '};\n';
     }
 }
 

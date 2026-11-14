@@ -1,17 +1,32 @@
 import { ComponentSystem } from '../system.js';
-
 import { ButtonComponent } from './component.js';
-import { ButtonComponentData } from './data.js';
 
-const _schema = [
-    'enabled',
+/**
+ * @import { AppBase } from '../../app-base.js'
+ * @import { Entity } from '../../entity.js'
+ * @import { Vec4 } from '../../../core/math/vec4.js'
+ */
+
+/**
+ * Options of the `button` component accepted by {@link ButtonComponentSystem} that differ from the
+ * properties of {@link ButtonComponent}. Each replaces the same-named property of the options that
+ * {@link Entity#addComponent} derives from the component class; see
+ * {@link ComponentOptionsOverrides}.
+ *
+ * @typedef {object} ButtonComponentOptionsOverrides
+ * @property {Vec4 | number[]} [hitPadding] - Same as {@link ButtonComponent#hitPadding}, also
+ * accepting an `[x, y, z, w]` array.
+ * @ignore
+ */
+
+const _properties = [
+    'imageEntity',
     'active',
-    { name: 'imageEntity', type: 'entity' },
-    { name: 'hitPadding', type: 'vec4' },
+    'hitPadding',
     'transitionMode',
-    { name: 'hoverTint', type: 'rgba' },
-    { name: 'pressedTint', type: 'rgba' },
-    { name: 'inactiveTint', type: 'rgba' },
+    'hoverTint',
+    'pressedTint',
+    'inactiveTint',
     'fadeDuration',
     'hoverSpriteAsset',
     'hoverSpriteFrame',
@@ -22,7 +37,8 @@ const _schema = [
 ];
 
 /**
- * Manages creation of {@link ButtonComponent}s.
+ * Manages the {@link ButtonComponent}s of an application. Reach it through `app.systems.button`;
+ * components are created with {@link Entity#addComponent}, never by calling the system directly.
  *
  * @category User Interface
  */
@@ -30,7 +46,7 @@ class ButtonComponentSystem extends ComponentSystem {
     /**
      * Create a new ButtonComponentSystem.
      *
-     * @param {import('../../app-base.js').AppBase} app - The application.
+     * @param {AppBase} app - The application.
      * @ignore
      */
     constructor(app) {
@@ -39,17 +55,39 @@ class ButtonComponentSystem extends ComponentSystem {
         this.id = 'button';
 
         this.ComponentType = ButtonComponent;
-        this.DataType = ButtonComponentData;
 
-        this.schema = _schema;
-
-        this.on('beforeremove', this._onRemoveComponent, this);
+        this.on('beforeremove', this.onBeforeRemove, this);
 
         this.app.systems.on('update', this.onUpdate, this);
     }
 
     initializeComponentData(component, data, properties) {
-        super.initializeComponentData(component, data, _schema);
+        for (let i = 0; i < _properties.length; i++) {
+            const property = _properties[i];
+            // Guard on `undefined` rather than `hasOwnProperty` so that explicitly
+            // passing `{ hoverTint: undefined }` does not clobber the class-field
+            // default, matching the base initializer's behavior
+            if (data[property] !== undefined) {
+                component[property] = data[property];
+            }
+        }
+
+        super.initializeComponentData(component, data);
+    }
+
+    cloneComponent(entity, clone) {
+        const c = entity.button;
+
+        const data = {
+            enabled: c.enabled
+        };
+
+        for (let i = 0; i < _properties.length; i++) {
+            const property = _properties[i];
+            data[property] = c[property];
+        }
+
+        return this.addComponent(clone, data);
     }
 
     onUpdate(dt) {
@@ -64,8 +102,8 @@ class ButtonComponentSystem extends ComponentSystem {
         }
     }
 
-    _onRemoveComponent(entity, component) {
-        component.onRemove();
+    onBeforeRemove(entity, component) {
+        component.onBeforeRemove();
     }
 
     destroy() {

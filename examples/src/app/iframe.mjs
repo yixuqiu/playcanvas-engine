@@ -20,7 +20,7 @@ class IFrame {
     get window() {
         const e = document.getElementById(this._id);
         if (!(e instanceof HTMLIFrameElement)) {
-            console.warn('iframe doesnt exist yet.');
+            console.warn('iframe does not exist yet.');
             return null;
         }
         return e.contentWindow;
@@ -34,7 +34,10 @@ class IFrame {
     }
 
     get path() {
-        const groups = /([\w\d-]+)_([\w\d-]+).html$/g.exec(this.window?.location.href ?? '');
+        const href = this.window?.location.href ?? '';
+        const pathname = href ? new URL(href).pathname : '';
+        /* eslint-disable-next-line */
+        const groups = /([\w-]+)_([\w-]+).html$/.exec(pathname);
         if (!groups) {
             return '';
         }
@@ -42,8 +45,21 @@ class IFrame {
         return `/${groups[1]}/${groups[2]}`;
     }
 
-    reload() {
-        this.window?.location.reload();
+    /**
+     * @param {string} [stamp] - Cache-busting stamp.
+     */
+    reload(stamp = '') {
+        const win = this.window;
+        if (!win) {
+            return;
+        }
+        if (!stamp) {
+            win.location.reload();
+            return;
+        }
+        const url = new URL(win.location.href);
+        url.searchParams.set('t', stamp);
+        win.location.href = url.href;
     }
 
     /**

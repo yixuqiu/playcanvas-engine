@@ -1,21 +1,3 @@
-// detect whether passive events are supported by the browser
-const detectPassiveEvents = () => {
-    let result = false;
-
-    try {
-        const opts = Object.defineProperty({}, 'passive', {
-            get: function () {
-                result = true;
-                return false;
-            }
-        });
-        window.addEventListener('testpassive', null, opts);
-        window.removeEventListener('testpassive', null, opts);
-    } catch (e) {}
-
-    return result;
-};
-
 const ua = (typeof navigator !== 'undefined') ? navigator.userAgent : '';
 const environment = typeof window !== 'undefined' ? 'browser' :
     typeof global !== 'undefined' ? 'node' : 'worker';
@@ -23,7 +5,7 @@ const environment = typeof window !== 'undefined' ? 'browser' :
 // detect platform
 const platformName =
     (/android/i.test(ua) ? 'android' :
-        (/ip([ao]d|hone)/i.test(ua) ? 'ios' :
+        (/ip(?:[ao]d|hone)/i.test(ua) ? 'ios' :
             (/windows/i.test(ua) ? 'windows' :
                 (/mac os/i.test(ua) ? 'osx' :
                     (/linux/i.test(ua) ? 'linux' :
@@ -32,23 +14,28 @@ const platformName =
 // detect browser
 const browserName =
     (environment !== 'browser') ? null :
-        (/(Chrome\/|Chromium\/|Edg.*\/)/.test(ua) ? 'chrome' :  // chrome, chromium, edge
+        (/Chrome\/|Chromium\/|Edg.*\//.test(ua) ? 'chrome' :  // chrome, chromium, edge
             (/Safari\//.test(ua) ? 'safari' :                   // safari, ios chrome/firefox
                 (/Firefox\//.test(ua) ? 'firefox' :
                     'other')));
 
 const xbox = /xbox/i.test(ua);
+// visionOS Safari reports a macOS-style UA (no "visionOS" string) but uniquely has
+// maxTouchPoints > 0 on a "Macintosh" UA without any iPhone/iPad/iPod token.
+const visionos = /Macintosh/i.test(ua) &&
+    typeof navigator !== 'undefined' &&
+    navigator.maxTouchPoints > 0 &&
+    !/iPhone|iPad|iPod/i.test(ua);
 const touch = (environment === 'browser') && ('ontouchstart' in window || ('maxTouchPoints' in navigator && navigator.maxTouchPoints > 0));
 const gamepads = (environment === 'browser') && (!!navigator.getGamepads || !!navigator.webkitGetGamepads);
 const workers = (typeof Worker !== 'undefined');
-const passiveEvents = detectPassiveEvents();
 
 /**
  * Global namespace that stores flags regarding platform environment and features support.
  *
  * @namespace
  * @example
- * if (pc.platform.touch) {
+ * if (platform.touch) {
  *     // touch is supported
  * }
  */
@@ -88,6 +75,14 @@ const platform = {
     browser: environment === 'browser',
 
     /**
+     * True if running in a Web Worker.
+     *
+     * @type {boolean}
+     * @ignore
+     */
+    worker: environment === 'worker',
+
+    /**
      * True if running on a desktop or laptop device.
      *
      * @type {boolean}
@@ -116,6 +111,14 @@ const platform = {
     android: platformName === 'android',
 
     /**
+     * True if running on Apple Vision Pro (visionOS).
+     *
+     * @type {boolean}
+     * @ignore
+     */
+    visionos: visionos,
+
+    /**
      * True if running on an Xbox device.
      *
      * @type {boolean}
@@ -130,7 +133,7 @@ const platform = {
     gamepads: gamepads,
 
     /**
-     * True if the supports touch input.
+     * True if the platform supports touch input.
      *
      * @type {boolean}
      */
@@ -142,15 +145,6 @@ const platform = {
      * @type {boolean}
      */
     workers: workers,
-
-    /**
-     * True if the platform supports an options object as the third parameter to
-     * `EventTarget.addEventListener()` and the passive property is supported.
-     *
-     * @type {boolean}
-     * @ignore
-     */
-    passiveEvents: passiveEvents,
 
     /**
      * Get the browser name.

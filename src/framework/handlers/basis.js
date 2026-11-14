@@ -1,8 +1,12 @@
-import { WasmModule } from "../../core/wasm-module.js";
+import { WasmModule } from '../../core/wasm-module.js';
 import { Debug } from '../../core/debug.js';
 import { PIXELFORMAT_RGB565, PIXELFORMAT_RGBA4 } from '../../platform/graphics/constants.js';
 import { BasisWorker } from './basis-worker.js';
 import { http } from '../../platform/net/http.js';
+
+/**
+ * @import { GraphicsDevice } from '../../platform/graphics/graphics-device.js'
+ */
 
 // get the list of the device's supported compression formats
 const getCompressionFormats = (device) => {
@@ -22,8 +26,8 @@ const prepareWorkerModules = (config, callback) => {
         const code = [
             '/* basis */',
             basisCode,
-            "",
-            '(' + BasisWorker.toString() + ')()\n\n'
+            '',
+            `(${BasisWorker.toString()})()\n\n`
         ].join('\n');
         return new Blob([code], { type: 'application/javascript' });
     };
@@ -32,8 +36,9 @@ const prepareWorkerModules = (config, callback) => {
         try {
             if (typeof WebAssembly === 'object' && typeof WebAssembly.instantiate === 'function') {
                 const module = new WebAssembly.Module(Uint8Array.of(0x0, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00));
-                if (module instanceof WebAssembly.Module)
+                if (module instanceof WebAssembly.Module) {
                     return new WebAssembly.Instance(module) instanceof WebAssembly.Instance;
+                }
             }
         } catch (e) { }
         return false;
@@ -76,34 +81,34 @@ const prepareWorkerModules = (config, callback) => {
 
         const compileManual = () => {
             fetchPromise
-                .then(result => result.arrayBuffer())
-                .then(buffer => WebAssembly.compile(buffer))
-                .then((module_) => {
-                    if (basisCode) {
-                        sendResponse(basisCode, module_);
-                    } else {
-                        module = module_;
-                    }
-                })
-                .catch((err) => {
-                    callback(err, null);
-                });
+            .then(result => result.arrayBuffer())
+            .then(buffer => WebAssembly.compile(buffer))
+            .then((module_) => {
+                if (basisCode) {
+                    sendResponse(basisCode, module_);
+                } else {
+                    module = module_;
+                }
+            })
+            .catch((err) => {
+                callback(err, null);
+            });
         };
 
         // download and compile wasm module
         if (WebAssembly.compileStreaming) {
             WebAssembly.compileStreaming(fetchPromise)
-                .then((module_) => {
-                    if (basisCode) {
-                        sendResponse(basisCode, module_);
-                    } else {
-                        module = module_;
-                    }
-                })
-                .catch((err) => {
-                    Debug.warn(`compileStreaming() failed for ${config.wasmUrl} (${err}), falling back to arraybuffer download.`);
-                    compileManual();
-                });
+            .then((module_) => {
+                if (basisCode) {
+                    sendResponse(basisCode, module_);
+                } else {
+                    module = module_;
+                }
+            })
+            .catch((err) => {
+                Debug.warn(`compileStreaming() failed for ${config.wasmUrl} (${err}), falling back to arraybuffer download.`);
+                compileManual();
+            });
         } else {
             compileManual();
         }
@@ -127,14 +132,19 @@ class BasisQueue {
     }
 
     enqueueJob(url, data, callback, options) {
-        if (this.callbacks.hasOwnProperty(url)) {
-            // duplicate URL request
-            this.callbacks[url].push(callback);
+        // requests for the same URL share a transcode only when their options match, as those
+        // include the capabilities of the device, which select the output format
+        const key = `${url}|${JSON.stringify(options)}`;
+
+        if (this.callbacks.hasOwnProperty(key)) {
+            // duplicate request
+            this.callbacks[key].push(callback);
         } else {
-            // new URL request
-            this.callbacks[url] = [callback];
+            // new request
+            this.callbacks[key] = [callback];
 
             const job = {
+                key: key,
                 url: url,
                 data: data,
                 options: options
@@ -156,32 +166,29 @@ class BasisQueue {
         }
     }
 
-    handleResponse(url, err, data) {
-        const callback = this.callbacks[url];
+    handleResponse(key, err, data) {
+        const callback = this.callbacks[key];
 
         if (err) {
             for (let i = 0; i < callback.length; ++i) {
                 (callback[i])(err);
             }
         } else {
-            // (re)create typed array from the returned array buffers
-            if (data.format === PIXELFORMAT_RGB565 || data.format === PIXELFORMAT_RGBA4) {
-                // handle 16 bit formats
-                data.levels = data.levels.map(function (v) {
-                    return new Uint16Array(v);
-                });
-            } else {
-                // all other
-                data.levels = data.levels.map(function (v) {
-                    return new Uint8Array(v);
-                });
-            }
+            // (re)create typed array from the returned array buffers. cubemap levels are
+            // arrays of six face buffers, all other levels are a single image buffer.
+            const TypedArray = (data.format === PIXELFORMAT_RGB565 || data.format === PIXELFORMAT_RGBA4) ?
+                Uint16Array : Uint8Array;
+            data.levels = data.levels.map((level) => {
+                return Array.isArray(level) ?
+                    level.map(face => new TypedArray(face)) :
+                    new TypedArray(level);
+            });
 
             for (let i = 0; i < callback.length; ++i) {
                 (callback[i])(null, data);
             }
         }
-        delete this.callbacks[url];
+        delete this.callbacks[key];
     }
 }
 
@@ -192,7 +199,7 @@ class BasisClient {
         this.worker = new Worker(config.workerUrl);
         this.worker.addEventListener('message', (message) => {
             const data = message.data;
-            this.queue.handleResponse(data.url, data.err, data.data);
+            this.queue.handleResponse(data.key, data.err, data.data);
             if (!this.eager) {
                 this.queue.enqueueClient(this);
             }
@@ -212,6 +219,7 @@ class BasisClient {
         }
         this.worker.postMessage({
             type: 'transcode',
+            key: job.key,
             url: job.url,
             format: job.format,
             data: job.data,
@@ -225,7 +233,7 @@ class BasisClient {
 
 // defaults
 const defaultNumWorkers = 1;
-const defaultRgbPriority = ['etc1', 'etc2', 'astc', 'dxt', 'pvr', 'atc'];
+const defaultRgbPriority = ['etc2', 'etc1', 'astc', 'dxt', 'pvr', 'atc'];
 const defaultRgbaPriority = ['astc', 'dxt', 'etc2', 'pvr', 'atc'];
 const defaultMaxRetries = 5;
 
@@ -311,13 +319,10 @@ function basisInitialize(config) {
     }
 }
 
-let deviceDetails = null;
-
 /**
  * Enqueue a blob of basis data for transcoding.
  *
- * @param {import('../../platform/graphics/graphics-device.js').GraphicsDevice} device - The
- * graphics device.
+ * @param {GraphicsDevice} device - The graphics device.
  * @param {string} url - URL of the basis file.
  * @param {object} data - The file data to transcode.
  * @param {Function} callback - Callback function to receive transcode result.
@@ -326,23 +331,30 @@ let deviceDetails = null;
  * circumstances the texture will be unswizzled during transcoding.
  * @param {boolean} [options.isKTX2] - Indicates the image is KTX2 format. Otherwise
  * basis format is assumed.
+ * @param {boolean} [options.isCubemap] - Indicates the image contains six cubemap faces. Only
+ * supported for KTX2 files.
  * @returns {boolean} True if the basis worker was initialized and false otherwise.
  * @ignore
  */
 function basisTranscode(device, url, data, callback, options) {
     basisInitialize();
 
-    if (!deviceDetails) {
-        deviceDetails = {
-            webgl2: device.isWebGL2,
-            formats: getCompressionFormats(device)
-        };
-    }
+    // the capabilities of the device the texture is transcoded for, collected for each job, as
+    // textures can be loaded for multiple devices, for example WebGPU and WebGL
+    const deviceDetails = {
+        formats: getCompressionFormats(device),
+
+        // WebGPU has no 16-bit uncompressed formats, and requires the dimensions of compressed
+        // textures to be multiples of the block size, unless it supports unaligned ones
+        webgpu: device.isWebGPU,
+        unalignedCompression: !!device.extCompressedTextureUnaligned
+    };
 
     queue.enqueueJob(url, data, callback, {
         deviceDetails: deviceDetails,
         isGGGR: !!options?.isGGGR,
-        isKTX2: !!options?.isKTX2
+        isKTX2: !!options?.isKTX2,
+        isCubemap: !!options?.isCubemap
     });
 
     return initializing;

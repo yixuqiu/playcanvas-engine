@@ -1,60 +1,128 @@
+import { SEMANTIC_POSITION, SHADERLANGUAGE_GLSL, SHADERLANGUAGE_WGSL } from '../../platform/graphics/constants.js';
 import { RenderPassShaderQuad } from '../../scene/graphics/render-pass-shader-quad.js';
+import { ShaderUtils } from '../../scene/shader-lib/shader-utils.js';
+import glslDownsamplePS from './glsl/downsample-ps.js';
+import wgslDownsamplePS from './wgsl/downsample-ps.js';
+import { ShaderChunks } from '../../scene/shader-lib/shader-chunks.js';
 
 /**
+ * @import { GraphicsDevice } from '../../platform/graphics/graphics-device.js'
+ * @import { Texture } from '../../platform/graphics/texture.js'
+ */
+
+/**
+ * Render pass implementation of a down-sample filter.
+ *
  * @category Graphics
+ * @ignore
  */
 class RenderPassDownsample extends RenderPassShaderQuad {
-    constructor(device, sourceTexture) {
+    /**
+     * @param {GraphicsDevice} device - The graphics device.
+     * @param {Texture} sourceTexture - The source texture to downsample.
+     * @param {object} [options] - The options for the render pass.
+     * @param {boolean} [options.boxFilter] - Whether to use a box filter for downsampling.
+     * @param {Texture|null} [options.premultiplyTexture] - The texture to premultiply the source texture
+     * with. Only supported when boxFilter is true.
+     * @param {string} [options.premultiplySrcChannel] - The source channel to premultiply.
+     * @param {boolean} [options.removeInvalid] - Whether to remove invalid pixels from the output.
+     * @param {boolean} [options.prefilter] - Whether to apply a soft-knee high pass to the output,
+     * scaling down what sits below {@link RenderPassDownsample#prefilterThreshold}. Used by the
+     * first bloom downsample to limit bloom to the brightest parts of the scene. Enabling this
+     * generates a separate shader variant, so leave it off when the threshold is zero.
+     */
+    constructor(device, sourceTexture, options = {}) {
         super(device);
+
+        /**
+         * The texture to downsample. Use {@link RenderPassDownsample#setSourceTexture} to change it,
+         * which also sizes the render target from the new texture.
+         *
+         * @type {Texture}
+         */
         this.sourceTexture = sourceTexture;
-        this.shader = this.createQuadShader('DownSampleShader', /* glsl */`
+        this.premultiplyTexture = options.premultiplyTexture;
 
-            uniform sampler2D sourceTexture;
-            uniform vec2 sourceInvResolution;
-            varying vec2 uv0;
+        /**
+         * Whether the high pass is compiled into this pass' shader.
+         *
+         * @type {boolean}
+         * @readonly
+         */
+        this.prefilter = options.prefilter ?? false;
 
-            void main()
-            {
-                float x = sourceInvResolution.x;
-                float y = sourceInvResolution.y;
+        /**
+         * Brightness below which the high pass scales the output down, in the units of the source
+         * texture. Ignored unless the pass was created with the `prefilter` option.
+         *
+         * @type {number}
+         */
+        this.prefilterThreshold = 0;
 
-                vec3 a = texture2D (sourceTexture, vec2 (uv0.x - 2.0 * x, uv0.y + 2.0 * y)).rgb;
-                vec3 b = texture2D (sourceTexture, vec2 (uv0.x,           uv0.y + 2.0 * y)).rgb;
-                vec3 c = texture2D (sourceTexture, vec2 (uv0.x + 2.0 * x, uv0.y + 2.0 * y)).rgb;
+        /**
+         * Width of the quadratic transition below {@link RenderPassDownsample#prefilterThreshold}.
+         *
+         * @type {number}
+         */
+        this.prefilterKnee = 0;
 
-                vec3 d = texture2D (sourceTexture, vec2 (uv0.x - 2.0 * x, uv0.y)).rgb;
-                vec3 e = texture2D (sourceTexture, vec2 (uv0.x,           uv0.y)).rgb;
-                vec3 f = texture2D (sourceTexture, vec2 (uv0.x + 2.0 * x, uv0.y)).rgb;
+        // register shader chunks
+        ShaderChunks.get(device, SHADERLANGUAGE_GLSL).set('downsamplePS', glslDownsamplePS);
+        ShaderChunks.get(device, SHADERLANGUAGE_WGSL).set('downsamplePS', wgslDownsamplePS);
 
-                vec3 g = texture2D (sourceTexture, vec2 (uv0.x - 2.0 * x, uv0.y - 2.0 * y)).rgb;
-                vec3 h = texture2D (sourceTexture, vec2 (uv0.x,           uv0.y - 2.0 * y)).rgb;
-                vec3 i = texture2D (sourceTexture, vec2 (uv0.x + 2.0 * x, uv0.y - 2.0 * y)).rgb;
+        const boxFilter = options.boxFilter ?? false;
+        const key = `${boxFilter ? 'Box' : ''}-${options.premultiplyTexture ? 'Premultiply' : ''}-${options.premultiplySrcChannel ?? ''}-${options.removeInvalid ? 'RemoveInvalid' : ''}-${this.prefilter ? 'Prefilter' : ''}`;
 
-                vec3 j = texture2D (sourceTexture, vec2 (uv0.x - x, uv0.y + y)).rgb;
-                vec3 k = texture2D (sourceTexture, vec2 (uv0.x + x, uv0.y + y)).rgb;
-                vec3 l = texture2D (sourceTexture, vec2 (uv0.x - x, uv0.y - y)).rgb;
-                vec3 m = texture2D (sourceTexture, vec2 (uv0.x + x, uv0.y - y)).rgb;
+        const defines = new Map();
+        if (boxFilter) defines.set('BOXFILTER', '');
+        if (options.premultiplyTexture) defines.set('PREMULTIPLY', '');
+        if (options.removeInvalid) defines.set('REMOVE_INVALID', '');
+        if (this.prefilter) defines.set('PREFILTER', '');
+        defines.set('{PREMULTIPLY_SRC_CHANNEL}', options.premultiplySrcChannel ?? 'x');
 
-                vec3 value = e * 0.125;
-                value += (a + c + g + i) * 0.03125;
-                value += (b + d + f + h) * 0.0625;
-                value += (j + k + l + m) * 0.125;
-
-                gl_FragColor = vec4(value, 1.0);
-            }`
-        );
+        this.shader = ShaderUtils.createShader(device, {
+            uniqueName: `DownSampleShader:${key}`,
+            attributes: { aPosition: SEMANTIC_POSITION },
+            vertexChunk: 'quadVS',
+            fragmentChunk: 'downsamplePS',
+            fragmentDefines: defines
+        });
 
         this.sourceTextureId = device.scope.resolve('sourceTexture');
+        this.premultiplyTextureId = device.scope.resolve('premultiplyTexture');
         this.sourceInvResolutionId = device.scope.resolve('sourceInvResolution');
         this.sourceInvResolutionValue = new Float32Array(2);
+        this.prefilterThresholdKneeId = device.scope.resolve('prefilterThresholdKnee');
+        this.prefilterThresholdKneeValue = new Float32Array(2);
+    }
+
+    /**
+     * Sets the texture to downsample, and the texture the render target is sized from.
+     *
+     * @param {Texture} value - The source texture.
+     */
+    setSourceTexture(value) {
+        this.sourceTexture = value;
+
+        // change resize source
+        this.resizeSource = value;
     }
 
     execute() {
         this.sourceTextureId.setValue(this.sourceTexture);
+        if (this.premultiplyTexture) {
+            this.premultiplyTextureId.setValue(this.premultiplyTexture);
+        }
 
         this.sourceInvResolutionValue[0] = 1.0 / this.sourceTexture.width;
         this.sourceInvResolutionValue[1] = 1.0 / this.sourceTexture.height;
         this.sourceInvResolutionId.setValue(this.sourceInvResolutionValue);
+
+        if (this.prefilter) {
+            this.prefilterThresholdKneeValue[0] = this.prefilterThreshold;
+            this.prefilterThresholdKneeValue[1] = this.prefilterKnee;
+            this.prefilterThresholdKneeId.setValue(this.prefilterThresholdKneeValue);
+        }
 
         super.execute();
     }

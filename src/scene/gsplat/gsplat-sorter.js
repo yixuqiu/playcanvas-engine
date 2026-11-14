@@ -1,211 +1,180 @@
-import { EventHandler } from "../../core/event-handler.js";
+import { EventHandler } from '../../core/event-handler.js';
+import { platform } from '../../core/platform.js';
+import { UploadStream } from '../../platform/graphics/upload-stream.js';
+import { SortWorker } from './gsplat-sort-worker.js';
 
-// sort blind set of data
-function SortWorker() {
-
-    // number of bits used to store the distance in integer array. Smaller number gives it a smaller
-    // precision but faster sorting. Could be dynamic for less precise sorting.
-    // 16bit seems plenty of large scenes (train), 10bits is enough for sled.
-    const compareBits = 16;
-
-    // number of buckets for count sorting to represent each unique distance using compareBits bits
-    const bucketCount = (2 ** compareBits) + 1;
-
-    let data;
-    let centers;
-    let cameraPosition;
-    let cameraDirection;
-
-    const lastCameraPosition = { x: 0, y: 0, z: 0 };
-    const lastCameraDirection = { x: 0, y: 0, z: 0 };
-
-    const boundMin = { x: 0, y: 0, z: 0 };
-    const boundMax = { x: 0, y: 0, z: 0 };
-
-    let distances;
-    let target;
-    let countBuffer;
-
-    const update = () => {
-        if (!centers || !data || !cameraPosition || !cameraDirection) return;
-
-        const px = cameraPosition.x;
-        const py = cameraPosition.y;
-        const pz = cameraPosition.z;
-        const dx = cameraDirection.x;
-        const dy = cameraDirection.y;
-        const dz = cameraDirection.z;
-
-        const epsilon = 0.001;
-
-        if (Math.abs(px - lastCameraPosition.x) < epsilon &&
-            Math.abs(py - lastCameraPosition.y) < epsilon &&
-            Math.abs(pz - lastCameraPosition.z) < epsilon &&
-            Math.abs(dx - lastCameraDirection.x) < epsilon &&
-            Math.abs(dy - lastCameraDirection.y) < epsilon &&
-            Math.abs(dz - lastCameraDirection.z) < epsilon) {
-            return;
-        }
-
-        lastCameraPosition.x = px;
-        lastCameraPosition.y = py;
-        lastCameraPosition.z = pz;
-        lastCameraDirection.x = dx;
-        lastCameraDirection.y = dy;
-        lastCameraDirection.z = dz;
-
-        // create distance buffer
-        const numVertices = centers.length / 3;
-        if (distances?.length !== numVertices) {
-            distances = new Uint32Array(numVertices);
-            target = new Float32Array(numVertices * 4); // output 4 indices per splat (quad)
-        }
-
-        // calc min/max distance using bound
-        let minDist;
-        let maxDist;
-        for (let i = 0; i < 8; ++i) {
-            const x = i & 1 ? boundMin.x : boundMax.x;
-            const y = i & 2 ? boundMin.y : boundMax.y;
-            const z = i & 4 ? boundMin.z : boundMax.z;
-            const d = (x - px) * dx + (y - py) * dy + (z - pz) * dz;
-            if (i === 0) {
-                minDist = maxDist = d;
-            } else {
-                minDist = Math.min(minDist, d);
-                maxDist = Math.max(maxDist, d);
-            }
-        }
-
-        if (!countBuffer)
-            countBuffer = new Uint32Array(bucketCount);
-
-        for (let i = 0; i < bucketCount; i++)
-            countBuffer[i] = 0;
-
-        // generate per vertex distance to camera
-        const range = maxDist - minDist;
-        const divider = 1 / range * (2 ** compareBits);
-        for (let i = 0; i < numVertices; ++i) {
-            const istride = i * 3;
-            const d = (centers[istride + 0] - px) * dx +
-                      (centers[istride + 1] - py) * dy +
-                      (centers[istride + 2] - pz) * dz;
-            const sortKey = Math.floor((d - minDist) * divider);
-
-            distances[i] = sortKey;
-
-            // count occurrences of each distance
-            countBuffer[sortKey]++;
-        }
-
-        // Change countBuffer[i] so that it contains actual position of this digit in outputArray
-        for (let i = 1; i < bucketCount; i++)
-            countBuffer[i] += countBuffer[i - 1];
-
-        // Build the output array
-        const outputArray = new Uint32Array(target.buffer);
-        for (let i = 0; i < numVertices; i++) {
-            const distance = distances[i];
-            const destIndex = (--countBuffer[distance]) * 4;
-
-            outputArray[destIndex] = i;
-            outputArray[destIndex + 1] = i;
-            outputArray[destIndex + 2] = i;
-            outputArray[destIndex + 3] = i;
-        }
-
-        // swap
-        const tmp = data;
-        data = target;
-        target = tmp;
-
-        // send results
-        self.postMessage({
-            data: data.buffer
-        }, [data.buffer]);
-
-        data = null;
-    };
-
-    self.onmessage = (message) => {
-        if (message.data.data) {
-            data = new Float32Array(message.data.data);
-        }
-        if (message.data.centers) {
-            centers = new Float32Array(message.data.centers);
-
-            // calculate bounds
-            boundMin.x = boundMax.x = centers[0];
-            boundMin.y = boundMax.y = centers[1];
-            boundMin.z = boundMax.z = centers[2];
-
-            const numVertices = centers.length / 3;
-            for (let i = 1; i < numVertices; ++i) {
-                const x = centers[i * 3 + 0];
-                const y = centers[i * 3 + 1];
-                const z = centers[i * 3 + 2];
-
-                boundMin.x = Math.min(boundMin.x, x);
-                boundMin.y = Math.min(boundMin.y, y);
-                boundMin.z = Math.min(boundMin.z, z);
-
-                boundMax.x = Math.max(boundMax.x, x);
-                boundMax.y = Math.max(boundMax.y, y);
-                boundMax.z = Math.max(boundMax.z, z);
-            }
-        }
-        if (message.data.cameraPosition) cameraPosition = message.data.cameraPosition;
-        if (message.data.cameraDirection) cameraDirection = message.data.cameraDirection;
-
-        update();
-    };
-}
+/**
+ * @import { GraphicsDevice } from '../../platform/graphics/graphics-device.js'
+ * @import { StorageBuffer } from '../../platform/graphics/storage-buffer.js'
+ * @import { Texture } from '../../platform/graphics/texture.js'
+ */
 
 class GSplatSorter extends EventHandler {
     worker;
 
-    vertexBuffer;
+    /** @type {Texture|StorageBuffer} */
+    target;
 
-    constructor() {
+    /** @type {ArrayBuffer} */
+    orderData;
+
+    centers;
+
+    scene;
+
+    /** @type {UploadStream} */
+    uploadStream;
+
+    /**
+     * Pending sorted result from the worker, applied on the next applyPendingSorted() call.
+     * When multiple results arrive between frames, only the latest is kept.
+     *
+     * @type {{ count: number, data: Uint32Array }|null}
+     */
+    pendingSorted = null;
+
+    /** @type {number} */
+    count = 0;
+
+    /**
+     * @param {GraphicsDevice} device - The graphics device.
+     * @param {import('../scene.js').Scene} [scene] - The scene to fire sort timing events on.
+     */
+    constructor(device, scene) {
         super();
-
-        this.worker = new Worker(URL.createObjectURL(new Blob([`(${SortWorker.toString()})()`], {
-            type: 'application/javascript'
-        })));
-
-        this.worker.onmessage = (message) => {
-            const newData = message.data.data;
-            const oldData = this.vertexBuffer.storage;
-
-            // send vertex storage to worker to start the next frame
-            this.worker.postMessage({
-                data: oldData
-            }, [oldData]);
-
-            // update vertex buffer data in the next event cycle so the above postMesssage
-            // call is queued before the relatively slow setData call below is invoked
-            setTimeout(() => {
-                this.vertexBuffer.setData(newData);
+        this.scene = scene ?? null;
+        // Use single-buffer mode on WebGL: a single texImage2D outperforms the
+        // PBO + texSubImage2D path on Chrome's renderer→GPU IPC for multi-MB
+        // integer-format uploads. WebGPU keeps the staging path.
+        this.uploadStream = new UploadStream(device, !device.isWebGPU);
+        this._deviceRestoredEvent = device.on('devicerestored', () => {
+            if (this.orderData) {
+                // Storage buffers lose their contents. Reuse the latest CPU order even when
+                // the camera has not moved enough to request another sort from the worker.
+                this.pendingSorted = { count: this.count, data: new Uint32Array(this.orderData) };
                 this.fire('updated');
-            });
+            }
+        });
+
+        const messageHandler = (message) => {
+            const msgData = message.data ?? message;
+
+            if (this.scene && msgData.sortTime !== undefined) {
+                this.scene.fire('gsplat:sorted', msgData.sortTime);
+            }
+
+            const newOrder = msgData.order;
+            const oldOrder = this.orderData;
+
+            // send previous buffer to worker for reuse
+            this.worker.postMessage({
+                order: oldOrder
+            }, [oldOrder]);
+
+            // Store result for deferred GPU upload. Only the latest result is kept,
+            // avoiding redundant uploads when multiple worker messages arrive between frames.
+            this.orderData = newOrder;
+            this.count = msgData.count;
+            this.pendingSorted = {
+                count: msgData.count,
+                data: new Uint32Array(newOrder)
+            };
+
+            // Notify immediately so listeners can request a new frame (e.g. renderNextFrame).
+            this.fire('updated');
         };
+
+        const workerPort = platform.environment === 'node' ? 'require("node:worker_threads").parentPort' : 'self';
+        const workerSource = `(${SortWorker.toString()})(${workerPort})`;
+
+        if (platform.environment === 'node') {
+            this.worker = new Worker(workerSource, {
+                eval: true
+            });
+            this.worker.on('message', messageHandler);
+        } else {
+            this.worker = new Worker(URL.createObjectURL(new Blob([workerSource], {
+                type: 'application/javascript'
+            })));
+            this.worker.addEventListener('message', messageHandler);
+        }
     }
 
     destroy() {
+        this._deviceRestoredEvent.off();
         this.worker.terminate();
         this.worker = null;
+        this.uploadStream.destroy();
+        this.uploadStream = null;
     }
 
-    init(vertexBuffer, centers) {
-        this.vertexBuffer = vertexBuffer;
+    /**
+     * @param {Texture|StorageBuffer} target - The GPU target for order data uploads.
+     * @param {number} numSplats - The number of splats.
+     * @param {Float32Array} centers - The splat center positions.
+     * @param {Uint32Array} [chunks] - Optional chunk data.
+     */
+    init(target, numSplats, centers, chunks) {
+        this.target = target;
+        this.centers = centers.slice();
 
-        // send the initial buffer to worker
-        const buf = vertexBuffer.storage.slice(0);
-        this.worker.postMessage({
-            data: buf,
-            centers: centers.buffer
-        }, [buf, centers.buffer]);
+        const orderBuffer = new Uint32Array(numSplats);
+        for (let i = 0; i < numSplats; ++i) {
+            orderBuffer[i] = i;
+        }
+
+        // second buffer for double-buffering with the worker
+        this.orderData = new ArrayBuffer(numSplats * 4);
+
+        const obj = {
+            order: orderBuffer.buffer,
+            centers: centers.buffer,
+            chunks: chunks?.buffer
+        };
+
+        const transfer = [orderBuffer.buffer, centers.buffer].concat(chunks ? [chunks.buffer] : []);
+
+        this.worker.postMessage(obj, transfer);
+    }
+
+    /**
+     * Applies the most recent pending sorted result (if any), uploading order data to the GPU.
+     * Call once per frame from the instance's update().
+     *
+     * @returns {number} The splat count from the applied result, or -1 if nothing was pending.
+     */
+    applyPendingSorted() {
+        if (this.pendingSorted) {
+            const { count, data } = this.pendingSorted;
+            this.pendingSorted = null;
+            this.uploadStream.upload(data, this.target);
+            return count;
+        }
+        return -1;
+    }
+
+    setMapping(mapping) {
+        if (mapping) {
+            const centers = new Float32Array(mapping.length * 3);
+            for (let i = 0; i < mapping.length; ++i) {
+                const src = mapping[i] * 3;
+                const dst = i * 3;
+                centers[dst + 0] = this.centers[src + 0];
+                centers[dst + 1] = this.centers[src + 1];
+                centers[dst + 2] = this.centers[src + 2];
+            }
+
+            this.worker.postMessage({
+                centers: centers.buffer,
+                mapping: mapping.buffer
+            }, [centers.buffer, mapping.buffer]);
+        } else {
+            const centers = this.centers.slice();
+            this.worker.postMessage({
+                centers: centers.buffer,
+                mapping: null
+            }, [centers.buffer]);
+        }
     }
 
     setCamera(pos, dir) {

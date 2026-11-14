@@ -1,40 +1,23 @@
 import { EventHandler } from '../../core/event-handler.js';
 
 /**
- * A utility class for untaring archives from a fetch request. It processes files from a tar file
+ * A utility class for untarring archives from a fetch request. It processes files from a tar file
  * in a streamed manner, so asset parsing can happen in parallel instead of all at once at the end.
- *
- * @ignore
  */
 class Untar extends EventHandler {
-    /**
-     * @type {number}
-     * @private
-     */
+    /** @private */
     headerSize = 512;
 
-    /**
-     * @type {number}
-     * @private
-     */
+    /** @private */
     paddingSize = 512;
 
-    /**
-     * @type {number}
-     * @private
-     */
+    /** @private */
     bytesRead = 0;
 
-    /**
-     * @type {number}
-     * @private
-     */
+    /** @private */
     bytesReceived = 0;
 
-    /**
-     * @type {boolean}
-     * @private
-     */
+    /** @private */
     headerRead = false;
 
     /**
@@ -55,34 +38,19 @@ class Untar extends EventHandler {
      */
     decoder = null;
 
-    /**
-     * @type {string}
-     * @private
-     */
+    /** @private */
     prefix = '';
 
-    /**
-     * @type {string}
-     * @private
-     */
+    /** @private */
     fileName = '';
 
-    /**
-     * @type {number}
-     * @private
-     */
+    /** @private */
     fileSize = 0;
 
-    /**
-     * @type {string}
-     * @private
-     */
+    /** @private */
     fileType = '';
 
-    /**
-     * @type {string}
-     * @private
-     */
+    /** @private */
     ustarFormat = '';
 
     /**
@@ -90,7 +58,6 @@ class Untar extends EventHandler {
      *
      * @param {Promise} fetchPromise - A Promise object returned from a fetch request.
      * @param {string} assetsPrefix - Assets registry files prefix.
-     * @ignore
      */
     constructor(fetchPromise, assetsPrefix = '') {
         super();
@@ -110,7 +77,6 @@ class Untar extends EventHandler {
      * @param {boolean} done - True when reading data is complete.
      * @param {Uint8Array} value - Chunk of data read from a stream.
      * @returns {Promise|null} Return new pump Promise or null when no more data is available.
-     * @ignore
      */
     pump(done, value) {
         if (done) {
@@ -139,7 +105,6 @@ class Untar extends EventHandler {
      *
      * @returns {boolean} True if file was successfully read and more data is potentially available for
      * processing.
-     * @ignore
      */
     readFile() {
         if (!this.headerRead && this.bytesReceived > (this.bytesRead + this.headerSize)) {
@@ -187,8 +152,9 @@ class Untar extends EventHandler {
 
             // bytes padding
             const bytesRemained = this.bytesRead % this.paddingSize;
-            if (bytesRemained !== 0)
+            if (bytesRemained !== 0) {
                 this.bytesRead += this.paddingSize - bytesRemained;
+            }
 
             return true;
         }

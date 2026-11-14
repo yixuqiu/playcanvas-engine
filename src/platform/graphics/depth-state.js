@@ -1,5 +1,5 @@
-import { BitPacking } from "../../core/math/bit-packing.js";
-import { StringIds } from "../../core/string-ids.js";
+import { BitPacking } from '../../core/math/bit-packing.js';
+import { StringIds } from '../../core/string-ids.js';
 import {
     FUNC_LESSEQUAL, FUNC_ALWAYS
 } from './constants.js';
@@ -25,7 +25,7 @@ const writeShift = 3;      // 03 - 03 (1bit)
  */
 class DepthState {
     /**
-     * Bitfield representing the depth state.
+     * Bit field representing the depth state.
      *
      * @private
      */
@@ -39,8 +39,6 @@ class DepthState {
      * A unique number representing the depth state. You can use this number to quickly compare
      * two depth states for equality. The key is always maintained valid without a dirty flag,
      * to avoid condition check at runtime, considering these change rarely.
-     *
-     * @type {number}
      */
     key = 0;
 
@@ -59,24 +57,34 @@ class DepthState {
     }
 
     /**
-     * If true, a shader fragment is only written to the current render target if it passes the depth
-     * test. If false, it is written regardless of what is in the depth buffer. Note that when depth
-     * testing is disabled, writes to the depth buffer are also disabled. Defaults to true.
+     * Sets whether depth testing is performed. If true, a shader fragment is only written to the
+     * current render target if it passes the depth test. If false, it is written regardless of
+     * what is in the depth buffer. Disabling the test sets {@link DepthState#func} to
+     * {@link FUNC_ALWAYS}, and enabling it sets {@link FUNC_LESSEQUAL} - unless the test is
+     * already enabled, in which case the current depth testing function is kept. Depth writes are
+     * controlled independently by {@link DepthState#write}, so a fragment still writes its depth
+     * when the test is disabled. Defaults to true.
      *
      * @type {boolean}
      */
     set test(value) {
-        this.func = value ? FUNC_LESSEQUAL : FUNC_ALWAYS;
-        this.updateKey();
+        if (value !== this.test) {
+            this.func = value ? FUNC_LESSEQUAL : FUNC_ALWAYS;
+        }
     }
 
+    /**
+     * Gets whether depth testing is performed.
+     *
+     * @type {boolean}
+     */
     get test() {
         return this.func !== FUNC_ALWAYS;
     }
 
     /**
-     * If true, shader write a depth value to the depth buffer of the currently active render
-     * target. If false, no depth value is written.
+     * Sets whether depth writing is performed. If true, shader write a depth value to the depth
+     * buffer of the currently active render target. If false, no depth value is written.
      *
      * @type {boolean}
      */
@@ -85,13 +93,18 @@ class DepthState {
         this.updateKey();
     }
 
+    /**
+     * Gets whether depth writing is performed.
+     *
+     * @type {boolean}
+     */
     get write() {
         return BitPacking.all(this.data, writeShift);
     }
 
     /**
-     * Controls how the depth of the fragment is compared against the current depth contained in
-     * the depth buffer. Can be:
+     * Sets the depth testing function. Controls how the depth of the fragment is compared against
+     * the current depth contained in the depth buffer. Can be:
      *
      * - {@link FUNC_NEVER}: don't draw
      * - {@link FUNC_LESS}: draw if new depth < depth buffer
@@ -109,14 +122,19 @@ class DepthState {
         this.updateKey();
     }
 
+    /**
+     * Gets the depth testing function.
+     *
+     * @type {number}
+     */
     get func() {
         return BitPacking.get(this.data, funcShift, funcMask);
     }
 
     /**
-     * Constant depth bias added to each fragment's depth. Useful for decals to prevent z-fighting.
-     * Typically a small negative value (-0.1) is used to render the mesh slightly closer to the
-     * camera. Defaults to 0.
+     * Sets the constant depth bias added to each fragment's depth. Useful for decals to prevent
+     * z-fighting. Typically a small negative value (-0.1) is used to render the mesh slightly
+     * closer to the camera. Defaults to 0.
      *
      * @type {number}
      */
@@ -125,12 +143,17 @@ class DepthState {
         this.updateKey();
     }
 
+    /**
+     * Gets the constant depth bias added to each fragment's depth.
+     *
+     * @type {number}
+     */
     get depthBias() {
         return this._depthBias;
     }
 
     /**
-     * Depth bias that scales with the fragment’s slope. Defaults to 0.
+     * Sets the depth bias that scales with the fragment's slope. Defaults to 0.
      *
      * @type {number}
      */
@@ -139,6 +162,11 @@ class DepthState {
         this.updateKey();
     }
 
+    /**
+     * Gets the depth bias that scales with the fragment's slope.
+     *
+     * @type {number}
+     */
     get depthBiasSlope() {
         return this._depthBiasSlope;
     }

@@ -1,14 +1,17 @@
 import { Debug } from '../../core/debug.js';
 import { hashCode } from '../../core/hash.js';
-
+import { BitPacking } from '../../core/math/bit-packing.js';
 import { math } from '../../core/math/math.js';
 import { StringIds } from '../../core/string-ids.js';
-
 import {
-    SEMANTIC_TEXCOORD0, SEMANTIC_TEXCOORD1, SEMANTIC_ATTR12, SEMANTIC_ATTR13, SEMANTIC_ATTR14, SEMANTIC_ATTR15,
+    SEMANTIC_TEXCOORD, SEMANTIC_ATTR12, SEMANTIC_ATTR11, SEMANTIC_ATTR14, SEMANTIC_ATTR15,
     SEMANTIC_COLOR, SEMANTIC_TANGENT, TYPE_FLOAT32, typedArrayTypesByteSize, vertexTypesNames
 } from './constants.js';
 import { DeviceCache } from './device-cache.js';
+
+/**
+ * @import { GraphicsDevice } from './graphics-device.js'
+ */
 
 const stringIds = new StringIds();
 const webgpuValidElementSizes = [2, 4, 8, 12, 16];
@@ -111,8 +114,8 @@ class VertexFormat {
     /**
      * Create a new VertexFormat instance.
      *
-     * @param {import('./graphics-device.js').GraphicsDevice} graphicsDevice - The graphics device
-     * used to manage this vertex format.
+     * @param {GraphicsDevice} graphicsDevice - The graphics device used to manage this vertex
+     * format.
      * @param {AttributeDescription[]} description - An array of vertex attribute descriptions.
      * @param {number} [vertexCount] - When specified, vertex format will be set up for
      * non-interleaved format with a specified number of vertices. (example: PPPPNNNNCCCC), where
@@ -122,22 +125,24 @@ class VertexFormat {
      * vertex format will be interleaved. (example: PNCPNCPNCPNC).
      * @example
      * // Specify 3-component positions (x, y, z)
-     * const vertexFormat = new pc.VertexFormat(graphicsDevice, [
-     *     { semantic: pc.SEMANTIC_POSITION, components: 3, type: pc.TYPE_FLOAT32 }
+     * const vertexFormat = new VertexFormat(graphicsDevice, [
+     *     { semantic: SEMANTIC_POSITION, components: 3, type: TYPE_FLOAT32 }
      * ]);
      * @example
      * // Specify 2-component positions (x, y), a texture coordinate (u, v) and a vertex color (r, g, b, a)
-     * const vertexFormat = new pc.VertexFormat(graphicsDevice, [
-     *     { semantic: pc.SEMANTIC_POSITION, components: 2, type: pc.TYPE_FLOAT32 },
-     *     { semantic: pc.SEMANTIC_TEXCOORD0, components: 2, type: pc.TYPE_FLOAT32 },
-     *     { semantic: pc.SEMANTIC_COLOR, components: 4, type: pc.TYPE_UINT8, normalize: true }
+     * const vertexFormat = new VertexFormat(graphicsDevice, [
+     *     { semantic: SEMANTIC_POSITION, components: 2, type: TYPE_FLOAT32 },
+     *     { semantic: SEMANTIC_TEXCOORD0, components: 2, type: TYPE_FLOAT32 },
+     *     { semantic: SEMANTIC_COLOR, components: 4, type: TYPE_UINT8, normalize: true }
      * ]);
      */
     constructor(graphicsDevice, description, vertexCount) {
         this.device = graphicsDevice;
         this._elements = [];
-        this.hasUv0 = false;
-        this.hasUv1 = false;
+
+        // bit i is set when the format contains SEMANTIC_TEXCOORDi
+        this._uvMask = 0;
+
         this.hasColor = false;
         this.hasTangents = false;
         this.verticesByteSize = 0;
@@ -160,7 +165,7 @@ class VertexFormat {
 
             // WebGPU has limited element size support (for example uint16x3 is not supported)
             Debug.assert(VertexFormat.isElementValid(graphicsDevice, elementDesc),
-                         `WebGPU does not support the format of vertex element ${elementDesc.semantic} : ${vertexTypesNames[elementDesc.type]} x ${elementDesc.components}`);
+                `WebGPU does not support the format of vertex element ${elementDesc.semantic} : ${vertexTypesNames[elementDesc.type]} x ${elementDesc.components}`);
 
             // align up the offset to elementSize (when vertexCount is specified only - case of non-interleaved format)
             if (vertexCount) {
@@ -169,7 +174,7 @@ class VertexFormat {
                 // non-interleaved format with elementSize not multiple of 4 might be slower on some platforms - padding is recommended to align its size
                 // example: use 4 x TYPE_UINT8 instead of 3 x TYPE_UINT8
                 Debug.assert((elementSize % 4) === 0,
-                             `Non-interleaved vertex format with element size not multiple of 4 can have performance impact on some platforms. Element size: ${elementSize}`);
+                    `Non-interleaved vertex format with element size not multiple of 4 can have performance impact on some platforms. Element size: ${elementSize}`);
             }
 
             const asInt = elementDesc.asInt ?? false;
@@ -192,10 +197,10 @@ class VertexFormat {
                 offset += Math.ceil(elementSize / 4) * 4;
             }
 
-            if (elementDesc.semantic === SEMANTIC_TEXCOORD0) {
-                this.hasUv0 = true;
-            } else if (elementDesc.semantic === SEMANTIC_TEXCOORD1) {
-                this.hasUv1 = true;
+            if (elementDesc.semantic.startsWith(SEMANTIC_TEXCOORD)) {
+                const uvIndex = parseInt(elementDesc.semantic.substring(SEMANTIC_TEXCOORD.length), 10);
+                Debug.assert(uvIndex >= 0 && uvIndex < 8, `Unsupported texture coordinate semantic ${elementDesc.semantic}`);
+                this._uvMask = BitPacking.set(this._uvMask, 1, uvIndex);
             } else if (elementDesc.semantic === SEMANTIC_COLOR) {
                 this.hasColor = true;
             } else if (elementDesc.semantic === SEMANTIC_TANGENT) {
@@ -215,11 +220,36 @@ class VertexFormat {
     }
 
     /**
+     * The texture coordinate sets contained in the format, as a bit mask with bit i set when the
+     * format contains the semantic {@link SEMANTIC_TEXCOORD0} + i.
+     *
+     * @type {number}
+     * @ignore
+     */
+    get uvMask() {
+        return this._uvMask;
+    }
+
+    /**
+     * Returns true if the format contains the texture coordinate set with the specified index.
+     *
+     * @param {number} index - The index of the texture coordinate set, from 0 for
+     * {@link SEMANTIC_TEXCOORD0} to 7 for {@link SEMANTIC_TEXCOORD7}.
+     * @returns {boolean} True if the format contains the texture coordinate set.
+     */
+    hasUv(index) {
+        return BitPacking.any(this._uvMask, index);
+    }
+
+    /**
      * The {@link VertexFormat} used to store matrices of type {@link Mat4} for hardware instancing.
+     * The matrix rows use {@link SEMANTIC_ATTR11}, {@link SEMANTIC_ATTR12}, {@link SEMANTIC_ATTR14}
+     * and {@link SEMANTIC_ATTR15}. The first two share their attribute locations with
+     * {@link SEMANTIC_TEXCOORD6} and {@link SEMANTIC_TEXCOORD7}, so a shader reading those texture
+     * coordinate sets needs a custom instancing format on other attributes.
      *
-     * @param {import('./graphics-device.js').GraphicsDevice} graphicsDevice - The graphics device
-     * used to create this vertex format.
-     *
+     * @param {GraphicsDevice} graphicsDevice - The graphics device used to create this vertex
+     * format.
      * @returns {VertexFormat} The default instancing vertex format.
      */
     static getDefaultInstancingFormat(graphicsDevice) {
@@ -227,18 +257,29 @@ class VertexFormat {
         // get it from the device cache, or create a new one if not cached yet
         return deviceCache.get(graphicsDevice, () => {
             return new VertexFormat(graphicsDevice, [
+                { semantic: SEMANTIC_ATTR11, components: 4, type: TYPE_FLOAT32 },
                 { semantic: SEMANTIC_ATTR12, components: 4, type: TYPE_FLOAT32 },
-                { semantic: SEMANTIC_ATTR13, components: 4, type: TYPE_FLOAT32 },
                 { semantic: SEMANTIC_ATTR14, components: 4, type: TYPE_FLOAT32 },
                 { semantic: SEMANTIC_ATTR15, components: 4, type: TYPE_FLOAT32 }
             ]);
         });
     }
 
+    /**
+     * @deprecated Use VertexFormat.getDefaultInstancingFormat(graphicsDevice).
+     * @returns {null} Always null.
+     * @ignore
+     */
+    static get defaultInstancingFormat() {
+        Debug.removed('VertexFormat.defaultInstancingFormat was removed. Use VertexFormat.getDefaultInstancingFormat(graphicsDevice).');
+        return null;
+    }
+
     static isElementValid(graphicsDevice, elementDesc) {
         const elementSize = elementDesc.components * typedArrayTypesByteSize[elementDesc.type];
-        if (graphicsDevice.isWebGPU && !webgpuValidElementSizes.includes(elementSize))
+        if (graphicsDevice.isWebGPU && !webgpuValidElementSizes.includes(elementSize)) {
             return false;
+        }
         return true;
     }
 
@@ -249,7 +290,7 @@ class VertexFormat {
      */
     update() {
         // Note that this is used only by vertex attribute morphing on the WebGL.
-        Debug.assert(!this.device.isWebGPU, `VertexFormat#update is not supported on WebGPU and VertexFormat cannot be modified.`);
+        Debug.assert(!this.device.isWebGPU, 'VertexFormat#update is not supported on WebGPU and VertexFormat cannot be modified.');
         this._evaluateHash();
     }
 

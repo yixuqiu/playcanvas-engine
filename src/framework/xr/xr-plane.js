@@ -2,17 +2,24 @@ import { EventHandler } from '../../core/event-handler.js';
 import { Quat } from '../../core/math/quat.js';
 import { Vec3 } from '../../core/math/vec3.js';
 
+/**
+ * @import { XrPlaneDetection } from './xr-plane-detection.js'
+ */
+
 let ids = 0;
 
 /**
- * Detected Plane instance that provides position, rotation, polygon points and its semantic label.
- * Plane data is subject to change during its lifetime.
+ * Represents a detected plane in the real world, providing its position, rotation, polygon points,
+ * and semantic label. The plane data may change over time as the system updates its understanding
+ * of the environment. Instances of this class are created and managed by the
+ * {@link XrPlaneDetection} system.
  *
  * @category XR
  */
 class XrPlane extends EventHandler {
     /**
-     * Fired when an {@link XrPlane} is removed.
+     * Fired when an {@link XrPlane} is removed. Its attributes, such as its points and label, keep
+     * their last values.
      *
      * @event
      * @example
@@ -41,7 +48,7 @@ class XrPlane extends EventHandler {
     _id;
 
     /**
-     * @type {import('./xr-plane-detection.js').XrPlaneDetection}
+     * @type {XrPlaneDetection}
      * @private
      */
     _planeDetection;
@@ -58,29 +65,19 @@ class XrPlane extends EventHandler {
      */
     _lastChangedTime;
 
-    /**
-     * @type {string}
-     * @private
-     */
-    _orientation;
+    /** @private */
+    _destroyed = false;
 
-    /**
-     * @type {Vec3}
-     * @private
-     */
+    /** @private */
     _position = new Vec3();
 
-    /**
-     * @type {Quat}
-     * @private
-     */
+    /** @private */
     _rotation = new Quat();
 
     /**
      * Create a new XrPlane instance.
      *
-     * @param {import('./xr-plane-detection.js').XrPlaneDetection} planeDetection - Plane detection
-     * system.
+     * @param {XrPlaneDetection} planeDetection - Plane detection system.
      * @param {*} xrPlane - XRPlane that is instantiated by WebXR system.
      * @ignore
      */
@@ -91,18 +88,19 @@ class XrPlane extends EventHandler {
         this._planeDetection = planeDetection;
         this._xrPlane = xrPlane;
         this._lastChangedTime = xrPlane.lastChangedTime;
-        this._orientation = xrPlane.orientation;
     }
 
     /** @ignore */
     destroy() {
-        if (!this._xrPlane) return;
-        this._xrPlane = null;
+        if (this._destroyed) return;
+
+        // the XRPlane is kept, so the attributes of the plane stay readable once it is removed
+        this._destroyed = true;
         this.fire('remove');
     }
 
     /**
-     * @param {*} frame - XRFrame from requestAnimationFrame callback.
+     * @param {XRFrame} frame - XRFrame from requestAnimationFrame callback.
      * @ignore
      */
     update(frame) {
@@ -150,39 +148,51 @@ class XrPlane extends EventHandler {
     }
 
     /**
-     * Plane's specific orientation (horizontal or vertical) or null if orientation is anything else.
+     * Gets the plane's specific orientation. This can be "horizontal" for planes that are parallel
+     * to the ground, "vertical" for planes that are perpendicular to the ground, or `null` if the
+     * orientation is different or unknown.
      *
-     * @type {string|null}
+     * @type {"horizontal"|"vertical"|null}
+     * @example
+     * if (plane.orientation === 'horizontal') {
+     *     console.log('This plane is horizontal.');
+     * } else if (plane.orientation === 'vertical') {
+     *     console.log('This plane is vertical.');
+     * } else {
+     *     console.log('Orientation of this plane is unknown or different.');
+     * }
      */
     get orientation() {
-        return this._orientation;
+        return this._xrPlane.orientation;
     }
 
     /**
-     * Array of DOMPointReadOnly objects. DOMPointReadOnly is an object with `x y z` properties
-     * that defines a local point of a plane's polygon.
+     * Gets the array of points that define the polygon of the plane in its local coordinate space.
+     * Each point is represented as a `DOMPointReadOnly` object with `x`, `y`, and `z` properties.
+     * These points can be transformed to world coordinates using the plane's position and
+     * rotation.
      *
-     * @type {object[]}
+     * @type {DOMPointReadOnly[]}
      * @example
      * // prepare reusable objects
-     * const vecA = new pc.Vec3();
-     * const vecB = new pc.Vec3();
-     * const color = new pc.Color(1, 1, 1);
+     * const transform = new Mat4();
+     * const vecA = new Vec3();
+     * const vecB = new Vec3();
      *
      * // update Mat4 to plane position and rotation
-     * transform.setTRS(plane.getPosition(), plane.getRotation(), pc.Vec3.ONE);
+     * transform.setTRS(plane.getPosition(), plane.getRotation(), Vec3.ONE);
      *
      * // draw lines between points
      * for (let i = 0; i < plane.points.length; i++) {
      *     vecA.copy(plane.points[i]);
      *     vecB.copy(plane.points[(i + 1) % plane.points.length]);
      *
-     *     // transform from planes local to world coords
+     *     // transform points to world space
      *     transform.transformPoint(vecA, vecA);
      *     transform.transformPoint(vecB, vecB);
      *
      *     // render line
-     *     app.drawLine(vecA, vecB, color);
+     *     app.drawLine(vecA, vecB, Color.WHITE);
      * }
      */
     get points() {
@@ -190,10 +200,17 @@ class XrPlane extends EventHandler {
     }
 
     /**
-     * Semantic Label of a plane that is provided by underlying system.
-     * Current list includes (but not limited to): https://github.com/immersive-web/semantic-labels/blob/master/labels.json
+     * Gets the semantic label of the plane provided by the underlying system. The label describes
+     * the type of surface the plane represents, such as "floor", "wall", "ceiling", etc. The list
+     * of possible labels can be found in the [semantic labels repository](https://github.com/immersive-web/semantic-labels).
      *
      * @type {string}
+     * @example
+     * if (plane.label === 'floor') {
+     *     console.log('This plane represents the floor.');
+     * } else if (plane.label === 'wall') {
+     *     console.log('This plane represents a wall.');
+     * }
      */
     get label() {
         return this._xrPlane.semanticLabel || '';

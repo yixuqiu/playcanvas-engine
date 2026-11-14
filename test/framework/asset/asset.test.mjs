@@ -1,27 +1,27 @@
-import { Application } from '../../../src/framework/application.js';
-import { Asset } from '../../../src/framework/asset/asset.js';
-import { NullGraphicsDevice } from '../../../src/platform/graphics/null/null-graphics-device.js';
-
-import { HTMLCanvasElement } from '@playcanvas/canvas-mock';
-
 import { expect } from 'chai';
+
+import { Asset } from '../../../src/framework/asset/asset.js';
+import { createApp } from '../../app.mjs';
+import { jsdomSetup, jsdomTeardown } from '../../jsdom.mjs';
 
 describe('Asset', function () {
 
     let app;
 
     beforeEach(function () {
-        const canvas = new HTMLCanvasElement(500, 500);
-        app = new Application(canvas, { graphicsDevice: new NullGraphicsDevice(canvas) });
+        jsdomSetup();
+        app = createApp();
     });
 
     afterEach(function () {
-        app.destroy();
+        app?.destroy();
+        app = null;
+        jsdomTeardown();
     });
 
     const DEFAULT_LOCALE_FALLBACKS = {
         'en': 'en-US',
-        'es': 'en-ES',
+        'es': 'es-ES',
         'zh': 'zh-CN',
         'fr': 'fr-FR',
         'de': 'de-DE',
@@ -75,7 +75,7 @@ describe('Asset', function () {
 
             let id = 1;
             for (const key in DEFAULT_LOCALE_FALLBACKS) {
-                asset.addLocalizedAssetId(key + '-test', 1000 + id); // add other locale with same language which shouldn't be used
+                asset.addLocalizedAssetId(`${key}-test`, 1000 + id); // add other locale with same language which shouldn't be used
                 asset.addLocalizedAssetId(DEFAULT_LOCALE_FALLBACKS[key], 2000 + id);
                 id++;
             }
@@ -123,6 +123,15 @@ describe('Asset', function () {
             asset.addLocalizedAssetId('zh-TW', 2);
 
             expect(asset.getLocalizedAssetId('zh-SG')).to.equal(2);
+        });
+
+        it('es-MX should fallback to es-ES', function () {
+            const asset = new Asset('asset', 'font');
+
+            asset.addLocalizedAssetId('en-US', 1);
+            asset.addLocalizedAssetId('es-ES', 2);
+
+            expect(asset.getLocalizedAssetId('es-MX')).to.equal(2);
         });
 
     });

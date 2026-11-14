@@ -3,11 +3,30 @@ import { Curve } from './curve.js';
 import { CurveEvaluator } from './curve-evaluator.js';
 
 /**
- * A curve set is a collection of curves.
+ * A curve set is a collection of curves that share a time axis and are evaluated together, such as
+ * the three channels of a color or the components of a vector changing over time.
  *
+ * Build one from an array of `[time, value, ...]` key arrays, one per curve, or from a number of
+ * empty curves. Setting {@link type} applies that interpolation to every curve in the set, and
+ * {@link value} returns the value of each curve at a time as one array. Reach an individual
+ * {@link Curve} with {@link get}.
+ *
+ * @example
+ * // Animate an RGB color over time and sample it at the midpoint
+ * const colorOverTime = new CurveSet([
+ *     [0, 1, 1, 0],   // red:   1 at t = 0, 0 at t = 1
+ *     [0, 0, 1, 1],   // green: 0 at t = 0, 1 at t = 1
+ *     [0, 0, 1, 0]    // blue:  0 throughout
+ * ]);
+ * const [r, g, b] = colorOverTime.value(0.5);
  * @category Math
  */
 class CurveSet {
+    /**
+     * The array of curves in the set.
+     *
+     * @type {Curve[]}
+     */
     curves = [];
 
     /**
@@ -19,10 +38,15 @@ class CurveSet {
     /**
      * Creates a new CurveSet instance.
      *
-     * @param {Array<number[]>} curveKeys - An array of arrays of keys (pairs of numbers with the
-     * time first and value second).
+     * @param {...*} args - Variable arguments with several possible formats:
+     * - No arguments: Creates a CurveSet with a single default curve.
+     * - Single number argument: Creates a CurveSet with the specified number of default curves.
+     * - Single array argument: An array of arrays, where each sub-array contains keys (pairs of
+     * numbers with the time first and value second).
+     * - Multiple arguments: Each argument becomes a separate curve.
      * @example
-     * const curveSet = new pc.CurveSet([
+     * // Create from an array of arrays of keys
+     * const curveSet = new CurveSet([
      *     [
      *         0, 0,        // At 0 time, value of 0
      *         0.33, 2,     // At 0.33 time, value of 2
@@ -37,31 +61,34 @@ class CurveSet {
      *     ]
      * ]);
      */
-    constructor() {
-        if (arguments.length > 1) {
-            for (let i = 0; i < arguments.length; i++) {
-                this.curves.push(new Curve(arguments[i]));
+    constructor(...args) {
+        if (args.length > 1) {
+            // Multiple arguments: each becomes a curve
+            for (let i = 0; i < args.length; i++) {
+                this.curves.push(new Curve(args[i]));
             }
+        } else if (args.length === 0) {
+            // No arguments: create a single default curve
+            this.curves.push(new Curve());
         } else {
-            if (arguments.length === 0) {
-                this.curves.push(new Curve());
+            // Single argument
+            const arg = args[0];
+            if (typeof arg === 'number') {
+                // Number: create specified number of default curves
+                for (let i = 0; i < arg; i++) {
+                    this.curves.push(new Curve());
+                }
             } else {
-                const arg = arguments[0];
-                if (typeof arg === 'number') {
-                    for (let i = 0; i < arg; i++) {
-                        this.curves.push(new Curve());
-                    }
-                } else {
-                    for (let i = 0; i < arg.length; i++) {
-                        this.curves.push(new Curve(arg[i]));
-                    }
+                // Array: each element becomes a curve
+                for (let i = 0; i < arg.length; i++) {
+                    this.curves.push(new Curve(arg[i]));
                 }
             }
         }
     }
 
     /**
-     * The number of curves in the curve set.
+     * Gets the number of curves in the curve set.
      *
      * @type {number}
      */
@@ -70,7 +97,7 @@ class CurveSet {
     }
 
     /**
-     * The interpolation scheme applied to all curves in the curve set. Can be:
+     * Sets the interpolation scheme applied to all curves in the curve set. Can be:
      *
      * - {@link CURVE_LINEAR}
      * - {@link CURVE_SMOOTHSTEP}
@@ -88,6 +115,11 @@ class CurveSet {
         }
     }
 
+    /**
+     * Gets the interpolation scheme applied to all curves in the curve set.
+     *
+     * @type {number}
+     */
     get type() {
         return this._type;
     }
@@ -97,9 +129,82 @@ class CurveSet {
      *
      * @param {number} index - The index of the curve to return.
      * @returns {Curve} The curve at the specified index.
+     * @example
+     * const curveSet = new CurveSet([[0, 0, 1, 1], [0, 0, 1, 0.5]]);
+     * const curve = curveSet.get(0); // returns the first curve
      */
     get(index) {
         return this.curves[index];
+    }
+
+    /**
+     * Appends a new curve to the curve set. The new curve adopts the curve set's current
+     * {@link CurveSet#type} interpolation scheme, so that all curves in the set continue to share
+     * the same type.
+     *
+     * @param {number[]} [data] - An array of keys (pairs of numbers with the time first and value
+     * second) for the new curve.
+     * @returns {Curve} The newly created curve.
+     * @example
+     * const curveSet = new CurveSet([[0, 0, 1, 1]]);
+     * const curve = curveSet.add([0, 0, 1, 0.5]); // append a second curve
+     */
+    add(data) {
+        const curve = new Curve(data);
+        curve.type = this._type;
+        this.curves.push(curve);
+        return curve;
+    }
+
+    /**
+     * Removes a curve from the curve set.
+     *
+     * @param {number|Curve} indexOrCurve - The index of the curve to remove, or the curve instance
+     * itself.
+     * @returns {Curve|null} The removed curve, or null if it was not found.
+     * @example
+     * const curveSet = new CurveSet([[0, 0, 1, 1], [0, 0, 1, 0.5]]);
+     * curveSet.remove(0);             // remove by index
+     * curveSet.remove(curveSet.get(0)); // or remove by reference
+     */
+    remove(indexOrCurve) {
+        const index = typeof indexOrCurve === 'number' ?
+            indexOrCurve : this.curves.indexOf(indexOrCurve);
+
+        if (index < 0 || index >= this.curves.length) {
+            return null;
+        }
+
+        return this.curves.splice(index, 1)[0];
+    }
+
+    /**
+     * Removes all keys from every curve in the set, while keeping the curves themselves. The number
+     * of curves is unchanged, so {@link CurveSet#value} still returns an array of the same length.
+     *
+     * @returns {this} The curve set instance.
+     * @example
+     * const curveSet = new CurveSet([[0, 0, 1, 1], [0, 0, 1, 0.5]]);
+     * curveSet.clearKeys(); // both curves are now empty, but the set still has 2 curves
+     */
+    clearKeys() {
+        for (let i = 0; i < this.curves.length; i++) {
+            this.curves[i].clear();
+        }
+        return this;
+    }
+
+    /**
+     * Removes all curves from the curve set, leaving it empty.
+     *
+     * @returns {this} The curve set instance.
+     * @example
+     * const curveSet = new CurveSet([[0, 0, 1, 1], [0, 0, 1, 0.5]]);
+     * curveSet.clear(); // the set now has no curves
+     */
+    clear() {
+        this.curves.length = 0;
+        return this;
     }
 
     /**
@@ -110,6 +215,9 @@ class CurveSet {
      * parameter is not supplied, the function allocates a new array internally to return the
      * result.
      * @returns {number[]} The interpolated curve values at the specified time.
+     * @example
+     * const curveSet = new CurveSet([[0, 0, 1, 1], [0, 0, 1, 0.5]]);
+     * const values = curveSet.value(0.5); // returns interpolated values for all curves at time 0.5
      */
     value(time, result = []) {
         const length = this.curves.length;
@@ -126,6 +234,9 @@ class CurveSet {
      * Returns a clone of the specified curve set object.
      *
      * @returns {this} A clone of the specified curve set.
+     * @example
+     * const curveSet = new CurveSet([[0, 0, 1, 1]]);
+     * const clonedCurveSet = curveSet.clone();
      */
     clone() {
         /** @type {this} */

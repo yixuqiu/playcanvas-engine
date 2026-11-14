@@ -1,10 +1,10 @@
-import { GraphNode } from '../../src/scene/graph-node.js';
+import { expect } from 'chai';
+
 import { Mat4 } from '../../src/core/math/mat4.js';
 import { Quat } from '../../src/core/math/quat.js';
-import { Tags } from '../../src/core/tags.js';
 import { Vec3 } from '../../src/core/math/vec3.js';
-
-import { expect } from 'chai';
+import { Tags } from '../../src/core/tags.js';
+import { GraphNode } from '../../src/scene/graph-node.js';
 
 describe('GraphNode', function () {
 
@@ -233,19 +233,19 @@ describe('GraphNode', function () {
             root.addChild(child);
 
             let res;
-            res = root.find(function (node) {
+            res = root.find((node) => {
                 return node.name === 'Untitled';
             });
             expect(res).to.be.an('array').with.lengthOf(1);
             expect(res[0]).to.equal(root);
 
-            res = root.find(function (node) {
+            res = root.find((node) => {
                 return node.name === 'Child';
             });
             expect(res).to.be.an('array').with.lengthOf(1);
             expect(res[0]).to.equal(child);
 
-            res = root.find(function (node) {
+            res = root.find((node) => {
                 return node.name === 'Not Found';
             });
             expect(res).to.be.an('array').with.lengthOf(0);
@@ -395,17 +395,17 @@ describe('GraphNode', function () {
             root.addChild(child);
 
             let res;
-            res = root.findOne(function (node) {
+            res = root.findOne((node) => {
                 return node.name === 'Untitled';
             });
             expect(res).to.equal(root);
 
-            res = root.findOne(function (node) {
+            res = root.findOne((node) => {
                 return node.name === 'Child';
             });
             expect(res).to.equal(child);
 
-            res = root.findOne(function (node) {
+            res = root.findOne((node) => {
                 return node.name === 'Not Found';
             });
             expect(res).to.be.null;
@@ -851,4 +851,161 @@ describe('GraphNode', function () {
 
     });
 
+    describe('#setPositionAndRotation()', function () {
+        it('setPositionAndRotation is the same as setPosition and setRotation', function () {
+            const root = new GraphNode('root');
+            const child = new GraphNode('child');
+            root.addChild(child);
+            root.setPosition(10, 20, 30);
+
+            root.setLocalScale(0.5, 0.5, 0.5);
+
+            const pos = new Vec3(1, 2, 3);
+            const rot = new Quat().setFromEulerAngles(10, 20, 30);
+            child.setPosition(pos);
+            child.setRotation(rot);
+
+            const pos1 = child.getPosition().clone();
+            const rot1 = child.getRotation().clone();
+            const localPos1 = child.getLocalPosition().clone();
+            const localRot1 = child.getLocalRotation().clone();
+
+            child.setPositionAndRotation(pos, rot);
+
+            const pos2 = child.getPosition();
+            expect(pos2.x).to.be.closeTo(pos1.x, 0.00001);
+            expect(pos2.y).to.be.closeTo(pos1.y, 0.00001);
+            expect(pos2.z).to.be.closeTo(pos1.z, 0.00001);
+
+            const rot2 = child.getRotation();
+            expect(rot2.x).to.be.closeTo(rot1.x, 0.00001);
+            expect(rot2.y).to.be.closeTo(rot1.y, 0.00001);
+            expect(rot2.z).to.be.closeTo(rot1.z, 0.00001);
+            expect(rot2.w).to.be.closeTo(rot1.w, 0.00001);
+
+            const localPos2 = child.getLocalPosition();
+            expect(localPos2.x).to.be.closeTo(localPos1.x, 0.00001);
+            expect(localPos2.y).to.be.closeTo(localPos1.y, 0.00001);
+            expect(localPos2.z).to.be.closeTo(localPos1.z, 0.00001);
+
+            const localRot2 = child.getLocalRotation();
+            expect(localRot2.x).to.be.closeTo(localRot1.x, 0.00001);
+            expect(localRot2.y).to.be.closeTo(localRot1.y, 0.00001);
+            expect(localRot2.z).to.be.closeTo(localRot1.z, 0.00001);
+            expect(localRot2.w).to.be.closeTo(localRot1.w, 0.00001);
+        });
+    });
+
+    describe('#markDeformedRendered()', function () {
+
+        // a chain of nodes: root -> middle -> leaf, with a sibling of the leaf
+        const createHierarchy = () => {
+            const root = new GraphNode('root');
+            const middle = new GraphNode('middle');
+            const leaf = new GraphNode('leaf');
+            const sibling = new GraphNode('sibling');
+            root.addChild(middle);
+            middle.addChild(leaf);
+            middle.addChild(sibling);
+            return { root, middle, leaf, sibling };
+        };
+
+        it('marks the node and all its ancestors', function () {
+            const { root, middle, leaf } = createHierarchy();
+
+            leaf.markDeformedRendered(5);
+
+            expect(leaf._deformedRenderVersion).to.equal(5);
+            expect(middle._deformedRenderVersion).to.equal(5);
+            expect(root._deformedRenderVersion).to.equal(5);
+        });
+
+        it('does not mark siblings or descendants', function () {
+            const { middle, leaf, sibling } = createHierarchy();
+
+            middle.markDeformedRendered(5);
+
+            expect(sibling._deformedRenderVersion).to.equal(-1);
+            expect(leaf._deformedRenderVersion).to.equal(-1);
+        });
+
+        it('stops at the first ancestor already marked with the same version', function () {
+            const { root, middle, leaf } = createHierarchy();
+
+            middle._deformedRenderVersion = 5;
+            root._deformedRenderVersion = 4;
+
+            leaf.markDeformedRendered(5);
+
+            expect(leaf._deformedRenderVersion).to.equal(5);
+            expect(middle._deformedRenderVersion).to.equal(5);
+            // the walk stopped at the middle node, so the root keeps its older version
+            expect(root._deformedRenderVersion).to.equal(4);
+        });
+
+        it('marks the whole chain again with a new version', function () {
+            const { root, middle, leaf } = createHierarchy();
+
+            leaf.markDeformedRendered(5);
+            leaf.markDeformedRendered(6);
+
+            expect(leaf._deformedRenderVersion).to.equal(6);
+            expect(middle._deformedRenderVersion).to.equal(6);
+            expect(root._deformedRenderVersion).to.equal(6);
+        });
+    });
+
+    describe('#setLocalPositionFromArray()', function () {
+
+        it('sets the local position and updates the world transform', function () {
+            const node = new GraphNode();
+            node.getWorldTransform();
+
+            node.setLocalPositionFromArray([1, 2, 3]);
+
+            expect(node.getLocalPosition().toString()).to.equal('[1, 2, 3]');
+            expect(node.getPosition().toString()).to.equal('[1, 2, 3]');
+        });
+
+        it('updates the world transform of the children', function () {
+            const parent = new GraphNode();
+            const child = new GraphNode();
+            parent.addChild(child);
+            child.getWorldTransform();
+
+            parent.setLocalPositionFromArray([1, 2, 3]);
+
+            expect(child.getPosition().toString()).to.equal('[1, 2, 3]');
+        });
+    });
+
+    describe('#setLocalRotationFromArray()', function () {
+
+        it('sets the local rotation and updates the world transform', function () {
+            const node = new GraphNode();
+            node.getWorldTransform();
+
+            const rotation = new Quat().setFromEulerAngles(0, 90, 0);
+            node.setLocalRotationFromArray([rotation.x, rotation.y, rotation.z, rotation.w]);
+
+            expect(node.getLocalRotation().equals(rotation)).to.equal(true);
+            expect(node.getEulerAngles().y).to.be.closeTo(90, 1e-4);
+        });
+    });
+
+    describe('#setLocalScaleFromArray()', function () {
+
+        it('sets the local scale and updates the world transform', function () {
+            const node = new GraphNode();
+            node.getWorldTransform();
+
+            node.setLocalScaleFromArray([2, 3, 4]);
+
+            expect(node.getLocalScale().toString()).to.equal('[2, 3, 4]');
+            const scale = node.getWorldTransform().getScale();
+            expect(scale.x).to.be.closeTo(2, 1e-5);
+            expect(scale.y).to.be.closeTo(3, 1e-5);
+            expect(scale.z).to.be.closeTo(4, 1e-5);
+        });
+    });
 });

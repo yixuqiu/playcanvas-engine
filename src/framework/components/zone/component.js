@@ -1,13 +1,16 @@
 import { Vec3 } from '../../../core/math/vec3.js';
-
 import { Component } from '../component.js';
 
 /**
- * The ZoneComponent allows you to define an area in world space of certain size. This can be used
- * in various ways, such as affecting audio reverb when {@link AudioListenerComponent} is within
- * zone. Or create culling system with portals between zones to hide whole indoor sections for
- * performance reasons. And many other possible options. Zones are building blocks and meant to be
- * used in many different ways.
+ * @import { Entity } from '../../entity.js'
+ * @import { ZoneComponentSystem } from './system.js'
+ */
+
+/**
+ * The ZoneComponent enables an {@link Entity} to define a box-shaped area in world space of a
+ * certain size. Zones are a building block that can be used in various ways, such as affecting
+ * audio reverb when an {@link AudioListenerComponent} is within the zone, or creating a culling
+ * system with portals between zones to hide whole indoor sections for performance reasons.
  *
  * @ignore
  */
@@ -59,19 +62,21 @@ class ZoneComponent extends Component {
      */
     static EVENT_REMOVE = 'remove';
 
+    /** @private */
+    _oldState = true;
+
+    /** @private */
+    _size = new Vec3();
+
     /**
      * Create a new ZoneComponent instance.
      *
-     * @param {import('./system.js').ZoneComponentSystem} system - The ComponentSystem that
-     * created this Component.
-     * @param {import('../../entity.js').Entity} entity - The Entity that this Component is
-     * attached to.
+     * @param {ZoneComponentSystem} system - The ComponentSystem that created this Component.
+     * @param {Entity} entity - The Entity that this Component is attached to.
      */
     constructor(system, entity) {
         super(system, entity);
 
-        this._oldState = true;
-        this._size = new Vec3();
         this.on('set_enabled', this._onSetEnabled, this);
     }
 
@@ -106,8 +111,9 @@ class ZoneComponent extends Component {
 
     _checkState() {
         const state = this.enabled && this.entity.enabled;
-        if (state === this._oldState)
+        if (state === this._oldState) {
             return;
+        }
 
         this._oldState = state;
 
@@ -115,7 +121,7 @@ class ZoneComponent extends Component {
         this.fire('state', this.enabled);
     }
 
-    _onBeforeRemove() {
+    onBeforeRemove() {
         this.fire('remove');
     }
 }

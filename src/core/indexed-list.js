@@ -17,14 +17,14 @@ class IndexedList {
     _index = {};
 
     /**
-     * Add a new item into the list with a index key.
+     * Add a new item into the list with an index key.
      *
      * @param {string} key - Key used to look up item in index.
      * @param {object} item - Item to be stored.
      */
     push(key, item) {
         if (this._index[key]) {
-            throw Error('Key already in index ' + key);
+            throw Error(`Key already in index ${key}`);
         }
         const location = this._list.push(item) - 1;
         this._index[key] = location;

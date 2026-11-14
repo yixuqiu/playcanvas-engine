@@ -1,363 +1,482 @@
-import * as pc from 'playcanvas';
-import { data } from '@examples/observer';
-import { deviceType, rootPath } from '@examples/utils';
+// @config
+//
+// A reflection probe renders the room into a cubemap at runtime, prefiltered into an environment
+// atlas that the room and the objects in it reflect, and are lit by. Turn the reflections off to see
+// what they add: the materials then use a constant ambient light. Box projection maps the
+// reflections onto the walls of the room, so they line up with what they reflect. Turn it off to
+// compare with a reflection at an infinite distance. The chrome sphere and the gold torus are on a
+// layer the probe does not render, so they do not appear in the reflections.
 
-const canvas = document.getElementById('application-canvas');
-if (!(canvas instanceof HTMLCanvasElement)) {
-    throw new Error('No canvas found');
-}
+import {
+    ADDRESS_CLAMP_TO_EDGE,
+    AppBase,
+    AppOptions,
+    Asset,
+    AssetListLoader,
+    BoundingBox,
+    CUBEPROJ_BOX,
+    CUBEPROJ_NONE,
+    CameraComponentSystem,
+    CameraFrame,
+    Color,
+    ContainerHandler,
+    Entity,
+    EnvLighting,
+    FILLMODE_FILL_WINDOW,
+    FILTER_LINEAR,
+    Layer,
+    LightComponentSystem,
+    Mouse,
+    PIXELFORMAT_RGBA8,
+    RESOLUTION_AUTO,
+    RenderComponentSystem,
+    SHADOW_PCF5_16F,
+    ScriptComponentSystem,
+    ScriptHandler,
+    StandardMaterial,
+    TEXTUREPROJECTION_EQUIRECT,
+    TEXTURETYPE_RGBM,
+    TONEMAP_ACES,
+    Texture,
+    TextureHandler,
+    TextureRenderer,
+    TouchDevice,
+    Vec2,
+    Vec3,
+    createGraphicsDevice
+} from 'playcanvas';
+import { CameraControls } from 'playcanvas/scripts/esm/camera-controls.mjs';
+
+import { data, deviceType } from 'examples/context';
+
+/**
+ * @import { Material, RenderComponent } from 'playcanvas'
+ */
+
+const canvas = /** @type {HTMLCanvasElement} */ (document.getElementById('application-canvas'));
+window.focus();
 
 const assets = {
-    script1: new pc.Asset('script', 'script', { url: rootPath + '/static/scripts/camera/orbit-camera.js' }),
-    script2: new pc.Asset('script', 'script', { url: rootPath + '/static/scripts/utils/cubemap-renderer.js' }),
-    normal: new pc.Asset('normal', 'texture', { url: rootPath + '/static/assets/textures/normal-map.png' })
+    room: new Asset('room', 'container', { url: './assets/models/area-lights-room.glb' }),
+    statue: new Asset('statue', 'container', { url: './assets/models/statue.glb' }),
+    normal: new Asset('normal', 'texture', { url: './assets/textures/normal-map.png' }),
+    cubemapRenderer: new Asset('cubemapRenderer', 'script', { url: './scripts/utils/cubemap-renderer.js' })
 };
 
-const gfxOptions = {
-    deviceTypes: [deviceType],
-    glslangUrl: rootPath + '/static/lib/glslang/glslang.js',
-    twgslUrl: rootPath + '/static/lib/twgsl/twgsl.js'
-};
-
-const device = await pc.createGraphicsDevice(canvas, gfxOptions);
+const device = await createGraphicsDevice(canvas, {
+    deviceTypes: [deviceType]
+});
 device.maxPixelRatio = Math.min(window.devicePixelRatio, 2);
-const createOptions = new pc.AppOptions();
+
+const createOptions = new AppOptions();
 createOptions.graphicsDevice = device;
-createOptions.mouse = new pc.Mouse(document.body);
-createOptions.touch = new pc.TouchDevice(document.body);
-
+createOptions.mouse = new Mouse(document.body);
+createOptions.touch = new TouchDevice(document.body);
 createOptions.componentSystems = [
-    pc.RenderComponentSystem,
-    pc.CameraComponentSystem,
-    pc.LightComponentSystem,
-    pc.ScriptComponentSystem
+    RenderComponentSystem,
+    CameraComponentSystem,
+    LightComponentSystem,
+    ScriptComponentSystem
 ];
-createOptions.resourceHandlers = [pc.ScriptHandler, pc.TextureHandler, pc.ContainerHandler];
+createOptions.resourceHandlers = [TextureHandler, ContainerHandler, ScriptHandler];
 
-const app = new pc.AppBase(canvas);
+const app = new AppBase(canvas);
 app.init(createOptions);
+app.setCanvasFillMode(FILLMODE_FILL_WINDOW);
+app.setCanvasResolution(RESOLUTION_AUTO);
 
-// Set the canvas to fill the window and automatically change resolution to be the same as the canvas size
-app.setCanvasFillMode(pc.FILLMODE_FILL_WINDOW);
-app.setCanvasResolution(pc.RESOLUTION_AUTO);
-
-// Ensure canvas is resized when window changes size
 const resize = () => app.resizeCanvas();
 window.addEventListener('resize', resize);
-app.on('destroy', () => {
-    window.removeEventListener('resize', resize);
+app.on('destroy', () => window.removeEventListener('resize', resize));
+
+await new Promise((resolve) => {
+    new AssetListLoader(Object.values(assets), app.assets).load(resolve);
 });
 
-const assetListLoader = new pc.AssetListLoader(Object.values(assets), app.assets);
-assetListLoader.load(() => {
-    app.start();
+app.start();
 
-    data.set('settings', {
+data.set('settings', {
+    reflections: {
+        enabled: true,
         updateFrequency: 10,
-        gloss: 0.8,
-        metalness: 0.9,
-        bumpiness: 0.2,
-        reflectivity: 0.5
+        boxProjection: true,
+        reflectivity: 1,
+        showCubemap: false
+    },
+    material: {
+        floorRoughness: 0.05,
+        floorMetalness: 0.7,
+        sphereRoughness: 0.05,
+        sphereMetalness: 1,
+        sphereBumpiness: 0
+    },
+    scene: {
+        animate: true
+    }
+});
+
+const lighting = app.scene.lighting;
+lighting.shadowsEnabled = true;
+lighting.shadowType = SHADOW_PCF5_16F;
+lighting.shadowAtlasResolution = 2048;
+
+const worldLayer = app.scene.layers.getLayerByName('World');
+const uiLayer = app.scene.layers.getLayerByName('UI');
+
+// The debug preview of the cubemap is drawn on the UI layer, which only the main camera renders
+const textures = new TextureRenderer(app);
+textures.layer = uiLayer;
+
+// A layer for the objects the probe does not render. They are lit by the lights on both layers.
+const excludedLayer = new Layer({ name: 'Excluded' });
+app.scene.layers.insert(excludedLayer, app.scene.layers.getTransparentIndex(worldLayer) + 1);
+const LIGHT_LAYERS = [worldLayer.id, excludedLayer.id];
+
+// The environment atlas the cubemap rendered by the probe is prefiltered into, holding the
+// reflection for each level of roughness
+const envAtlas = new Texture(app.graphicsDevice, {
+    width: 512,
+    height: 512,
+    format: PIXELFORMAT_RGBA8,
+    type: TEXTURETYPE_RGBM,
+    projection: TEXTUREPROJECTION_EQUIRECT,
+    addressU: ADDRESS_CLAMP_TO_EDGE,
+    addressV: ADDRESS_CLAMP_TO_EDGE,
+    mipmaps: false
+});
+
+// The box projection uses the inside of the room. The probe renders from the center of the box,
+// which is where box projection expects the cubemap to be rendered from.
+const roomBox = new BoundingBox(new Vec3(0, 3.25, 0), new Vec3(8, 3.25, 9));
+
+/** @type {StandardMaterial[]} */
+const reflectiveMaterials = [];
+
+/**
+ * Makes a material reflect the environment atlas rendered by the probe.
+ *
+ * @param {StandardMaterial} material - The material.
+ */
+const addReflections = (material) => {
+    material.envAtlas = envAtlas;
+    material.cubeMapProjectionBox = roomBox;
+    reflectiveMaterials.push(material);
+};
+
+// The room, with the floor plates, ribbed walls with three door recesses and a ceiling with a
+// skylight, and the statue. Both reflect the room.
+const room = assets.room.resource.instantiateRenderEntity({
+    castShadows: true,
+    receiveShadows: true
+});
+app.root.addChild(room);
+
+const statue = assets.statue.resource.instantiateRenderEntity({
+    castShadows: true,
+    receiveShadows: true
+});
+statue.setLocalScale(0.12, 0.12, 0.12);
+statue.setLocalPosition(-4, 0.55, 0.8);
+statue.setLocalEulerAngles(0, 25, 0);
+app.root.addChild(statue);
+
+// the glTF materials are standard materials
+[assets.room, assets.statue].forEach((asset) => {
+    asset.resource.materials.forEach((material) => addReflections(/** @type {StandardMaterial} */ (material.resource)));
+});
+
+const floorMaterial = /** @type {StandardMaterial} */ (
+    assets.room.resource.materials.find((asset) => asset.resource.name === 'Floor').resource
+);
+
+/**
+ * Creates a primitive.
+ *
+ * @param {RenderComponent['type']} type - The primitive type.
+ * @param {Material} material - The material.
+ * @param {Vec3} position - The position.
+ * @param {Vec3} scale - The scale.
+ * @param {number[]} [layers] - The layers the primitive is rendered on.
+ * @returns {Entity} The primitive.
+ */
+const createPrimitive = (type, material, position, scale, layers = [worldLayer.id]) => {
+    const entity = new Entity();
+    entity.addComponent('render', { type, material, layers });
+    entity.setLocalPosition(position);
+    entity.setLocalScale(scale);
+    app.root.addChild(entity);
+    return entity;
+};
+
+/**
+ * Creates a material for a reflective object.
+ *
+ * @param {Color} color - The color of the material.
+ * @returns {StandardMaterial} The material.
+ */
+const createReflectiveMaterial = (color) => {
+    const material = new StandardMaterial();
+    material.diffuse = color;
+    material.useMetalness = true;
+    material.metalness = 1;
+
+    // the gloss is the roughness, the same as the materials of the room
+    material.glossInvert = true;
+    addReflections(material);
+    return material;
+};
+
+// The chrome sphere on the center pedestal, with a normal map to make it bumpy
+const sphereMaterial = createReflectiveMaterial(new Color(0.95, 0.95, 0.95));
+sphereMaterial.normalMap = assets.normal.resource;
+sphereMaterial.normalMapTiling.set(5, 5);
+createPrimitive('sphere', sphereMaterial, new Vec3(0, 1.26, 0), new Vec3(1.8, 1.8, 1.8), [excludedLayer.id]);
+
+// A gold torus spinning on the right pedestal
+const torusMaterial = createReflectiveMaterial(new Color(1, 0.77, 0.34));
+torusMaterial.gloss = 0.25;
+const torusPivot = new Entity('Torus');
+torusPivot.setLocalPosition(4, 1.29, 0.8);
+app.root.addChild(torusPivot);
+const torus = createPrimitive('torus', torusMaterial, Vec3.ZERO, new Vec3(1.5, 1.5, 1.5), [excludedLayer.id]);
+torus.setLocalEulerAngles(90, 0, 0);
+torusPivot.addChild(torus);
+
+/**
+ * Creates an emissive material.
+ *
+ * @param {Color} color - The emissive color.
+ * @param {number} intensity - The emissive intensity.
+ * @returns {StandardMaterial} The material.
+ */
+const createEmissiveMaterial = (color, intensity) => {
+    const material = new StandardMaterial();
+    material.useLighting = false;
+    material.diffuse = Color.BLACK;
+    material.emissive = color;
+    material.emissiveIntensity = intensity;
+    material.update();
+    return material;
+};
+
+// The glowing doors, with a spot light in each of them, shining into the room
+const DOORS = [
+    { x: -4.5, color: new Color(1, 0.42, 0.12) },
+    { x: 0, color: new Color(0.25, 0.8, 1) },
+    { x: 4.5, color: new Color(1, 0.8, 0.35) }
+];
+DOORS.forEach(({ x, color }, i) => {
+    createPrimitive('box', createEmissiveMaterial(color, 4), new Vec3(x, 1.7, -9.45), new Vec3(1.7, 3.3, 0.02));
+
+    // the spot light shines down its -Y axis, so it is turned to face the room
+    const light = new Entity(`Door ${i}`);
+    light.addComponent('light', {
+        type: 'spot',
+        layers: LIGHT_LAYERS,
+        color,
+        intensity: 1.5,
+        range: 20,
+        innerConeAngle: 50,
+        outerConeAngle: 80,
+        castShadows: true,
+        shadowBias: 0.2,
+        normalOffsetBias: 0.05
     });
+    light.setLocalPosition(x, 1.7, -9.2);
+    light.setLocalEulerAngles(-90, 0, 0);
+    app.root.addChild(light);
+});
 
-    // get existing layers
-    const worldLayer = app.scene.layers.getLayerByName('World');
-    const uiLayer = app.scene.layers.getLayerByName('UI');
+// A screen above the middle door, playing a video
+const videoTexture = new Texture(app.graphicsDevice, {
+    format: PIXELFORMAT_RGBA8,
+    mipmaps: false,
+    minFilter: FILTER_LINEAR,
+    magFilter: FILTER_LINEAR,
+    addressU: ADDRESS_CLAMP_TO_EDGE,
+    addressV: ADDRESS_CLAMP_TO_EDGE
+});
 
-    // create a layer for object that do not render into reflection cubemap
-    const excludedLayer = new pc.Layer({ name: 'Excluded' });
-    app.scene.layers.insert(excludedLayer, app.scene.layers.getTransparentIndex(worldLayer) + 1);
+const video = document.createElement('video');
+video.loop = true;
+video.muted = true;
+video.autoplay = true;
+video.playsInline = true;
+video.crossOrigin = 'anonymous';
+video.setAttribute(
+    'style',
+    'display: block; width: 1px; height: 1px; position: absolute; opacity: 0; z-index: -1000; top: 0px; pointer-events: none'
+);
+video.src = './assets/video/SampleVideo_1280x720_1mb.mp4';
+document.body.append(video);
+video.addEventListener('loadedmetadata', () => videoTexture.resize(video.videoWidth, video.videoHeight));
+video.addEventListener('canplaythrough', () => videoTexture.setSource(video));
+app.on('destroy', () => video.remove());
 
-    // create an envAtlas texture, which will hold a prefiltered lighting generated from the cubemap.
-    // This represents a reflection prefiltered for different levels of roughness
-    const envAtlas = new pc.Texture(app.graphicsDevice, {
-        width: 512,
-        height: 512,
-        format: pc.PIXELFORMAT_RGBA8,
-        type: pc.TEXTURETYPE_RGBM,
-        projection: pc.TEXTUREPROJECTION_EQUIRECT,
-        addressU: pc.ADDRESS_CLAMP_TO_EDGE,
-        addressV: pc.ADDRESS_CLAMP_TO_EDGE,
-        mipmaps: false
-    });
+const screenMaterial = createEmissiveMaterial(Color.WHITE, 1.2);
+screenMaterial.emissiveMap = videoTexture;
+screenMaterial.update();
+const screen = createPrimitive('plane', screenMaterial, new Vec3(0, 4.75, -8.58), new Vec3(3.4, 1, 1.91));
+screen.setLocalEulerAngles(90, 0, 0);
 
-    // material for the walls
-    const roomMaterial = new pc.StandardMaterial();
-    roomMaterial.useMetalness = true;
-    roomMaterial.diffuse = pc.Color.WHITE;
-    roomMaterial.normalMap = assets.normal.resource;
-    roomMaterial.normalMapTiling.set(5, 5);
-    roomMaterial.bumpiness = 0.1;
-    roomMaterial.gloss = 0.9;
-    roomMaterial.reflectivity = 0.3;
+const frameMaterial = new StandardMaterial();
+frameMaterial.diffuse = new Color(0.02, 0.02, 0.025);
+frameMaterial.update();
+createPrimitive('box', frameMaterial, new Vec3(0, 4.75, -8.62), new Vec3(3.5, 2.01, 0.06));
+
+// A glowing orb drifting around the room, which the probe renders into the reflections
+const orb = new Entity('Orb');
+orb.addComponent('light', {
+    type: 'omni',
+    layers: LIGHT_LAYERS,
+    color: new Color(0.8, 0.88, 1),
+    intensity: 1.5,
+    range: 10,
+    castShadows: true,
+    shadowBias: 0.2,
+    normalOffsetBias: 0.05
+});
+orb.addComponent('render', {
+    type: 'sphere',
+    material: createEmissiveMaterial(new Color(0.8, 0.88, 1), 6),
+    castShadows: false
+});
+orb.setLocalScale(0.4, 0.4, 0.4);
+app.root.addChild(orb);
+
+// The sky shows through the skylight and the windows
+const SKY_COLOR = new Color(0.45, 0.6, 0.8);
+
+// With the reflections off, the materials fall back to a constant ambient light, tinted by the sky
+app.scene.ambientLight = new Color(0.04, 0.045, 0.055);
+
+// The camera standing at the front of the room, looking at the doors
+const camera = new Entity('Camera');
+camera.addComponent('camera', {
+    clearColor: SKY_COLOR,
+    fov: 60,
+    nearClip: 0.1,
+    farClip: 100,
+    layers: [worldLayer.id, excludedLayer.id, uiLayer.id]
+});
+camera.addComponent('script');
+camera.setLocalPosition(1.3, 2.5, 6.8);
+app.root.addChild(camera);
+
+// The camera orbits all the way around, and the pitch and zoom ranges keep it inside the room
+const cameraControls = /** @type {CameraControls} */ (camera.script.create(CameraControls));
+cameraControls.focusPoint = new Vec3(0, 1.5, 0);
+cameraControls.enableFly = false;
+cameraControls.pitchRange = new Vec2(-38, 8);
+cameraControls.zoomRange = new Vec2(2, 7);
+
+// Bloom makes the light sources glow
+const cameraFrame = new CameraFrame(app, camera.camera);
+cameraFrame.rendering.samples = 4;
+cameraFrame.rendering.toneMapping = TONEMAP_ACES;
+cameraFrame.bloom.intensity = 0.03;
+cameraFrame.bloom.blurLevel = 6;
+cameraFrame.vignette.intensity = 0.35;
+cameraFrame.update();
+
+// The probe, rendering the cubemap from the center of the room with the cubemapRenderer script.
+// Its camera is not rendered, and only holds the properties the six faces of the cubemap are
+// rendered with: the World layer, so the excluded objects are not rendered.
+const probe = new Entity('Probe');
+probe.addComponent('camera', {
+    clearColor: SKY_COLOR,
+    layers: [worldLayer.id],
+    priority: -1,
+    nearClip: 0.1,
+    farClip: 30,
+    enabled: false
+});
+probe.addComponent('script');
+probe.script.create('cubemapRenderer', {
+    attributes: {
+        resolution: 256,
+        mipmaps: true,
+        depth: true,
+
+        // the reflections keep the brightness of the glowing doors, the screen and the orb
+        hdr: true
+    }
+});
+probe.setPosition(roomBox.center);
+app.root.addChild(probe);
+
+// When all faces of the cubemap are rendered, prefilter it into the environment atlas, used by
+// the reflections for the rest of the frame
+probe.on('onCubemapPostRender', () => {
     // @ts-ignore
-    roomMaterial.envAtlas = envAtlas; // use reflection from env atlas
-    roomMaterial.metalness = 0.5;
-
-    // the material uses box projected cubemap for reflections. Set its bounding box the the size of the room
-    // so that the reflections line up
-    roomMaterial.cubeMapProjection = pc.CUBEPROJ_BOX;
-    roomMaterial.cubeMapProjectionBox = new pc.BoundingBox(new pc.Vec3(0, 200, 0), new pc.Vec3(400, 200, 400));
-    roomMaterial.update();
-
-    // material for the magenta emissive beams
-    const emissiveMaterial = new pc.StandardMaterial();
-    emissiveMaterial.emissive = pc.Color.MAGENTA;
-    emissiveMaterial.diffuse = pc.Color.BLACK;
-    emissiveMaterial.update();
-
-    // material for the white sphere representing an omni light
-    const lightMaterial = new pc.StandardMaterial();
-    lightMaterial.emissive = pc.Color.WHITE;
-    lightMaterial.diffuse = pc.Color.BLACK;
-    lightMaterial.update();
-
-    // material for the reflective sphere in the center
-    const sphereMaterial = new pc.StandardMaterial();
-    sphereMaterial.useMetalness = true;
-    sphereMaterial.diffuse = pc.Color.WHITE;
-    sphereMaterial.normalMap = assets.normal.resource;
-    sphereMaterial.normalMapTiling.set(5, 5);
-    sphereMaterial.bumpiness = 0.7;
-    sphereMaterial.gloss = 0.3;
-    sphereMaterial.metalness = 0.7;
-    sphereMaterial.reflectivity = 0.3;
-    // @ts-ignore
-    sphereMaterial.envAtlas = envAtlas; // use reflection from env atlas
-    sphereMaterial.update();
-    // set up video playback into a texture
-    const videoTexture = new pc.Texture(app.graphicsDevice, {
-        format: pc.PIXELFORMAT_RGBA8,
-        mipmaps: false,
-        minFilter: pc.FILTER_LINEAR,
-        magFilter: pc.FILTER_LINEAR,
-        addressU: pc.ADDRESS_CLAMP_TO_EDGE,
-        addressV: pc.ADDRESS_CLAMP_TO_EDGE
+    EnvLighting.generateAtlas(probe.script.cubemapRenderer.cubeMap, {
+        target: envAtlas
     });
+});
 
-    // create a HTML element with the video
-    /** @type {HTMLVideoElement} */
-    const video = document.createElement('video');
-    video.id = 'vid';
-    video.loop = true;
-    video.muted = true;
-    video.autoplay = true;
-    video.playsInline = true;
-    video.crossOrigin = 'anonymous';
-    video.setAttribute(
-        'style',
-        'display: block; width: 1px; height: 1px; position: absolute; opacity: 0; z-index: -1000; top: 0px; pointer-events: none'
-    );
-    video.src = rootPath + '/static/assets/video/SampleVideo_1280x720_1mb.mp4';
-    document.body.append(video);
-    video.addEventListener('canplaythrough', function () {
-        videoTexture.setSource(video);
+const applySettings = () => {
+    const settings = data.get('settings');
+
+    floorMaterial.gloss = settings.material.floorRoughness;
+    floorMaterial.metalness = settings.material.floorMetalness;
+    sphereMaterial.gloss = settings.material.sphereRoughness;
+    sphereMaterial.metalness = settings.material.sphereMetalness;
+    sphereMaterial.bumpiness = settings.material.sphereBumpiness;
+
+    const projection = settings.reflections.boxProjection ? CUBEPROJ_BOX : CUBEPROJ_NONE;
+    reflectiveMaterials.forEach((material) => {
+        material.envAtlas = settings.reflections.enabled ? envAtlas : null;
+        material.cubeMapProjection = projection;
+        material.reflectivity = settings.reflections.reflectivity;
+        material.update();
     });
+};
+applySettings();
+data.on('*:set', applySettings);
 
-    // Listen for the 'loadedmetadata' event to resize the texture appropriately
-    video.addEventListener('loadedmetadata', function () {
-        videoTexture.resize(video.videoWidth, video.videoHeight);
-    });
-
-    // materials used on the TV screen to display the video texture
-    const screenMaterial = new pc.StandardMaterial();
-    screenMaterial.useLighting = false;
-    screenMaterial.emissiveMap = videoTexture;
-    screenMaterial.update();
-
-    /**
-     * Helper function to create a 3d primitive including its material.
-     *
-     * @param {string} primitiveType - The primitive type.
-     * @param {pc.Vec3} position - The position.
-     * @param {pc.Vec3} scale - The scale.
-     * @param {pc.Material} material - The material.
-     */
-    function createPrimitive(primitiveType, position, scale, material) {
-        // create the primitive using the material
-        const primitive = new pc.Entity();
-        primitive.addComponent('render', {
-            type: primitiveType,
-            material: material,
-            layers: [worldLayer.id, excludedLayer.id],
-            castShadows: false,
-            receiveShadows: false
-        });
-
-        // set position and scale and add it to scene
-        primitive.setLocalPosition(position);
-        primitive.setLocalScale(scale);
-        app.root.addChild(primitive);
+let time = 0;
+let probeRendered = false;
+let framesToProbe = 0;
+let uploadVideo = true;
+app.on('update', (/** @type {number} */ dt) => {
+    const settings = data.get('settings');
+    if (settings.scene.animate) {
+        time += dt;
     }
 
-    // create the ground plane from the boxes
-    createPrimitive('box', new pc.Vec3(0, 0, 0), new pc.Vec3(800, 2, 800), roomMaterial);
-    createPrimitive('box', new pc.Vec3(0, 400, 0), new pc.Vec3(800, 2, 800), roomMaterial);
+    // upload the video to its texture every other frame
+    if (uploadVideo) {
+        videoTexture.upload();
+    }
+    uploadVideo = !uploadVideo;
 
-    // walls
-    createPrimitive('box', new pc.Vec3(400, 200, 0), new pc.Vec3(2, 400, 800), roomMaterial);
-    createPrimitive('box', new pc.Vec3(-400, 200, 0), new pc.Vec3(2, 400, 800), roomMaterial);
-    createPrimitive('box', new pc.Vec3(0, 200, -400), new pc.Vec3(800, 400, 0), roomMaterial);
-    createPrimitive('box', new pc.Vec3(0, 200, 400), new pc.Vec3(800, 400, 0), roomMaterial);
+    // the orb circles the pedestals, bobbing up and down, and the torus spins
+    const orbAngle = time * 0.4;
+    orb.setPosition(Math.sin(orbAngle) * 5.5, 2.2 + Math.sin(time * 1.1) * 0.6, 0.5 + Math.cos(orbAngle) * 3.2);
+    torusPivot.setLocalEulerAngles(0, time * 40, 0);
 
-    // emissive pillars
-    createPrimitive('box', new pc.Vec3(400, 200, -50), new pc.Vec3(20, 400, 20), emissiveMaterial);
-    createPrimitive('box', new pc.Vec3(400, 200, 50), new pc.Vec3(20, 400, 20), emissiveMaterial);
-    createPrimitive('box', new pc.Vec3(-400, 200, 50), new pc.Vec3(20, 400, 20), emissiveMaterial);
-    createPrimitive('box', new pc.Vec3(-400, 200, -50), new pc.Vec3(20, 400, 20), emissiveMaterial);
-    createPrimitive('box', new pc.Vec3(0, 400, 50), new pc.Vec3(800, 20, 20), emissiveMaterial);
-    createPrimitive('box', new pc.Vec3(0, 400, -50), new pc.Vec3(800, 20, 20), emissiveMaterial);
-
-    // screen
-    createPrimitive('box', new pc.Vec3(0, 200, 400), new pc.Vec3(500, 250, 5), screenMaterial);
-
-    // shiny sphere
-    const sphereEntity = new pc.Entity();
-    sphereEntity.addComponent('render', {
-        type: 'sphere',
-        material: sphereMaterial,
-        castShadows: false,
-        receiveShadows: false
-    });
-    sphereEntity.setLocalScale(300, 300, 300);
-    sphereEntity.setLocalPosition(0, 150, 0);
-    app.root.addChild(sphereEntity);
-
-    // create an omni light white orbits the room to avoid it being completely dark
-    const lightOmni = new pc.Entity();
-    lightOmni.addComponent('light', {
-        type: 'omni',
-        layers: [excludedLayer.id], // add it to excluded layer, we don't want the light captured in the reflection
-        castShadows: false,
-        color: pc.Color.WHITE,
-        intensity: 0.2,
-        range: 1000
-    });
-
-    // add a white sphere to light so that we can see where it is. This sphere is excluded from the reflections.
-    lightOmni.addComponent('render', {
-        type: 'sphere',
-        layers: [excludedLayer.id],
-        material: lightMaterial,
-        castShadows: false,
-        receiveShadows: false
-    });
-    lightOmni.setLocalScale(20, 20, 20);
-    app.root.addChild(lightOmni);
-
-    // create an Entity with a camera component
-    const camera = new pc.Entity('MainCamera');
-    camera.addComponent('camera', {
-        fov: 100,
-        layers: [worldLayer.id, excludedLayer.id, uiLayer.id],
-        farClip: 1500
-    });
-    camera.setLocalPosition(270, 90, -260);
-
-    // add orbit camera script with a mouse and a touch support
-    camera.addComponent('script');
-    camera.script.create('orbitCamera', {
-        attributes: {
-            inertiaFactor: 0.2,
-            distanceMax: 390,
-            frameOnStart: false
+    // render the probe every few frames, or just once, while the reflections are on
+    const frequency = settings.reflections.updateFrequency;
+    if (!settings.reflections.enabled) {
+        probe.enabled = false;
+    } else if (frequency === 0) {
+        probe.enabled = !probeRendered;
+    } else {
+        framesToProbe--;
+        probe.enabled = framesToProbe <= 0;
+        if (probe.enabled) {
+            framesToProbe = frequency;
         }
-    });
-    camera.script.create('orbitCameraInputMouse');
-    camera.script.create('orbitCameraInputTouch');
-    app.root.addChild(camera);
+    }
+    probeRendered ||= probe.enabled;
 
-    // create a probe object with cubemapRenderer script which takes care of rendering dynamic cubemap
-    const probe = new pc.Entity('probeCamera');
-    probe.addComponent('script');
-
-    // add camera component to the probe - this defines camera properties for cubemap rendering
-    probe.addComponent('camera', {
-        // optimization - no need to clear as all pixels get overwritten
-        clearColorBuffer: false,
-
-        // priority - render before world camera
-        priority: -1,
-
-        // only render meshes on the worldLayer (and not excluded layer)
-        layers: [worldLayer.id],
-
-        // disable as this is not a camera that renders cube map but only a container for properties for cube map rendering
-        enabled: false,
-
-        nearClip: 1,
-        farClip: 500
-    });
-
-    // Add a cubemap renderer script, which renders to a cubemap of size 128 with mipmaps, which is directly useable
-    // as a lighting source for envAtlas generation
-    // Position it in the center of the room.
-    probe.script.create('cubemapRenderer', {
-        attributes: {
-            resolution: 128,
-            mipmaps: true,
-            depth: true
-        }
-    });
-    probe.setPosition(0, 200, 0);
-    app.root.addChild(probe);
-
-    // handle onCubemapPostRender event fired by the cubemapRenderer when all faces of the cubemap are done rendering
-    probe.on('onCubemapPostRender', () => {
-        // prefilter just rendered cubemap into envAtlas, so that it can be used for reflection during the rest of the frame
-        // @ts-ignore
-        pc.EnvLighting.generateAtlas(probe.script.cubemapRenderer.cubeMap, {
-            target: envAtlas
-        });
-    });
-
-    // Set an update function on the app's update event
-    let time = 0;
-    let updateProbeCount = 1;
-    let updateVideo = true;
-    app.on('update', function (/** @type {number} */ dt) {
-        time += dt * 0.3;
-
-        // Update the video data to the texture every other frame
-        if (updateVideo && videoTexture) {
-            videoTexture.upload();
-        }
-        updateVideo = !updateVideo;
-
-        // move the light around
-        lightOmni.setLocalPosition(300 * Math.sin(time), 300, 300 * Math.cos(time));
-
-        // update the reflection probe as needed
-        const updateFrequency = data.get('settings.updateFrequency');
-        updateProbeCount--;
-        if (updateFrequency === 0) updateProbeCount = 1;
-
-        if (updateProbeCount <= 0) {
-            // enable probe rendering
-            probe.enabled = true;
-            updateProbeCount = updateFrequency;
-        } else {
-            probe.enabled = false;
-        }
-
-        // update material properties based on settings
-        const gloss = data.get('settings.gloss');
-        const metalness = data.get('settings.metalness');
-        const bumpiness = data.get('settings.bumpiness');
-        const reflectivity = data.get('settings.reflectivity');
-
-        roomMaterial.gloss = gloss;
-        roomMaterial.metalness = metalness;
-        roomMaterial.bumpiness = bumpiness;
-        roomMaterial.reflectivity = reflectivity;
-        roomMaterial.update();
-
-        sphereMaterial.gloss = gloss;
-        sphereMaterial.metalness = metalness;
-        sphereMaterial.bumpiness = bumpiness;
-        sphereMaterial.reflectivity = reflectivity;
-        sphereMaterial.update();
-    });
+    // display the faces of the cubemap as a cross in the bottom left corner
+    // @ts-ignore
+    const cubeMap = probe.script.cubemapRenderer?.cubeMap;
+    if (settings.reflections.showCubemap && cubeMap) {
+        const aspect = app.graphicsDevice.width / app.graphicsDevice.height;
+        const width = 0.4;
+        const height = width * 0.75 * aspect;
+        textures.draw(cubeMap, 0.02, 0.98 - height, width, height);
+    }
 });
-
-export { app };

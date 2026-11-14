@@ -59,7 +59,7 @@ function BasisWorker() {
     // map of basis format to engine pixel format
     const basisToEngineMapping = (basisFormat, deviceDetails) => {
         switch (basisFormat) {
-            case BASIS_FORMAT.cTFETC1: return deviceDetails.formats.etc1 ? PIXEL_FORMAT.ETC1 : PIXEL_FORMAT.ETC2_RGB;
+            case BASIS_FORMAT.cTFETC1: return deviceDetails.formats.etc2 ? PIXEL_FORMAT.ETC2_RGB : PIXEL_FORMAT.ETC1;
             case BASIS_FORMAT.cTFETC2: return PIXEL_FORMAT.ETC2_RGBA;
             case BASIS_FORMAT.cTFBC1: return PIXEL_FORMAT.DXT1;
             case BASIS_FORMAT.cTFBC3: return PIXEL_FORMAT.DXT5;
@@ -136,7 +136,10 @@ function BasisWorker() {
                     return 'etc2';
                 }
             } else {
-                if (deviceDetails.formats.etc1 || deviceDetails.formats.etc2) {
+                if (deviceDetails.formats.etc2) {
+                    return 'etc2';
+                }
+                if (deviceDetails.formats.etc1) {
                     return 'etc1';
                 }
             }
@@ -156,25 +159,26 @@ function BasisWorker() {
     };
 
     // return true if the texture dimensions are valid for the target format
-    const dimensionsValid = (width, height, format, webgl2) => {
+    const dimensionsValid = (width, height, format, deviceDetails) => {
+        const blockAligned = ((width & 0x3) === 0) && ((height & 0x3) === 0);
         switch (format) {
-            // etc1, 2
+            // etc1, 2, astc
             case BASIS_FORMAT.cTFETC1:
             case BASIS_FORMAT.cTFETC2:
-                // no size restrictions
-                return true;
+            case BASIS_FORMAT.cTFASTC_4x4:
+                // no size restrictions on WebGL, while WebGPU requires multiples of 4 unless it
+                // supports unaligned compressed textures
+                return blockAligned || !deviceDetails.webgpu || deviceDetails.unalignedCompression;
             // dxt1, 5
             case BASIS_FORMAT.cTFBC1:
             case BASIS_FORMAT.cTFBC3:
-                // width and height must be multiple of 4
-                return ((width & 0x3) === 0) && ((height & 0x3) === 0);
+                // width and height must be multiple of 4, unless WebGPU supports unaligned
+                // compressed textures
+                return blockAligned || deviceDetails.unalignedCompression;
             // pvrtc
             case BASIS_FORMAT.cTFPVRTC1_4_RGB:
             case BASIS_FORMAT.cTFPVRTC1_4_RGBA:
-                return isPOT(width, height) && ((width === height) || webgl2);
-            // astc
-            case BASIS_FORMAT.cTFASTC_4x4:
-                return true;
+                return isPOT(width, height);
             // atc
             case BASIS_FORMAT.cTFATC_RGB:
             case BASIS_FORMAT.cTFATC_RGBA_INTERPOLATED_ALPHA:
@@ -183,6 +187,22 @@ function BasisWorker() {
                 return true;
         }
         return false;
+    };
+
+    // select the basis format for the target format, falling back to an uncompressed format when
+    // the target does not support the image dimensions
+    const selectBasisFormat = (format, hasAlpha, width, height, deviceDetails) => {
+        let basisFormat = hasAlpha ? alphaMapping[format] : opaqueMapping[format];
+        if (!dimensionsValid(width, height, basisFormat, deviceDetails)) {
+            basisFormat = hasAlpha ? BASIS_FORMAT.cTFRGBA32 : BASIS_FORMAT.cTFRGB565;
+        }
+
+        // WebGPU has no 16-bit uncompressed formats
+        if (deviceDetails.webgpu && (basisFormat === BASIS_FORMAT.cTFRGB565 || basisFormat === BASIS_FORMAT.cTFRGBA4444)) {
+            basisFormat = BASIS_FORMAT.cTFRGBA32;
+        }
+
+        return basisFormat;
     };
 
     const transcodeKTX2 = (url, data, options) => {
@@ -199,6 +219,9 @@ function BasisWorker() {
         const hasAlpha = !!basisFile.getHasAlpha();
         const isUASTC = basisFile.isUASTC && basisFile.isUASTC();
 
+        // a six-face file is a cubemap; faces are transcoded into per-mip arrays
+        const cubemap = !!options.isCubemap;
+
         if (!width || !height || !levels) {
             basisFile.close();
             basisFile.delete();
@@ -208,8 +231,8 @@ function BasisWorker() {
         // choose the target format
         const format = chooseTargetFormat(options.deviceDetails, hasAlpha, isUASTC);
 
-        // unswizzle gggr textures under pvr compression
-        const unswizzle = !!options.isGGGR && format === 'pvr';
+        // unswizzle gggr textures under pvr compression (never applies to cubemaps)
+        const unswizzle = !cubemap && !!options.isGGGR && format === 'pvr';
 
         // convert to basis format taking into consideration platform restrictions
         let basisFormat;
@@ -217,37 +240,44 @@ function BasisWorker() {
             // in order to unswizzle we need gggr8888
             basisFormat = BASIS_FORMAT.cTFRGBA32;
         } else {
-            // select output format based on supported formats
-            basisFormat = hasAlpha ? alphaMapping[format] : opaqueMapping[format];
-
-            // if image dimensions don't work on target, fall back to uncompressed
-            if (!dimensionsValid(width, height, basisFormat, options.deviceDetails.webgl2)) {
-                basisFormat = hasAlpha ? BASIS_FORMAT.cTFRGBA32 : BASIS_FORMAT.cTFRGB565;
-            }
+            // select output format based on supported formats and the image dimensions
+            basisFormat = selectBasisFormat(format, hasAlpha, width, height, options.deviceDetails);
         }
 
         if (!basisFile.startTranscoding()) {
             basisFile.close();
             basisFile.delete();
-            throw new Error('Failed to start transcoding url=' + url);
+            throw new Error(`Failed to start transcoding url=${url}`);
         }
 
-        let i;
+        const is16BitFormat = (basisFormat === BASIS_FORMAT.cTFRGB565 || basisFormat === BASIS_FORMAT.cTFRGBA4444);
+
+        // transcode a single face of a single mip level into a typed array
+        const transcodeImage = (mip, face) => {
+            const dstSize = basisFile.getImageTranscodedSizeInBytes(mip, 0, face, basisFormat);
+            const dst = new Uint8Array(dstSize);
+
+            if (!basisFile.transcodeImage(dst, mip, 0, face, basisFormat, 0, -1, -1)) {
+                basisFile.close();
+                basisFile.delete();
+                throw new Error(`Failed to transcode image url=${url}`);
+            }
+
+            return is16BitFormat ? new Uint16Array(dst.buffer) : dst;
+        };
 
         const levelData = [];
         for (let mip = 0; mip < levels; ++mip) {
-            const dstSize = basisFile.getImageTranscodedSizeInBytes(mip, 0, 0, basisFormat);
-            const dst = new Uint8Array(dstSize);
-
-            if (!basisFile.transcodeImage(dst, mip, 0, 0, basisFormat, 0, -1, -1)) {
-                basisFile.close();
-                basisFile.delete();
-                throw new Error('Failed to transcode image url=' + url);
+            if (cubemap) {
+                // one entry per mip, each holding the six cubemap faces
+                const faceData = [];
+                for (let face = 0; face < 6; ++face) {
+                    faceData.push(transcodeImage(mip, face));
+                }
+                levelData.push(faceData);
+            } else {
+                levelData.push(transcodeImage(mip, 0));
             }
-
-            const is16BitFormat = (basisFormat === BASIS_FORMAT.cTFRGB565 || basisFormat === BASIS_FORMAT.cTFRGBA4444);
-
-            levelData.push(is16BitFormat ? new Uint16Array(dst.buffer) : dst);
         }
 
         basisFile.close();
@@ -256,7 +286,7 @@ function BasisWorker() {
         // handle unswizzle option
         if (unswizzle) {
             basisFormat = BASIS_FORMAT.cTFRGB565;
-            for (i = 0; i < levelData.length; ++i) {
+            for (let i = 0; i < levelData.length; ++i) {
                 levelData[i] = pack565(unswizzleGGGR(levelData[i]));
             }
         }
@@ -266,7 +296,7 @@ function BasisWorker() {
             width: width,
             height: height,
             levels: levelData,
-            cubemap: false,
+            cubemap: cubemap,
             transcodeTime: performanceNow() - funcStart,
             url: url,
             unswizzledGGGR: unswizzle
@@ -303,19 +333,14 @@ function BasisWorker() {
             // in order to unswizzle we need gggr8888
             basisFormat = BASIS_FORMAT.cTFRGBA32;
         } else {
-            // select output format based on supported formats
-            basisFormat = hasAlpha ? alphaMapping[format] : opaqueMapping[format];
-
-            // if image dimensions don't work on target, fall back to uncompressed
-            if (!dimensionsValid(width, height, basisFormat, options.deviceDetails.webgl2)) {
-                basisFormat = hasAlpha ? BASIS_FORMAT.cTFRGBA32 : BASIS_FORMAT.cTFRGB565;
-            }
+            // select output format based on supported formats and the image dimensions
+            basisFormat = selectBasisFormat(format, hasAlpha, width, height, options.deviceDetails);
         }
 
         if (!basisFile.startTranscoding()) {
             basisFile.close();
             basisFile.delete();
-            throw new Error('Failed to start transcoding url=' + url);
+            throw new Error(`Failed to start transcoding url=${url}`);
         }
 
         let i;
@@ -332,11 +357,11 @@ function BasisWorker() {
                     // fails to transcode. this is a workaround which copies the previous mip
                     // level data instead of failing.
                     dst.set(new Uint8Array(levelData[mip - 1].buffer));
-                    console.warn('Failed to transcode last mipmap level, using previous level instead url=' + url);
+                    console.warn(`Failed to transcode last mipmap level, using previous level instead url=${url}`);
                 } else {
                     basisFile.close();
                     basisFile.delete();
-                    throw new Error('Failed to transcode image url=' + url);
+                    throw new Error(`Failed to transcode image url=${url}`);
                 }
             }
 
@@ -373,14 +398,28 @@ function BasisWorker() {
     };
 
     // download and transcode the file given the basis module and
-    // file url
-    const workerTranscode = (url, data, options) => {
+    // file url. the job key is returned with the result to identify the job
+    const workerTranscode = (key, url, data, options) => {
         try {
             const result = transcode(url, data, options);
-            result.levels = result.levels.map(v => v.buffer);
-            self.postMessage({ url: url, data: result }, result.levels);
+
+            // replace typed arrays with their backing buffers for transfer. cubemap levels
+            // are arrays of six faces, all other levels are a single image.
+            const transfer = [];
+            result.levels = result.levels.map((level) => {
+                if (Array.isArray(level)) {
+                    return level.map((face) => {
+                        transfer.push(face.buffer);
+                        return face.buffer;
+                    });
+                }
+                transfer.push(level.buffer);
+                return level.buffer;
+            });
+
+            self.postMessage({ key: key, url: url, data: result }, transfer);
         } catch (err) {
-            self.postMessage({ url: url, err: err }, null);
+            self.postMessage({ key: key, url: url, err: err }, null);
         }
     };
 
@@ -388,26 +427,26 @@ function BasisWorker() {
         // initialize the wasm module
         const instantiateWasmFunc = (imports, successCallback) => {
             WebAssembly.instantiate(config.module, imports)
-                .then((result) => {
-                    successCallback(result);
-                })
-                .catch((reason) => {
-                    console.error('instantiate failed + ' + reason);
-                });
+            .then((result) => {
+                successCallback(result);
+            })
+            .catch((reason) => {
+                console.error(`instantiate failed + ${reason}`);
+            });
             return {};
         };
 
         self.BASIS(config.module ? { instantiateWasm: instantiateWasmFunc } : null)
-            .then((instance) => {
-                instance.initializeBasis();
+        .then((instance) => {
+            instance.initializeBasis();
 
-                // set globals
-                basis = instance;
-                rgbPriority = config.rgbPriority;
-                rgbaPriority = config.rgbaPriority;
+            // set globals
+            basis = instance;
+            rgbPriority = config.rgbPriority;
+            rgbaPriority = config.rgbaPriority;
 
-                callback(null);
-            });
+            callback(null);
+        });
     };
 
     // handle incoming worker requests
@@ -418,14 +457,14 @@ function BasisWorker() {
             case 'init':
                 workerInit(data.config, () => {
                     for (let i = 0; i < queue.length; ++i) {
-                        workerTranscode(queue[i].url, queue[i].data, queue[i].options);
+                        workerTranscode(queue[i].key, queue[i].url, queue[i].data, queue[i].options);
                     }
                     queue.length = 0;
                 });
                 break;
             case 'transcode':
                 if (basis) {
-                    workerTranscode(data.url, data.data, data.options);
+                    workerTranscode(data.key, data.url, data.data, data.options);
                 } else {
                     queue.push(data);
                 }

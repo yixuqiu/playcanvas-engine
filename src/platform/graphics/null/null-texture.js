@@ -1,5 +1,5 @@
 /**
- * A NULL implementation of the Texture.
+ * A Null implementation of the Texture.
  *
  * @ignore
  */
@@ -11,6 +11,10 @@ class NullTexture {
     }
 
     loseContext() {
+    }
+
+    copy(source, options) {
+        return true;
     }
 }
 

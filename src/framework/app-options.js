@@ -1,40 +1,58 @@
 /**
- * AppOptions is an object that holds configuration settings utilized in the creation of AppBase. It
- * allows functionality to be included or excluded from the AppBase instance.
+ * @import { BatchManager } from '../scene/batching/batch-manager.js'
+ * @import { ComponentSystem } from './components/system.js'
+ * @import { ElementInput } from './input/element-input.js'
+ * @import { GamePads } from '../platform/input/game-pads.js'
+ * @import { GraphicsDevice } from '../platform/graphics/graphics-device.js'
+ * @import { Keyboard } from '../platform/input/keyboard.js'
+ * @import { Lightmapper } from './lightmapper/lightmapper.js'
+ * @import { Mouse } from '../platform/input/mouse.js'
+ * @import { PhysicsWorld } from './physics/physics-world.js'
+ * @import { ResourceHandler } from './handlers/handler.js'
+ * @import { SoundManager } from '../platform/sound/manager.js'
+ * @import { TouchDevice } from '../platform/input/touch-device.js'
+ * @import { XrManager } from './xr/xr-manager.js'
+ */
+
+/**
+ * AppOptions holds configuration settings utilized in the creation of an {@link AppBase} instance.
+ * It allows functionality to be included or excluded from the AppBase instance.
+ *
+ * @category Framework
  */
 class AppOptions {
     /**
      * Input handler for {@link ElementComponent}s.
      *
-     * @type {import('./input/element-input.js').ElementInput}
+     * @type {ElementInput}
      */
     elementInput;
 
     /**
      * Keyboard handler for input.
      *
-     * @type {import('../platform/input/keyboard.js').Keyboard}
+     * @type {Keyboard}
      */
     keyboard;
 
     /**
      * Mouse handler for input.
      *
-     * @type {import('../platform/input/mouse.js').Mouse}
+     * @type {Mouse}
      */
     mouse;
 
     /**
      * TouchDevice handler for input.
      *
-     * @type {import('../platform/input/touch-device.js').TouchDevice}
+     * @type {TouchDevice}
      */
     touch;
 
     /**
      * Gamepad handler for input.
      *
-     * @type {import('../platform/input/game-pads.js').GamePads}
+     * @type {GamePads}
      */
     gamepads;
 
@@ -62,51 +80,78 @@ class AppOptions {
     /**
      * The sound manager
      *
-     * @type {import('../platform/sound/manager.js').SoundManager}
+     * @type {SoundManager}
      */
     soundManager;
 
     /**
+     * The physics backend used to simulate rigid bodies, collisions and joints, such as
+     * {@link AmmoPhysicsWorld} or {@link NullPhysicsWorld}. When set, the application installs
+     * it into the {@link RigidBodyComponentSystem} during {@link AppBase#init}, so
+     * {@link AppOptions#componentSystems} must include {@link RigidBodyComponentSystem}. A
+     * useful simulation also requires {@link CollisionComponentSystem} - rigid bodies and
+     * triggers obtain their shapes from collision components - and {@link JointComponentSystem}
+     * if joints are used. The rigid body system registers its contact listener with the
+     * world. When omitted, an {@link AmmoPhysicsWorld} is created automatically once
+     * application libraries have loaded, if the Ammo.js WasmModule is present. The application
+     * takes ownership of the world and destroys it with the application.
+     *
+     * @type {PhysicsWorld}
+     * @alpha
+     */
+    physicsWorld;
+
+    /**
      * The graphics device.
      *
-     * @type {import('../platform/graphics/graphics-device.js').GraphicsDevice}
+     * @type {GraphicsDevice}
      */
     graphicsDevice;
 
     /**
      * The lightmapper.
      *
-     * @type {typeof import('./lightmapper/lightmapper.js').Lightmapper}
+     * @type {typeof Lightmapper}
      */
     lightmapper;
 
     /**
      * The BatchManager.
      *
-     * @type {typeof import('../scene/batching/batch-manager.js').BatchManager}
+     * @type {typeof BatchManager}
      */
     batchManager;
 
     /**
      * The XrManager.
      *
-     * @type {typeof import('./xr/xr-manager.js').XrManager}
+     * @type {typeof XrManager}
      */
     xr;
 
     /**
      * The component systems the app requires.
      *
-     * @type {typeof import('./components/system.js').ComponentSystem[]}
+     * @type {typeof ComponentSystem[]}
      */
     componentSystems = [];
 
     /**
      * The resource handlers the app requires.
      *
-     * @type {typeof import('./handlers/handler.js').ResourceHandler[]}
+     * @type {typeof ResourceHandler[]}
      */
     resourceHandlers = [];
+
+    /**
+     * Whether the app announces itself to developer tools, such as the PlayCanvas Inspector
+     * browser extension, so they can find and inspect it. Set to false to keep a production build
+     * from announcing itself. This is an opt-out, not a protection: code running on the page can
+     * still reach the app by other means. Defaults to true.
+     *
+     * @type {boolean}
+     */
+    devtools = true;
 }
 
 export { AppOptions };

@@ -1,0 +1,17 @@
+* {
+    -webkit-user-select: none;      /* iOS Safari */
+    user-select: none;              /* Other browsers */
+    -webkit-touch-callout: none;    /* Prevents text selection popups on iOS */
+    -webkit-user-drag: none;        /* Prevents dragging images on iOS */
+}
+
+body {
+    margin: 0;
+    overflow: hidden;
+    background-color: #000;
+}
+
+#application-canvas {
+    width: 100%;
+    height: 100%;
+}

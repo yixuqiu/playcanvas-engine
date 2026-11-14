@@ -1,13 +1,15 @@
 import { platform } from '../../../core/platform.js';
 import { EventHandler } from '../../../core/event-handler.js';
-
 import { Quat } from '../../../core/math/quat.js';
 import { Vec2 } from '../../../core/math/vec2.js';
 import { Vec3 } from '../../../core/math/vec3.js';
-
 import { ElementComponent } from './component.js';
 import { Ray } from '../../../core/shape/ray.js';
 import { Plane } from '../../../core/shape/plane.js';
+
+/**
+ * @import { ElementMouseEvent, ElementSelectEvent, ElementTouchEvent } from '../../input/element-input.js'
+ */
 
 const _inputScreenPosition = new Vec2();
 const _inputWorldPosition = new Vec3();
@@ -24,6 +26,10 @@ const OPPOSITE_AXIS = {
 
 /**
  * Helper class that makes it easy to create Elements that can be dragged by the mouse or touch.
+ *
+ * Relevant Engine API examples:
+ *
+ * - [Drag and drop](https://playcanvas.github.io/#/user-interface/drag-and-drop)
  *
  * @category User Interface
  */
@@ -76,7 +82,7 @@ class ElementDragHelper extends EventHandler {
         }
 
         if (axis && axis !== 'x' && axis !== 'y') {
-            throw new Error('Unrecognized axis: ' + axis);
+            throw new Error(`Unrecognized axis: ${axis}`);
         }
 
         this._element = element;
@@ -166,7 +172,7 @@ class ElementDragHelper extends EventHandler {
      * This method calculates the `Vec3` intersection point of plane/ray intersection based on
      * the mouse/touch input event. If there is no intersection, it returns `null`.
      *
-     * @param {import('../../input/element-input').ElementTouchEvent | import('../../input/element-input').ElementMouseEvent | import('../../input/element-input').ElementSelectEvent} event - The event.
+     * @param {ElementTouchEvent|ElementMouseEvent|ElementSelectEvent} event - The event.
      * @returns {Vec3|null} The `Vec3` intersection point of plane/ray intersection, if there
      * is an intersection, otherwise `null`
      * @private
@@ -226,12 +232,14 @@ class ElementDragHelper extends EventHandler {
         dragScale.set(screenScale, screenScale, screenScale);
 
         while (current) {
-            dragScale.mul(current.getLocalScale());
-            current = current.parent;
-
+            // Stop at the screen of a screen space element. The element can be a direct child of
+            // its screen, so test each ancestor before its scale is applied, not after moving on
             if (isWithin2DScreen && current.screen) {
                 break;
             }
+
+            dragScale.mul(current.getLocalScale());
+            current = current.parent;
         }
 
         dragScale.x = 1 / dragScale.x;
@@ -240,9 +248,9 @@ class ElementDragHelper extends EventHandler {
     }
 
     /**
-     * This method is linked to `_element` events: `mousemove` and `touchmove`
+     * This method is linked to `_element` events: `mousemove`, `touchmove` and `selectmove`.
      *
-     * @param {import('../../input/element-input').ElementTouchEvent} event - The event.
+     * @param {ElementTouchEvent|ElementMouseEvent|ElementSelectEvent} event - The event.
      * @private
      */
     _onMove(event) {

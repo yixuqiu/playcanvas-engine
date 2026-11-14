@@ -1,19 +1,13 @@
 import { platform } from '../core/platform.js';
-
 import { WebglGraphicsDevice } from '../platform/graphics/webgl/webgl-graphics-device.js';
-
 import { SoundManager } from '../platform/sound/manager.js';
-
 import { Lightmapper } from './lightmapper/lightmapper.js';
 import { BatchManager } from '../scene/batching/batch-manager.js';
-
 import { AppBase } from './app-base.js';
 import { AppOptions } from './app-options.js';
-import { script } from './script.js';
 import { AnimationComponentSystem } from './components/animation/system.js';
 import { AnimComponentSystem } from './components/anim/system.js';
 import { AudioListenerComponentSystem } from './components/audio-listener/system.js';
-import { AudioSourceComponentSystem } from './components/audio-source/system.js';
 import { ButtonComponentSystem } from './components/button/system.js';
 import { CollisionComponentSystem } from './components/collision/system.js';
 import { ElementComponentSystem } from './components/element/system.js';
@@ -25,7 +19,6 @@ import { ParticleSystemComponentSystem } from './components/particle-system/syst
 import { RenderComponentSystem } from './components/render/system.js';
 import { RigidBodyComponentSystem } from './components/rigid-body/system.js';
 import { ScreenComponentSystem } from './components/screen/system.js';
-import { ScriptLegacyComponentSystem } from './components/script-legacy/system.js';
 import { ScrollViewComponentSystem } from './components/scroll-view/system.js';
 import { ScrollbarComponentSystem } from './components/scrollbar/system.js';
 import { SoundComponentSystem } from './components/sound/system.js';
@@ -35,7 +28,6 @@ import { CameraComponentSystem } from './components/camera/system.js';
 import { LightComponentSystem } from './components/light/system.js';
 import { ScriptComponentSystem } from './components/script/system.js';
 import { GSplatComponentSystem } from './components/gsplat/system.js';
-
 import { RenderHandler } from './handlers/render.js';
 import { AnimationHandler } from './handlers/animation.js';
 import { AnimClipHandler } from './handlers/anim-clip.js';
@@ -61,60 +53,111 @@ import { TemplateHandler } from './handlers/template.js';
 import { TextHandler } from './handlers/text.js';
 import { TextureAtlasHandler } from './handlers/texture-atlas.js';
 import { TextureHandler } from './handlers/texture.js';
-
 import { XrManager } from './xr/xr-manager.js';
 
 /**
- * An Application represents and manages your PlayCanvas application. If you are developing using
- * the PlayCanvas Editor, the Application is created for you. You can access your Application
- * instance in your scripts. Below is a skeleton script which shows how you can access the
- * application 'app' property inside the initialize and update functions:
+ * @import { ElementInput } from './input/element-input.js'
+ * @import { GamePads } from '../platform/input/game-pads.js'
+ * @import { GraphicsDevice } from '../platform/graphics/graphics-device.js'
+ * @import { Keyboard } from '../platform/input/keyboard.js'
+ * @import { Mouse } from '../platform/input/mouse.js'
+ * @import { PhysicsWorld } from './physics/physics-world.js'
+ * @import { TouchDevice } from '../platform/input/touch-device.js'
+ */
+
+/**
+ * Application is a subclass of {@link AppBase}, which represents the base functionality for all
+ * PlayCanvas applications. It acts as a convenience class by internally registering all
+ * {@link ComponentSystem}s and {@link ResourceHandler}s implemented in the PlayCanvas Engine. This
+ * makes app setup simple but results in the full engine being included when bundling your
+ * application.
+ *
+ * New code should prefer {@link AppBase}, as this class is expected to be deprecated in a future
+ * release. Two limitations motivate that:
+ *
+ * - Its constructor is synchronous, so it cannot create a WebGPU device. Creating one requires
+ * awaiting {@link createGraphicsDevice}.
+ * - It references every component system and resource handler, so none of them can be
+ * [tree-shaken](https://developer.mozilla.org/en-US/docs/Glossary/Tree_shaking) out of your
+ * bundle. {@link AppBase} leaves that choice to you.
+ *
+ * The equivalent {@link AppBase} setup registers only what the app actually uses:
  *
  * ```javascript
- * // Editor example: accessing the pc.Application from a script
- * var MyScript = pc.createScript('myScript');
+ * const device = await createGraphicsDevice(canvas, { deviceTypes: [DEVICETYPE_WEBGPU] });
  *
- * MyScript.prototype.initialize = function() {
- *     // Every script instance has a property 'this.app' accessible in the initialize...
- *     const app = this.app;
- * };
+ * const options = new AppOptions();
+ * options.graphicsDevice = device;
+ * options.componentSystems = [RenderComponentSystem, CameraComponentSystem, LightComponentSystem];
+ * options.resourceHandlers = [TextureHandler, ContainerHandler];
  *
- * MyScript.prototype.update = function(dt) {
- *     // ...and update functions.
- *     const app = this.app;
- * };
+ * const app = new AppBase(canvas);
+ * app.init(options);
  * ```
  *
- * If you are using the Engine without the Editor, you have to create the application instance
- * manually.
+ * The component systems this class registers are listed on the constructor below. That list
+ * doubles as a migration checklist, as it maps each component name to the system you would need
+ * to register yourself.
+ *
+ * {@link AppBase#keyboard}, {@link AppBase#mouse}, {@link AppBase#touch},
+ * {@link AppBase#gamepads} and {@link AppBase#elementInput} stay `null` unless the matching device
+ * is passed to this constructor, so a game that reads input must construct with, for example,
+ * `{ keyboard: new Keyboard(window), mouse: new Mouse(canvas), touch: new TouchDevice(canvas) }`.
+ *
+ * @category Framework
  */
 class Application extends AppBase {
     /**
      * Create a new Application instance.
      *
-     * @param {HTMLCanvasElement} canvas - The canvas element.
+     * Automatically registers these component systems with the application's component system registry:
+     *
+     * - anim ({@link AnimComponentSystem})
+     * - animation ({@link AnimationComponentSystem})
+     * - audiolistener ({@link AudioListenerComponentSystem})
+     * - button ({@link ButtonComponentSystem})
+     * - camera ({@link CameraComponentSystem})
+     * - collision ({@link CollisionComponentSystem})
+     * - element ({@link ElementComponentSystem})
+     * - gsplat ({@link GSplatComponentSystem})
+     * - joint ({@link JointComponentSystem})
+     * - layoutchild ({@link LayoutChildComponentSystem})
+     * - layoutgroup ({@link LayoutGroupComponentSystem})
+     * - light ({@link LightComponentSystem})
+     * - model ({@link ModelComponentSystem})
+     * - particlesystem ({@link ParticleSystemComponentSystem})
+     * - rigidbody ({@link RigidBodyComponentSystem})
+     * - render ({@link RenderComponentSystem})
+     * - screen ({@link ScreenComponentSystem})
+     * - script ({@link ScriptComponentSystem})
+     * - scrollbar ({@link ScrollbarComponentSystem})
+     * - scrollview ({@link ScrollViewComponentSystem})
+     * - sound ({@link SoundComponentSystem})
+     * - sprite ({@link SpriteComponentSystem})
+     *
+     * @param {HTMLCanvasElement | OffscreenCanvas} canvas - The canvas element.
      * @param {object} [options] - The options object to configure the Application.
-     * @param {import('./input/element-input.js').ElementInput} [options.elementInput] - Input
-     * handler for {@link ElementComponent}s.
-     * @param {import('../platform/input/keyboard.js').Keyboard} [options.keyboard] - Keyboard
-     * handler for input.
-     * @param {import('../platform/input/mouse.js').Mouse} [options.mouse] - Mouse handler for
-     * input.
-     * @param {import('../platform/input/touch-device.js').TouchDevice} [options.touch] - TouchDevice
-     * handler for input.
-     * @param {import('../platform/input/game-pads.js').GamePads} [options.gamepads] - Gamepad
-     * handler for input.
+     * @param {ElementInput} [options.elementInput] - Input handler for {@link ElementComponent}s.
+     * @param {Keyboard} [options.keyboard] - Keyboard handler for input.
+     * @param {Mouse} [options.mouse] - Mouse handler for input.
+     * @param {TouchDevice} [options.touch] - TouchDevice handler for input.
+     * @param {GamePads} [options.gamepads] - Gamepad handler for input.
      * @param {string} [options.scriptPrefix] - Prefix to apply to script urls before loading.
      * @param {string} [options.assetPrefix] - Prefix to apply to asset urls before loading.
-     * @param {import('../platform/graphics/graphics-device.js').GraphicsDevice} [options.graphicsDevice] - The
-     * graphics device used by the application. If not provided, a WebGl graphics device will be
-     * created.
+     * @param {GraphicsDevice} [options.graphicsDevice] - The graphics device used by the
+     * application. If not provided, a WebGl graphics device will be created.
      * @param {object} [options.graphicsDeviceOptions] - Options object that is passed into the
      * {@link GraphicsDevice} constructor.
      * @param {string[]} [options.scriptsOrder] - Scripts in order of loading first.
+     * @param {PhysicsWorld} [options.physicsWorld] - The physics backend used to simulate rigid
+     * bodies, collisions and joints. When omitted, the Ammo.js backend is created automatically if
+     * the Ammo library is loaded. See {@link AppOptions#physicsWorld}.
+     * @param {boolean} [options.devtools] - Whether the app announces itself to developer tools,
+     * such as the PlayCanvas Inspector browser extension. Defaults to true. See
+     * {@link AppOptions#devtools}.
      * @example
      * // Engine-only example: create the application manually
-     * const app = new pc.Application(canvas, options);
+     * const app = new Application(canvas, options);
      *
      * // Start the application's main loop
      * app.start();
@@ -138,6 +181,9 @@ class Application extends AppBase {
         appOptions.assetPrefix = options.assetPrefix;
         appOptions.scriptsOrder = options.scriptsOrder;
 
+        appOptions.physicsWorld = options.physicsWorld;
+        appOptions.devtools = options.devtools ?? true;
+
         appOptions.soundManager = new SoundManager();
         appOptions.lightmapper = Lightmapper;
         appOptions.batchManager = BatchManager;
@@ -154,6 +200,9 @@ class Application extends AppBase {
         if (platform.browser && !!navigator.xr) {
             options.graphicsDeviceOptions.xrCompatible = true;
         }
+        // note this defaults alpha to false, unlike GraphicsDevice and createGraphicsDevice,
+        // which default it to true. Kept for backwards compatibility - changing it would make
+        // existing canvases composite with the page.
         options.graphicsDeviceOptions.alpha = options.graphicsDeviceOptions.alpha || false;
 
         return new WebglGraphicsDevice(canvas, options.graphicsDeviceOptions);
@@ -170,8 +219,7 @@ class Application extends AppBase {
             RenderComponentSystem,
             CameraComponentSystem,
             LightComponentSystem,
-            script.legacy ? ScriptLegacyComponentSystem : ScriptComponentSystem,
-            AudioSourceComponentSystem,
+            ScriptComponentSystem,
             SoundComponentSystem,
             AudioListenerComponentSystem,
             ParticleSystemComponentSystem,

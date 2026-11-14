@@ -3,12 +3,9 @@ import { Mat3 } from '../../core/math/mat3.js';
 import { Mat4 } from '../../core/math/mat4.js';
 import { Vec3 } from '../../core/math/vec3.js';
 
-import { CULLFACE_NONE } from '../../platform/graphics/constants.js';
 import { DebugGraphics } from '../../platform/graphics/debug-graphics.js';
-import { BlendState } from '../../platform/graphics/blend-state.js';
-import { DepthState } from '../../platform/graphics/depth-state.js';
 
-import { drawQuadWithShader } from '../graphics/quad-render-utils.js';
+import { RenderPassShaderQuad } from '../graphics/render-pass-shader-quad.js';
 
 import { EMITTERSHAPE_BOX } from '../constants.js';
 
@@ -21,13 +18,13 @@ class ParticleGPUUpdater {
     constructor(emitter, gd) {
         this._emitter = emitter;
 
+        // the pass rendering the updated particle state, reused every frame
+        this.updatePass = new RenderPassShaderQuad(gd);
+        this.updatePass.name = 'ParticleUpdate';
+
         this.frameRandomUniform = new Float32Array(3);
         this.emitterPosUniform = new Float32Array(3);
         this.emitterScaleUniform = new Float32Array([1, 1, 1]);
-        this.worldBoundsMulUniform = new Float32Array(3);
-        this.worldBoundsAddUniform = new Float32Array(3);
-        this.inBoundsSizeUniform = new Float32Array(3);
-        this.inBoundsCenterUniform = new Float32Array(3);
 
         this.constantParticleTexIN = gd.scope.resolve('particleTexIN');
         this.constantParticleTexOUT = gd.scope.resolve('particleTexOUT');
@@ -59,24 +56,14 @@ class ParticleGPUUpdater {
         this.constantSeed = gd.scope.resolve('seed');
         this.constantStartAngle = gd.scope.resolve('startAngle');
         this.constantStartAngle2 = gd.scope.resolve('startAngle2');
-        this.constantOutBoundsMul = gd.scope.resolve('outBoundsMul');
-        this.constantOutBoundsAdd = gd.scope.resolve('outBoundsAdd');
-        this.constantInBoundsSize = gd.scope.resolve('inBoundsSize');
-        this.constantInBoundsCenter = gd.scope.resolve('inBoundsCenter');
-        this.constantMaxVel = gd.scope.resolve('maxVel');
         this.constantFaceTangent = gd.scope.resolve('faceTangent');
         this.constantFaceBinorm = gd.scope.resolve('faceBinorm');
+        this.constantRadialSpeedDivMult = gd.scope.resolve('radialSpeedDivMult');
     }
 
-    _setInputBounds() {
-        this.inBoundsSizeUniform[0] = this._emitter.prevWorldBoundsSize.x;
-        this.inBoundsSizeUniform[1] = this._emitter.prevWorldBoundsSize.y;
-        this.inBoundsSizeUniform[2] = this._emitter.prevWorldBoundsSize.z;
-        this.constantInBoundsSize.setValue(this.inBoundsSizeUniform);
-        this.inBoundsCenterUniform[0] = this._emitter.prevWorldBoundsCenter.x;
-        this.inBoundsCenterUniform[1] = this._emitter.prevWorldBoundsCenter.y;
-        this.inBoundsCenterUniform[2] = this._emitter.prevWorldBoundsCenter.z;
-        this.constantInBoundsCenter.setValue(this.inBoundsCenterUniform);
+    destroy() {
+        this.updatePass.destroy();
+        this.updatePass = null;
     }
 
     randomize() {
@@ -92,11 +79,11 @@ class ParticleGPUUpdater {
 
         const emitter = this._emitter;
 
-        device.setBlendState(BlendState.NOBLEND);
-        device.setDepthState(DepthState.NODEPTH);
-        device.setCullMode(CULLFACE_NONE);
+        device.setDrawStates();
 
         this.randomize();
+
+        this.constantRadialSpeedDivMult.setValue(emitter.material.getParameter('radialSpeedDivMult').data);
 
         this.constantGraphSampleSize.setValue(1.0 / emitter.precision);
         this.constantGraphNumSamples.setValue(emitter.precision);
@@ -109,23 +96,6 @@ class ParticleGPUUpdater {
 
         const node = emitter.meshInstance.node;
         const emitterScale = node === null ? Vec3.ONE : node.localScale;
-
-        if (emitter.pack8) {
-            this.worldBoundsMulUniform[0] = emitter.worldBoundsMul.x;
-            this.worldBoundsMulUniform[1] = emitter.worldBoundsMul.y;
-            this.worldBoundsMulUniform[2] = emitter.worldBoundsMul.z;
-            this.constantOutBoundsMul.setValue(this.worldBoundsMulUniform);
-            this.worldBoundsAddUniform[0] = emitter.worldBoundsAdd.x;
-            this.worldBoundsAddUniform[1] = emitter.worldBoundsAdd.y;
-            this.worldBoundsAddUniform[2] = emitter.worldBoundsAdd.z;
-            this.constantOutBoundsAdd.setValue(this.worldBoundsAddUniform);
-
-            this._setInputBounds();
-
-            let maxVel = emitter.maxVel * Math.max(Math.max(emitterScale.x, emitterScale.y), emitterScale.z);
-            maxVel = Math.max(maxVel, 1);
-            this.constantMaxVel.setValue(maxVel);
-        }
 
         const emitterPos = (node === null || emitter.localSpace) ? Vec3.ZERO : node.getPosition();
         const emitterMatrix = node === null ? Mat4.IDENTITY : node.getWorldTransform();
@@ -169,12 +139,13 @@ class ParticleGPUUpdater {
         texIN = emitter.beenReset ? emitter.particleTexStart : texIN;
         const texOUT = emitter.swapTex ? emitter.particleTexIN : emitter.particleTexOUT;
         this.constantParticleTexIN.setValue(texIN);
-        drawQuadWithShader(
-            device,
-            emitter.swapTex ? emitter.rtParticleTexIN : emitter.rtParticleTexOUT,
-            !isOnStop ?
-                (emitter.loop ? emitter.shaderParticleUpdateRespawn : emitter.shaderParticleUpdateNoRespawn) :
-                emitter.shaderParticleUpdateOnStop);
+
+        const updatePass = this.updatePass;
+        updatePass.shader = !isOnStop ?
+            (emitter.loop ? emitter.shaderParticleUpdateRespawn : emitter.shaderParticleUpdateNoRespawn) :
+            emitter.shaderParticleUpdateOnStop;
+        updatePass.init(emitter.swapTex ? emitter.rtParticleTexIN : emitter.rtParticleTexOUT);
+        updatePass.render();
 
         // this.constantParticleTexOUT.setValue(texOUT);
 
@@ -183,11 +154,6 @@ class ParticleGPUUpdater {
         emitter.beenReset = false;
 
         emitter.swapTex = !emitter.swapTex;
-
-        emitter.prevWorldBoundsSize.copy(emitter.worldBoundsSize);
-        emitter.prevWorldBoundsCenter.copy(emitter.worldBounds.center);
-        if (emitter.pack8)
-            this._setInputBounds();
 
         DebugGraphics.popGpuMarker(device);
     }

@@ -1,8 +1,15 @@
 /**
- * The KeyboardEvent is passed into all event callbacks from the {@link Keyboard}. It corresponds
- * to a key press or release.
+ * @import { Keyboard } from './keyboard.js'
+ */
+
+/**
+ * The KeyboardEvent is passed into all event handlers registered on the {@link Keyboard}. The
+ * events are:
  *
- * @category Input
+ * - {@link Keyboard.EVENT_KEYDOWN}
+ * - {@link Keyboard.EVENT_KEYUP}
+ *
+ * @category Input Devices
  */
 class KeyboardEvent {
     /**
@@ -29,12 +36,11 @@ class KeyboardEvent {
     /**
      * Create a new KeyboardEvent.
      *
-     * @param {import('./keyboard.js').Keyboard} keyboard - The keyboard object which is firing the
-     * event.
-     * @param {globalThis.KeyboardEvent} event - The original browser event that was fired.
+     * @param {Keyboard} [keyboard] - The keyboard object which is firing the event.
+     * @param {globalThis.KeyboardEvent} [event] - The original browser event that was fired.
      * @example
      * const onKeyDown = function (e) {
-     *     if (e.key === pc.KEY_SPACE) {
+     *     if (e.key === KEY_SPACE) {
      *         // space key pressed
      *     }
      *     e.event.preventDefault(); // Use original browser event to prevent browser action.

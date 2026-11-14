@@ -1,8 +1,20 @@
 import { AnimEvents } from './anim-events.js';
 
 /**
+ * @import { AnimCurve } from './anim-curve.js'
+ * @import { AnimData } from './anim-data.js'
+ */
+
+/**
  * An AnimTrack stores the curve data necessary to animate a set of target nodes. It can be linked
  * to the nodes it should animate using the {@link AnimComponent#assignAnimation} method.
+ *
+ * A track is the engine's animation clip: a {@link name}, a {@link duration} in seconds and a list
+ * of {@link curves}, each of which reads keyframe times from one of the {@link inputs} and values
+ * from one of the {@link outputs}, and writes the result to a target path such as a node's local
+ * position or a component property. Optional {@link events} fire at set times during playback.
+ * Tracks come from `animation` assets, GLB animations among them, and are what an
+ * {@link AnimState} plays; one track can be assigned in any number of components.
  *
  * @category Animation
  */
@@ -20,9 +32,9 @@ class AnimTrack {
      *
      * @param {string} name - The track name.
      * @param {number} duration - The duration of the track in seconds.
-     * @param {import('./anim-data.js').AnimData[]} inputs - List of curve key data.
-     * @param {import('./anim-data.js').AnimData[]} outputs - List of curve value data.
-     * @param {import('./anim-curve.js').AnimCurve[]} curves - The list of curves.
+     * @param {AnimData[]} inputs - List of curve key data.
+     * @param {AnimData[]} outputs - List of curve value data.
+     * @param {AnimCurve[]} curves - The list of curves.
      * @param {AnimEvents} animEvents - A sequence of animation events.
      * @ignore
      */
@@ -56,7 +68,7 @@ class AnimTrack {
     /**
      * Gets the list of curve key data contained in the AnimTrack.
      *
-     * @type {import('./anim-data.js').AnimData[]}
+     * @type {AnimData[]}
      */
     get inputs() {
         return this._inputs;
@@ -65,7 +77,7 @@ class AnimTrack {
     /**
      * Gets the list of curve values contained in the AnimTrack.
      *
-     * @type {import('./anim-data.js').AnimData[]}
+     * @type {AnimData[]}
      */
     get outputs() {
         return this._outputs;
@@ -74,7 +86,7 @@ class AnimTrack {
     /**
      * Gets the list of curves contained in the AnimTrack.
      *
-     * @type {import('./anim-curve.js').AnimCurve[]}
+     * @type {AnimCurve[]}
      */
     get curves() {
         return this._curves;
@@ -82,7 +94,7 @@ class AnimTrack {
 
 
     /**
-     * The animation events that will fire during the playback of this anim track.
+     * Sets the animation events that will fire during the playback of this anim track.
      *
      * @type {AnimEvents}
      */
@@ -90,6 +102,11 @@ class AnimTrack {
         this._animEvents = animEvents;
     }
 
+    /**
+     * Gets the animation events that will fire during the playback of this anim track.
+     *
+     * @type {AnimEvents}
+     */
     get events() {
         return this._animEvents.events;
     }

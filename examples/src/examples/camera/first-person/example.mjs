@@ -1,42 +1,101 @@
-import * as pc from 'playcanvas';
-import { deviceType, rootPath } from '@examples/utils';
+// @config
+//
+// `WASD` Move · `Space` Jump · `Mouse` Look
+//
+// @credit
+// title: De Dust 2 with Real Light
+// author: Sketchfab
+// source: https://sketchfab.com/3d-models/de-dust-2-with-real-light-4ce74cd95c584ce9b12b5ed9dc418db5
+// license: CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/)
 
-const canvas = document.getElementById('application-canvas');
-if (!(canvas instanceof HTMLCanvasElement)) {
-    throw new Error('No canvas found');
-}
+import {
+    AppBase,
+    AppOptions,
+    Asset,
+    AssetListLoader,
+    CameraComponentSystem,
+    CameraFrame,
+    CollisionComponentSystem,
+    ContainerHandler,
+    Entity,
+    FILLMODE_FILL_WINDOW,
+    GamePads,
+    Keyboard,
+    LightComponentSystem,
+    Mouse,
+    Quat,
+    RESOLUTION_AUTO,
+    RenderComponentSystem,
+    RigidBodyComponentSystem,
+    ScriptComponentSystem,
+    ScriptHandler,
+    TEXTURETYPE_RGBP,
+    TONEMAP_ACES2,
+    TextureHandler,
+    TouchDevice,
+    Vec3,
+    WasmModule,
+    createGraphicsDevice
+} from 'playcanvas';
+import { FirstPersonController } from 'playcanvas/scripts/esm/first-person-controller.mjs';
+
+import { deviceType } from 'examples/context';
+
+/**
+ * @import { RenderComponent } from 'playcanvas'
+ */
+
+const canvas = /** @type {HTMLCanvasElement} */ (document.getElementById('application-canvas'));
+window.focus();
+
+WasmModule.setConfig('Ammo', {
+    glueUrl: './assets/wasm/ammo/ammo.wasm.js',
+    wasmUrl: './assets/wasm/ammo/ammo.wasm.wasm',
+    fallbackUrl: './assets/wasm/ammo/ammo.js'
+});
+
+await new Promise((resolve) => {
+    WasmModule.getInstance('Ammo', () => resolve(true));
+});
 
 const gfxOptions = {
-    deviceTypes: [deviceType],
-    glslangUrl: rootPath + '/static/lib/glslang/glslang.js',
-    twgslUrl: rootPath + '/static/lib/twgsl/twgsl.js'
+    deviceTypes: [deviceType]
 };
 
-const device = await pc.createGraphicsDevice(canvas, gfxOptions);
-device.maxPixelRatio = Math.min(window.devicePixelRatio, 2);
-const createOptions = new pc.AppOptions();
+const assets = {
+    map: new Asset('map', 'container', { url: './assets/models/fps-map.glb' }),
+    helipad: new Asset(
+        'helipad-env-atlas',
+        'texture',
+        { url: './assets/cubemaps/morning-env-atlas.png' },
+        { type: TEXTURETYPE_RGBP, mipmaps: false }
+    )
+};
+
+const device = await createGraphicsDevice(canvas, gfxOptions);
+
+const createOptions = new AppOptions();
 createOptions.graphicsDevice = device;
-createOptions.mouse = new pc.Mouse(document.body);
-createOptions.touch = new pc.TouchDevice(document.body);
-createOptions.gamepads = new pc.GamePads();
-createOptions.keyboard = new pc.Keyboard(window);
-
+createOptions.mouse = new Mouse(document.body);
+createOptions.touch = new TouchDevice(document.body);
+createOptions.gamepads = new GamePads();
+createOptions.keyboard = new Keyboard(window);
 createOptions.componentSystems = [
-    pc.RenderComponentSystem,
-    pc.CameraComponentSystem,
-    pc.LightComponentSystem,
-    pc.ScriptComponentSystem,
-    pc.CollisionComponentSystem,
-    pc.RigidBodyComponentSystem
+    RenderComponentSystem,
+    CameraComponentSystem,
+    LightComponentSystem,
+    ScriptComponentSystem,
+    CollisionComponentSystem,
+    RigidBodyComponentSystem
 ];
-createOptions.resourceHandlers = [pc.TextureHandler, pc.ContainerHandler, pc.ScriptHandler];
+createOptions.resourceHandlers = [TextureHandler, ContainerHandler, ScriptHandler];
 
-const app = new pc.AppBase(canvas);
+const app = new AppBase(canvas);
 app.init(createOptions);
 
 // Set the canvas to fill the window and automatically change resolution to be the same as the canvas size
-app.setCanvasFillMode(pc.FILLMODE_FILL_WINDOW);
-app.setCanvasResolution(pc.RESOLUTION_AUTO);
+app.setCanvasFillMode(FILLMODE_FILL_WINDOW);
+app.setCanvasResolution(RESOLUTION_AUTO);
 
 // Ensure canvas is resized when window changes size
 const resize = () => app.resizeCanvas();
@@ -45,118 +104,146 @@ app.on('destroy', () => {
     window.removeEventListener('resize', resize);
 });
 
-const assets = {
-    statue: new pc.Asset('statue', 'container', { url: rootPath + '/static/assets/models/statue.glb' }),
-    script: new pc.Asset('script', 'script', { url: rootPath + '/static/scripts/camera/first-person-camera.js' })
+await new Promise((resolve) => {
+    new AssetListLoader(Object.values(assets), app.assets).load(resolve);
+});
+
+app.start();
+
+// Skybox
+app.scene.skyboxMip = 0;
+app.scene.exposure = 0.4;
+app.scene.skyboxHighlightMultiplier = 50; // extra brightness for the clipped sun in the skybox to make it bloom more
+app.scene.envAtlas = assets.helipad.resource;
+app.scene.skyboxRotation = new Quat().setFromEulerAngles(0, 10, 0);
+
+// Gravity (increase for more realistic jumping)
+app.systems.rigidbody?.gravity.set(0, -18, 0);
+
+// Camera
+const camera = new Entity();
+camera.addComponent('camera', {
+    farClip: 100,
+    fov: 90
+});
+camera.setLocalPosition(0, 0.5, 0);
+
+// Custom render passes
+const cameraFrame = new CameraFrame(app, camera.camera);
+cameraFrame.rendering.samples = 4;
+cameraFrame.rendering.toneMapping = TONEMAP_ACES2;
+cameraFrame.bloom.intensity = 0.01;
+cameraFrame.update();
+
+// Level
+const map = assets.map.resource.instantiateRenderEntity();
+map.setLocalScale(2, 2, 2);
+map.setLocalEulerAngles(-90, 0, 0);
+map.findComponents('render').forEach((/** @type {RenderComponent} */ render) => {
+    const entity = render.entity;
+    entity.addComponent('rigidbody', {
+        type: 'static'
+    });
+    entity.addComponent('collision', {
+        type: 'mesh',
+        renderAsset: render.asset
+    });
+});
+const level = new Entity();
+level.addChild(map);
+app.root.addChild(level);
+
+// Character controller
+const characterController = new Entity('cc');
+characterController.setPosition(5, 2, 10);
+characterController.addChild(camera);
+characterController.addComponent('collision', {
+    type: 'capsule',
+    radius: 0.5,
+    height: 2
+});
+characterController.addComponent('rigidbody', {
+    type: 'dynamic',
+    mass: 100,
+    linearDamping: 0,
+    angularDamping: 0,
+    linearFactor: Vec3.ONE,
+    angularFactor: Vec3.ZERO,
+    friction: 0.5,
+    restitution: 0
+});
+characterController.addComponent('script');
+const fpc = /** @type {FirstPersonController} */ (
+    characterController.script.create(FirstPersonController, {
+        properties: {
+            camera,
+            jumpForce: 850
+        }
+    })
+);
+app.root.addChild(characterController);
+
+/**
+ * @param {string} side - The name.
+ * @param {number} baseSize - The base size.
+ * @param {number} stickSize - The stick size.
+ */
+const createJoystickUI = (side, baseSize = 100, stickSize = 60) => {
+    const base = document.createElement('div');
+    Object.assign(base.style, {
+        display: 'none',
+        position: 'absolute',
+        width: `${baseSize}px`,
+        height: `${baseSize}px`,
+        borderRadius: '50%',
+        backgroundColor: 'rgba(50, 50, 50, 0.5)',
+        boxShadow: 'inset 0 0 20px rgba(0, 0, 0, 0.5)'
+    });
+
+    const stick = document.createElement('div');
+    Object.assign(stick.style, {
+        display: 'none',
+        position: 'absolute',
+        width: `${stickSize}px`,
+        height: `${stickSize}px`,
+        borderRadius: '50%',
+        backgroundColor: 'rgba(255, 255, 255, 0.5)',
+        boxShadow: 'inset 0 0 10px rgba(0, 0, 0, 0.5)'
+    });
+
+    /**
+     * @param {HTMLElement} el - The element to set position for.
+     * @param {number} size - The size of the element.
+     * @param {number} x - The x position.
+     * @param {number} y - The y position.
+     */
+    const show = (el, size, x, y) => {
+        el.style.display = 'block';
+        el.style.left = `${x - size * 0.5}px`;
+        el.style.top = `${y - size * 0.5}px`;
+    };
+
+    /**
+     * @param {HTMLElement} el - The element to hide.
+     */
+    const hide = (el) => {
+        el.style.display = 'none';
+    };
+
+    app.on(`${fpc.joystickEventName}:${side}`, (bx, by, sx, sy) => {
+        if (bx < 0 || by < 0 || sx < 0 || sy < 0) {
+            hide(base);
+            hide(stick);
+            return;
+        }
+
+        show(base, baseSize, bx, by);
+        show(stick, stickSize, sx, sy);
+    });
+
+    document.body.append(base, stick);
 };
 
-pc.WasmModule.setConfig('Ammo', {
-    glueUrl: rootPath + '/static/lib/ammo/ammo.wasm.js',
-    wasmUrl: rootPath + '/static/lib/ammo/ammo.wasm.wasm',
-    fallbackUrl: rootPath + '/static/lib/ammo/ammo.js'
-});
-
-await new Promise((resolve) => {
-    pc.WasmModule.getInstance('Ammo', () => resolve());
-});
-
-const assetListLoader = new pc.AssetListLoader(Object.values(assets), app.assets);
-assetListLoader.load(() => {
-    app.start();
-
-    // Create a physical floor
-    const floor = new pc.Entity();
-    floor.addComponent('collision', {
-        type: 'box',
-        halfExtents: new pc.Vec3(100, 0.5, 100)
-    });
-    floor.addComponent('rigidbody', {
-        type: 'static',
-        restitution: 0.5
-    });
-    floor.setLocalPosition(0, -0.5, 0);
-    app.root.addChild(floor);
-
-    const floorModel = new pc.Entity();
-    floorModel.addComponent('render', {
-        type: 'plane'
-    });
-    floorModel.setLocalPosition(0, 0.5, 0);
-    floorModel.setLocalScale(200, 1, 200);
-    floor.addChild(floorModel);
-
-    // Create a model entity and assign the statue model
-    const model = assets.statue.resource.instantiateRenderEntity({
-        castShadows: true
-    });
-    model.addComponent('collision', {
-        type: 'mesh',
-        asset: assets.statue.resource.model
-    });
-    model.addComponent('rigidbody', {
-        type: 'static',
-        restitution: 0.5
-    });
-    app.root.addChild(model);
-
-    // Create a camera that will be driven by the character controller
-    const camera = new pc.Entity();
-    camera.addComponent('camera', {
-        clearColor: new pc.Color(0.4, 0.45, 0.5),
-        farClip: 100,
-        fov: 65,
-        nearClip: 0.1
-    });
-    camera.setLocalPosition(0, 1, 0);
-
-    // Create a physical character controller
-    const characterController = new pc.Entity();
-    characterController.addComponent('collision', {
-        axis: 0,
-        height: 2,
-        radius: 0.5,
-        type: 'capsule'
-    });
-    characterController.addComponent('rigidbody', {
-        angularDamping: 0,
-        angularFactor: pc.Vec3.ZERO,
-        friction: 0.3,
-        linearDamping: 0,
-        linearFactor: pc.Vec3.ONE,
-        mass: 80,
-        restitution: 0,
-        type: 'dynamic'
-    });
-    characterController.addComponent('script');
-    characterController.script.create('characterController');
-    characterController.script.create('firstPersonCamera', {
-        attributes: {
-            camera: camera
-        }
-    });
-    characterController.script.create('gamePadInput');
-    characterController.script.create('keyboardInput');
-    characterController.script.create('mouseInput');
-    characterController.script.create('touchInput');
-    characterController.setLocalPosition(0, 1, 10);
-
-    // Add the character controller and camera to the hierarchy
-    app.root.addChild(characterController);
-    characterController.addChild(camera);
-
-    // Create a directional light
-    const light = new pc.Entity();
-    light.addComponent('light', {
-        castShadows: true,
-        color: new pc.Color(1, 1, 1),
-        normalOffsetBias: 0.05,
-        shadowBias: 0.2,
-        shadowDistance: 40,
-        type: 'directional',
-        shadowResolution: 2048
-    });
-    app.root.addChild(light);
-    light.setLocalEulerAngles(45, 30, 0);
-});
-
-export { app };
+// Create joystick UI
+createJoystickUI('left');
+createJoystickUI('right');

@@ -1,18 +1,16 @@
 import { ComponentSystem } from '../system.js';
-
 import { ScrollbarComponent } from './component.js';
-import { ScrollbarComponentData } from './data.js';
-
-const _schema = [
-    { name: 'enabled', type: 'boolean' },
-    { name: 'orientation', type: 'number' },
-    { name: 'value', type: 'number' },
-    { name: 'handleSize', type: 'number' },
-    { name: 'handleEntity', type: 'entity' }
-];
 
 /**
- * Manages creation of {@link ScrollbarComponent}s.
+ * @import { AppBase } from '../../app-base.js'
+ */
+
+const _properties = ['orientation', 'value', 'handleSize', 'handleEntity'];
+
+/**
+ * Manages the {@link ScrollbarComponent}s of an application. Reach it through
+ * `app.systems.scrollbar`; components are created with {@link Entity#addComponent}, never by
+ * calling the system directly.
  *
  * @category User Interface
  */
@@ -20,7 +18,7 @@ class ScrollbarComponentSystem extends ComponentSystem {
     /**
      * Create a new ScrollbarComponentSystem.
      *
-     * @param {import('../../app-base.js').AppBase} app - The application.
+     * @param {AppBase} app - The application.
      * @ignore
      */
     constructor(app) {
@@ -29,19 +27,43 @@ class ScrollbarComponentSystem extends ComponentSystem {
         this.id = 'scrollbar';
 
         this.ComponentType = ScrollbarComponent;
-        this.DataType = ScrollbarComponentData;
 
-        this.schema = _schema;
-
-        this.on('beforeremove', this._onRemoveComponent, this);
+        this.on('add', this._onAddComponent, this);
+        this.on('beforeremove', this.onBeforeRemove, this);
     }
 
     initializeComponentData(component, data, properties) {
-        super.initializeComponentData(component, data, _schema);
+        for (let i = 0; i < _properties.length; i++) {
+            const property = _properties[i];
+            if (data.hasOwnProperty(property)) {
+                component[property] = data[property];
+            }
+        }
+
+        super.initializeComponentData(component, data);
     }
 
-    _onRemoveComponent(entity, component) {
-        component.onRemove();
+    cloneComponent(entity, clone) {
+        const c = entity.scrollbar;
+
+        const data = {
+            enabled: c.enabled
+        };
+
+        for (let i = 0; i < _properties.length; i++) {
+            const property = _properties[i];
+            data[property] = c[property];
+        }
+
+        return this.addComponent(clone, data);
+    }
+
+    _onAddComponent(entity) {
+        entity.fire('scrollbar:add');
+    }
+
+    onBeforeRemove(entity, component) {
+        component.onBeforeRemove();
     }
 }
 

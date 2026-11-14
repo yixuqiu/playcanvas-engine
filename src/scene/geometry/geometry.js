@@ -1,5 +1,5 @@
-import { Debug } from "../../core/debug.js";
-import { calculateNormals, calculateTangents } from "./geometry-utils.js";
+import { Debug } from '../../core/debug.js';
+import { calculateNormals, calculateTangents } from './geometry-utils.js';
 
 /**
  * The Geometry class serves as a container for storing geometric information. It encapsulates data
@@ -11,63 +11,63 @@ class Geometry {
     /**
      * Positions.
      *
-     * @type {number[]|undefined}
+     * @type {ArrayLike<number>|undefined}
      */
     positions;
 
     /**
      * Normals.
      *
-     * @type {number[]|undefined}
+     * @type {ArrayLike<number>|undefined}
      */
     normals;
 
     /**
      * Colors.
      *
-     * @type {number[]|undefined}
+     * @type {ArrayLike<number>|undefined}
      */
     colors;
 
     /**
      * UVs.
      *
-     * @type {number[]|undefined}
+     * @type {ArrayLike<number>|undefined}
      */
     uvs;
 
     /**
      * Additional Uvs.
      *
-     * @type {number[]|undefined}
+     * @type {ArrayLike<number>|undefined}
      */
     uvs1;
 
     /**
      * Blend indices.
      *
-     * @type {number[]|undefined}
+     * @type {ArrayLike<number>|undefined}
      */
     blendIndices;
 
     /**
      * Blend weights.
      *
-     * @type {number[]|undefined}
+     * @type {ArrayLike<number>|undefined}
      */
     blendWeights;
 
     /**
      * Tangents.
      *
-     * @type {number[]|undefined}
+     * @type {ArrayLike<number>|undefined}
      */
     tangents;
 
     /**
      * Indices.
      *
-     * @type {number[]|undefined}
+     * @type {number[]|Uint8Array|Uint16Array|Uint32Array|undefined}
      */
     indices;
 

@@ -1,24 +1,23 @@
 import { EventHandler } from '../../core/event-handler.js';
-import { EVENT_GAMEPADCONNECTED, EVENT_GAMEPADDISCONNECTED, PAD_FACE_1, PAD_FACE_2, PAD_FACE_3, PAD_FACE_4, PAD_L_SHOULDER_1, PAD_R_SHOULDER_1, PAD_L_SHOULDER_2, PAD_R_SHOULDER_2, PAD_SELECT, PAD_START, PAD_L_STICK_BUTTON, PAD_R_STICK_BUTTON, PAD_UP, PAD_DOWN, PAD_LEFT, PAD_RIGHT, PAD_VENDOR, XRPAD_TRIGGER, XRPAD_SQUEEZE, XRPAD_TOUCHPAD_BUTTON, XRPAD_STICK_BUTTON, XRPAD_A, XRPAD_B, PAD_L_STICK_X, PAD_L_STICK_Y, PAD_R_STICK_X, PAD_R_STICK_Y, XRPAD_TOUCHPAD_X, XRPAD_TOUCHPAD_Y, XRPAD_STICK_X, XRPAD_STICK_Y } from './constants.js';
+import { PAD_FACE_1, PAD_FACE_2, PAD_FACE_3, PAD_FACE_4, PAD_L_SHOULDER_1, PAD_R_SHOULDER_1, PAD_L_SHOULDER_2, PAD_R_SHOULDER_2, PAD_SELECT, PAD_START, PAD_L_STICK_BUTTON, PAD_R_STICK_BUTTON, PAD_UP, PAD_DOWN, PAD_LEFT, PAD_RIGHT, PAD_VENDOR, XRPAD_TRIGGER, XRPAD_SQUEEZE, XRPAD_TOUCHPAD_BUTTON, XRPAD_STICK_BUTTON, XRPAD_A, XRPAD_B, PAD_L_STICK_X, PAD_L_STICK_Y, PAD_R_STICK_X, PAD_R_STICK_Y, XRPAD_TOUCHPAD_X, XRPAD_TOUCHPAD_Y, XRPAD_STICK_X, XRPAD_STICK_Y } from './constants.js';
 import { math } from '../../core/math/math.js';
 import { platform } from '../../core/platform.js';
 
 const dummyArray = Object.freeze([]);
 
 /**
- * Get Gamepads from API.
+ * Get Gamepads from API. The API is looked up on every call so that an implementation that
+ * appears (or is replaced, e.g. under test) after this module has loaded is still used.
  *
- * @type {Function}
- * @returns {Gamepad[]} Retrieved gamepads from the device.
- * @ignore
+ * @returns {(Gamepad|null)[]} Retrieved gamepads from the device.
  */
-let getGamepads = function () {
-    return dummyArray;
+const getGamepads = () => {
+    if (typeof navigator === 'undefined') {
+        return dummyArray;
+    }
+    const api = navigator.getGamepads || navigator.webkitGetGamepads;
+    return api ? api.call(navigator) : dummyArray;
 };
-
-if (typeof navigator !== 'undefined') {
-    getGamepads = (navigator.getGamepads || navigator.webkitGetGamepads || getGamepads).bind(navigator);
-}
 
 const MAPS_INDEXES = {
     buttons: {
@@ -85,7 +84,7 @@ const MAPS = {
             'PAD_LEFT',
             'PAD_RIGHT',
 
-             // Vendor specific button
+            // Vendor specific button
             'PAD_VENDOR'
         ],
 
@@ -118,7 +117,7 @@ const MAPS = {
             'PAD_L_STICK_BUTTON',
             'PAD_R_STICK_BUTTON',
 
-             // Vendor specific button
+            // Vendor specific button
             'PAD_VENDOR'
         ],
 
@@ -216,7 +215,6 @@ const custom_maps = {};
  *
  * @param {Gamepad} pad - The HTML5 Gamepad object.
  * @returns {object} Object defining the order of buttons and axes for given HTML5 Gamepad.
- * @ignore
  */
 function getMap(pad) {
     const custom = custom_maps[pad.id];
@@ -229,7 +227,7 @@ function getMap(pad) {
             const product = PRODUCT_CODES[code];
 
             if (!pad.mapping) {
-                const raw = MAPS['RAW_' + product];
+                const raw = MAPS[`RAW_${product}`];
 
                 if (raw) {
                     return raw;
@@ -255,7 +253,6 @@ let deadZone = 0.25;
 /**
  * @param {number} ms - Number of milliseconds to sleep for.
  * @returns {Promise<void>}
- * @ignore
  */
 function sleep(ms) {
     return new Promise((resolve) => {
@@ -266,48 +263,36 @@ function sleep(ms) {
 /**
  * A GamePadButton stores information about a button from the Gamepad API.
  *
- * @category Input
+ * @category Input Devices
  */
 class GamePadButton {
     /**
      * The value for the button between 0 and 1, with 0 representing a button that is not pressed, and 1 representing a button that is fully pressed.
-     *
-     * @type {number}
      */
     value = 0;
 
     /**
      * Whether the button is currently down.
-     *
-     * @type {boolean}
      */
     pressed = false;
 
     /**
      * Whether the button is currently touched.
-     *
-     * @type {boolean}
      */
     touched = false;
 
     /**
      * Whether the button was pressed.
-     *
-     * @type {boolean}
      */
     wasPressed = false;
 
     /**
      * Whether the button was released since the last update.
-     *
-     * @type {boolean}
      */
     wasReleased = false;
 
     /**
      * Whether the button was touched since the last update.
-     *
-     * @type {boolean}
      */
     wasTouched = false;
 
@@ -329,7 +314,8 @@ class GamePadButton {
             this.touched = current.touched ?? current.value > 0;
         }
 
-        if (previous) {
+        // A numeric previous value of 0 is a valid resting state, so only skip when omitted.
+        if (previous !== undefined) {
             if (typeof previous === 'number') {
                 this.wasPressed = previous !== 1 && this.pressed;
                 this.wasReleased = previous === 1 && !this.pressed;
@@ -367,7 +353,7 @@ const dummyButton = Object.freeze(new GamePadButton(0));
 /**
  * A GamePad stores information about a gamepad from the Gamepad API.
  *
- * @category Input
+ * @category Input Devices
  */
 class GamePad {
     /**
@@ -382,6 +368,73 @@ class GamePad {
     };
 
     /**
+     * The identifier for the gamepad. Its structure depends on device.
+     *
+     * @type {string}
+     */
+    id;
+
+    /**
+     * The index for this controller. A gamepad that is disconnected and reconnected will retain the same index.
+     *
+     * @type {number}
+     */
+    index;
+
+    /**
+     * The buttons present on the GamePad. Order is provided by API, use GamePad#buttons instead.
+     *
+     * @type {GamePadButton[]}
+     * @private
+     */
+    _buttons;
+
+    /**
+     * The axes values from the GamePad. Order is provided by API, use GamePad#axes instead.
+     *
+     * @type {number[]}
+     * @private
+     */
+    _axes;
+
+    /**
+     * Previous value for the analog axes present on the gamepad. Values are between -1 and 1.
+     *
+     * @type {number[]}
+     * @private
+     */
+    _previousAxes;
+
+    /**
+     * The gamepad mapping detected by the browser. Value is either "standard", "xr-standard", "" or "custom". When empty string, you may need to update the mapping yourself. "custom" means you updated the mapping.
+     *
+     * @type {string}
+     */
+    mapping;
+
+    /**
+     * The buttons and axes map.
+     *
+     * @type {object}
+     */
+    map;
+
+    /**
+     * The hand this gamepad is usually handled on. Only relevant for XR pads. Value is either "left", "right" or "none".
+     *
+     * @type {string}
+     */
+    hand;
+
+    /**
+     * The original Gamepad API gamepad.
+     *
+     * @type {Gamepad}
+     * @ignore
+     */
+    pad;
+
+    /**
      * Create a new GamePad Instance.
      *
      * @param {Gamepad} gamepad - The original Gamepad API gamepad.
@@ -389,78 +442,21 @@ class GamePad {
      * @ignore
      */
     constructor(gamepad, map) {
-        /**
-         * The identifier for the gamepad. Its structure depends on device.
-         *
-         * @type {string}
-         */
         this.id = gamepad.id;
-
-        /**
-         * The index for this controller. A gamepad that is disconnected and reconnected will retain the same index.
-         *
-         * @type {number}
-         */
         this.index = gamepad.index;
-
-        /**
-         * The buttons present on the GamePad. Order is provided by API, use GamePad#buttons instead.
-         *
-         * @type {GamePadButton[]}
-         * @ignore
-         */
         this._buttons = gamepad.buttons.map(b => new GamePadButton(b));
-
-        /**
-         * The axes values from the GamePad. Order is provided by API, use GamePad#axes instead.
-         *
-         * @type {number[]}
-         * @ignore
-         */
         this._axes = [...gamepad.axes];
-
-        /**
-         * Previous value for the analog axes present on the gamepad. Values are between -1 and 1.
-         *
-         * @type {number[]}
-         * @ignore
-         */
         this._previousAxes = [...gamepad.axes];
-
-        /**
-         * The gamepad mapping detected by the browser. Value is either "standard", "xr-standard", "" or "custom". When empty string, you may need to update the mapping yourself. "custom" means you updated the mapping.
-         *
-         * @type {string}
-         */
         this.mapping = map.mapping;
-
-        /**
-         * The buttons and axes map.
-         *
-         * @type {object}
-         */
         this.map = map;
-
-        /**
-         * The hand this gamepad is usually handled on. Only relevant for XR pads. Value is either "left", "right" or "none".
-         *
-         * @type {string}
-         */
         this.hand = gamepad.hand || 'none';
-
-        /**
-         * The original Gamepad API gamepad.
-         *
-         * @type {Gamepad}
-         * @ignore
-         */
         this.pad = gamepad;
 
         this._compileMapping();
     }
 
     /**
-     * Whether the gamepad is connected.
+     * Gets whether the gamepad is connected.
      *
      * @type {boolean}
      */
@@ -537,13 +533,21 @@ class GamePad {
         const previousAxes = this._previousAxes;
         const axes = this._axes;
 
-        // Store previous values for axes for dual buttons.
-        previousAxes.length = 0;
-        previousAxes.push(...axes);
+        // Store previous values for axes for dual buttons. Copy by index rather than spread so
+        // that no iterator or temporary array is created every frame.
+        const numAxes = axes.length;
+        for (let i = 0; i < numAxes; i++) {
+            previousAxes[i] = axes[i];
+        }
+        previousAxes.length = numAxes;
 
         // Update axes
-        axes.length = 0;
-        axes.push(...gamepad.axes);
+        const newAxes = gamepad.axes;
+        const numNewAxes = newAxes.length;
+        for (let i = 0; i < numNewAxes; i++) {
+            axes[i] = newAxes[i];
+        }
+        axes.length = numNewAxes;
 
         // Update buttons
         const buttons = this._buttons;
@@ -621,7 +625,7 @@ class GamePad {
     }
 
     /**
-     * The values from analog axes present on the GamePad. Values are between -1 and 1.
+     * Gets the values from analog axes present on the GamePad. Values are between -1 and 1.
      *
      * @type {number[]}
      */
@@ -630,7 +634,7 @@ class GamePad {
     }
 
     /**
-     * The buttons present on the GamePad.
+     * Gets the buttons present on the GamePad.
      *
      * @type {GamePadButton[]}
      */
@@ -771,7 +775,11 @@ class GamePad {
 /**
  * Input handler for accessing GamePad input.
  *
- * @category Input
+ * For frame-accumulated input deltas rather than raw pad state, see {@link GamepadSource},
+ * {@link KeyboardMouseSource} and {@link MultiTouchSource}, which feed {@link InputController}s
+ * such as {@link OrbitController}, {@link FlyController} and {@link FocusController}.
+ *
+ * @category Input Devices
  */
 class GamePads extends EventHandler {
     /**
@@ -807,32 +815,38 @@ class GamePads extends EventHandler {
     static EVENT_GAMEPADDISCONNECTED = 'gamepaddisconnected';
 
     /**
+     * Whether gamepads are supported by this device.
+     *
+     * @type {boolean}
+     */
+    gamepadsSupported;
+
+    /**
+     * The list of current gamepads.
+     *
+     * @type {GamePad[]}
+     */
+    current = [];
+
+    /**
+     * @type {(event: GamepadEvent) => void}
+     * @private
+     */
+    _ongamepadconnectedHandler;
+
+    /**
+     * @type {(event: GamepadEvent) => void}
+     * @private
+     */
+    _ongamepaddisconnectedHandler;
+
+    /**
      * Create a new GamePads instance.
      */
     constructor() {
         super();
 
-        /**
-         * Whether gamepads are supported by this device.
-         *
-         * @type {boolean}
-         */
         this.gamepadsSupported = platform.gamepads;
-
-        /**
-         * The list of current gamepads.
-         *
-         * @type {GamePad[]}
-         */
-        this.current = [];
-
-        /**
-         * The list of previous buttons states
-         *
-         * @type {boolean[][]}
-         * @ignore
-         */
-        this._previous = [];
 
         this._ongamepadconnectedHandler = this._ongamepadconnected.bind(this);
         this._ongamepaddisconnectedHandler = this._ongamepaddisconnected.bind(this);
@@ -844,7 +858,7 @@ class GamePads extends EventHandler {
     }
 
     /**
-     * Threshold for axes to return values. Must be between 0 and 1.
+     * Sets the threshold for axes to return values. Must be between 0 and 1.
      *
      * @type {number}
      * @ignore
@@ -853,34 +867,14 @@ class GamePads extends EventHandler {
         deadZone = value;
     }
 
-    get deadZone() {
-        return deadZone;
-    }
-
     /**
-     * The list of previous buttons states.
+     * Gets the threshold for axes to return values.
      *
-     * @type {boolean[][]}
+     * @type {number}
      * @ignore
      */
-    get previous() {
-        const current = this.current;
-
-        for (let i = 0, l = current.length; i < l; i++) {
-            const buttons = current[i]._buttons;
-
-            if (!this._previous[i]) {
-                this._previous[i] = [];
-            }
-
-            for (let j = 0, m = buttons.length; j < m; j++) {
-                const button = buttons[i];
-                this.previous[i][j] = button ? !button.wasPressed && button.pressed || button.wasReleased : false;
-            }
-        }
-
-        this._previous.length = this.current.length;
-        return this._previous;
+    get deadZone() {
+        return deadZone;
     }
 
     /**
@@ -900,7 +894,7 @@ class GamePads extends EventHandler {
         }
 
         current.push(pad);
-        this.fire(EVENT_GAMEPADCONNECTED, pad);
+        this.fire('gamepadconnected', pad);
     }
 
     /**
@@ -914,7 +908,7 @@ class GamePads extends EventHandler {
         const padIndex = current.findIndex(gp => gp.index === event.gamepad.index);
 
         if (padIndex !== -1) {
-            this.fire(EVENT_GAMEPADDISCONNECTED, current[padIndex]);
+            this.fire('gamepaddisconnected', current[padIndex]);
             current.splice(padIndex, 1);
         }
     }
@@ -926,7 +920,7 @@ class GamePads extends EventHandler {
      * @ignore
      */
     update() {
-        this.poll();
+        this._poll(null);
     }
 
     /**
@@ -937,31 +931,40 @@ class GamePads extends EventHandler {
      * @returns {GamePad[]} An array of gamepads and mappings for the model of gamepad that is
      * attached.
      * @example
-     * const gamepads = new pc.GamePads();
+     * const gamepads = new GamePads();
      * const pads = gamepads.poll();
      */
     poll(pads = []) {
-        if (pads.length > 0) {
-            pads.length = 0;
-        }
+        pads.length = 0;
+        this._poll(pads);
+        return pads;
+    }
 
+    /**
+     * Read the latest state of every connected device into its {@link GamePad}, creating a
+     * GamePad for any device seen for the first time.
+     *
+     * @param {GamePad[]|null} pads - An optional array that receives the polled gamepads.
+     * @private
+     */
+    _poll(pads) {
         const padDevices = getGamepads();
 
         for (let i = 0, len = padDevices.length; i < len; i++) {
-            if (padDevices[i]) {
-                const pad = this.findByIndex(padDevices[i].index);
+            const device = padDevices[i];
+            if (device) {
+                let pad = this.findByIndex(device.index);
 
                 if (pad) {
-                    pads.push(pad.update(padDevices[i]));
+                    pad.update(device);
                 } else {
-                    const nPad = new GamePad(padDevices[i], this.getMap(padDevices[i]));
-                    this.current.push(nPad);
-                    pads.push(nPad);
+                    pad = new GamePad(device, this.getMap(device));
+                    this.current.push(pad);
                 }
+
+                pads?.push(pad);
             }
         }
-
-        return pads;
     }
 
     /**
@@ -1079,7 +1082,14 @@ class GamePads extends EventHandler {
      * @returns {GamePad|null} The {@link GamePad} with the matching device index or null if no gamepad is found or the gamepad is not connected.
      */
     findByIndex(index) {
-        return this.current.find(gp => gp && gp.index === index) || null;
+        const current = this.current;
+        for (let i = 0, l = current.length; i < l; i++) {
+            const pad = current[i];
+            if (pad && pad.index === index) {
+                return pad;
+            }
+        }
+        return null;
     }
 }
 

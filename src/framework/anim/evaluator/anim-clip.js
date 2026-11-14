@@ -1,5 +1,10 @@
 import { AnimSnapshot } from './anim-snapshot.js';
 
+/**
+ * @import { AnimTrack } from './anim-track.js'
+ * @import { EventHandler } from '../../../core/event-handler.js'
+ */
+
 // TODO: add configurable looping start/end times?
 
 /**
@@ -18,13 +23,12 @@ class AnimClip {
     /**
      * Create a new animation clip.
      *
-     * @param {import('./anim-track.js').AnimTrack} track - The animation data.
+     * @param {AnimTrack} track - The animation data.
      * @param {number} time - The initial time of the clip.
      * @param {number} speed - Speed of the animation playback.
      * @param {boolean} playing - true if the clip is playing and false otherwise.
      * @param {boolean} loop - Whether the clip should loop.
-     * @param {import('../../../core/event-handler.js').EventHandler} [eventHandler] - The handler
-     * to call when an event is fired by the clip.
+     * @param {EventHandler} [eventHandler] - The handler to call when an event is fired by the clip.
      */
     constructor(track, time, speed, playing, loop, eventHandler) {
         this._name = track.name;        // default to track name
@@ -182,7 +186,7 @@ class AnimClip {
     }
 
     fireNextEvent() {
-        this._eventHandler.fire(this.nextEvent.name, { track: this.track, ...this.nextEvent });
+        this._eventHandler?.fire(this.nextEvent.name, { track: this.track, ...this.nextEvent });
         this.moveEventCursor();
     }
 
@@ -211,11 +215,15 @@ class AnimClip {
         }
     }
 
-    progressForTime(time) {
-        return (time * this._speed) / this._track.duration;
-    }
-
-    _update(deltaTime) {
+    /**
+     * Advances the clip, firing the animation events in the elapsed time.
+     *
+     * @param {number} deltaTime - The time elapsed since the last update, in seconds.
+     * @param {boolean} [evaluate] - Whether to evaluate the curves of the track at the new time.
+     * When false, they are evaluated once evaluating is requested again.
+     * @private
+     */
+    _update(deltaTime, evaluate = true) {
         if (this._playing) {
             let time = this._time;
             const duration = this._track.duration;
@@ -256,7 +264,7 @@ class AnimClip {
         }
 
         // update snapshot if time has changed
-        if (this._time !== this._snapshot._time) {
+        if (evaluate && this._time !== this._snapshot._time) {
             this._track.eval(this._time, this._snapshot);
         }
     }

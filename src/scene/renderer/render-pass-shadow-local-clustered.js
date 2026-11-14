@@ -1,4 +1,4 @@
-import { RenderPass } from "../../platform/graphics/render-pass.js";
+import { RenderPass } from '../../platform/graphics/render-pass.js';
 
 /**
  * A render pass used to render local clustered shadows. This is done inside a single render pass,
@@ -9,8 +9,6 @@ import { RenderPass } from "../../platform/graphics/render-pass.js";
 class RenderPassShadowLocalClustered extends RenderPass {
     constructor(device, shadowRenderer, shadowRendererLocal) {
         super(device);
-
-        this.requiresCubemaps = false;
 
         this.shadowRenderer = shadowRenderer;
         this.shadowRendererLocal = shadowRendererLocal;
@@ -32,6 +30,25 @@ class RenderPassShadowLocalClustered extends RenderPass {
             // Note that the render pass is set up to not clear the render target, as individual shadow maps clear it
             this.shadowRenderer.setupRenderPass(this, shadowCamera, false);
         }
+    }
+
+    frameUpdate() {
+        super.frameUpdate();
+        if (this.enabled && this.executeEnabled) {
+            const lights = this.shadowRendererLocal.shadowLights;
+            const culler = this.shadowRenderer.renderer.culler;
+            for (let i = 0; i < lights.length; i++) {
+                culler.requestLocalShadowCull(lights[i]);
+            }
+        }
+    }
+
+    precompile() {
+
+        // the execution renders the shadows of the lights scheduled for the frame and clears that
+        // list, which a frame that does not render needs as well, so it runs as it is, into a
+        // precompile pass of the device which renders nothing
+        this.precompileExecute();
     }
 
     execute() {

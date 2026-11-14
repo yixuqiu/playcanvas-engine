@@ -1,14 +1,56 @@
 import { Debug } from '../../../core/debug.js';
-
-import { DISTANCE_LINEAR } from '../../../platform/audio/constants.js';
-
+import { DISTANCE_LINEAR } from '../../../platform/sound/constants.js';
 import { Component } from '../component.js';
-
 import { SoundSlot } from './slot.js';
 
 /**
- * The Sound Component controls playback of {@link Sound}s.
+ * @import { SoundInstance } from '../../../platform/sound/instance.js'
+ */
+
+/**
+ * The SoundComponent enables an {@link Entity} to play audio. The SoundComponent can manage
+ * multiple {@link SoundSlot}s, each of which can play a different audio asset with its own set
+ * of properties such as volume, pitch, and looping behavior.
  *
+ * The SoundComponent supports positional audio, meaning that the sound can be played relative
+ * to the Entity's position in 3D space. This is useful for creating immersive audio experiences
+ * where the sound's volume and panning are affected by the listener's position and orientation.
+ * Positional audio requires that an Entity with an {@link AudioListenerComponent} be added to the
+ * scene.
+ *
+ * You should never need to use the SoundComponent constructor directly. To add a SoundComponent
+ * to an Entity, use {@link Entity#addComponent}:
+ *
+ * ```javascript
+ * const entity = new Entity();
+ * entity.addComponent('sound', {
+ *     volume: 0.8,
+ *     positional: true
+ * });
+ * ```
+ *
+ * Once the SoundComponent is added to the entity, you can access it via the {@link Entity#sound}
+ * property:
+ *
+ * ```javascript
+ * entity.sound.volume = 0.9;  // Set the volume for all sounds
+ *
+ * console.log(entity.sound.volume); // Get the volume and print it
+ * ```
+ *
+ * Add individual sounds by creating sound slots on the component:
+ *
+ * ```javascript
+ * entity.sound.addSlot('beep', {
+ *     asset: asset
+ * });
+ * ```
+ *
+ * Relevant Engine API examples:
+ *
+ * - [Positional Sound](https://playcanvas.github.io/#/sound/positional)
+ *
+ * @hideconstructor
  * @category Sound
  */
 class SoundComponent extends Component {
@@ -72,41 +114,36 @@ class SoundComponent extends Component {
      */
     static EVENT_END = 'end';
 
+    /** @private */
+    _volume = 1;
+
+    /** @private */
+    _pitch = 1;
+
+    /** @private */
+    _positional = true;
+
+    /** @private */
+    _refDistance = 1;
+
+    /** @private */
+    _maxDistance = 10000;
+
+    /** @private */
+    _rollOffFactor = 1;
+
+    /** @private */
+    _distanceModel = DISTANCE_LINEAR;
+
     /**
-     * Create a new Sound Component.
-     *
-     * @param {import('./system.js').SoundComponentSystem} system - The ComponentSystem that
-     * created this component.
-     * @param {import('../../entity.js').Entity} entity - The entity that the Component is attached
-     * to.
+     * @type {Object<string, SoundSlot>}
+     * @private
      */
-    constructor(system, entity) {
-        super(system, entity);
+    _slots = {};
 
-        /** @private */
-        this._volume = 1;
-        /** @private */
-        this._pitch = 1;
-        /** @private */
-        this._positional = true;
-        /** @private */
-        this._refDistance = 1;
-        /** @private */
-        this._maxDistance = 10000;
-        /** @private */
-        this._rollOffFactor = 1;
-        /** @private */
-        this._distanceModel = DISTANCE_LINEAR;
+    /** @private */
+    _playingBeforeDisable = {};
 
-        /**
-         * @type {Object<string, SoundSlot>}
-         * @private
-         */
-        this._slots = {};
-
-        /** @private */
-        this._playingBeforeDisable = {};
-    }
 
     /**
      * Update the specified property on all sound instances.
@@ -132,8 +169,8 @@ class SoundComponent extends Component {
     }
 
     /**
-     * Determines which algorithm to use to reduce the volume of the sound as it moves away from
-     * the listener. Can be:
+     * Sets which algorithm to use to reduce the volume of the sound as it moves away from the
+     * listener. Can be:
      *
      * - {@link DISTANCE_LINEAR}
      * - {@link DISTANCE_INVERSE}
@@ -148,13 +185,20 @@ class SoundComponent extends Component {
         this._updateSoundInstances('distanceModel', value, false);
     }
 
+    /**
+     * Gets which algorithm to use to reduce the volume of the sound as it moves away from the
+     * listener.
+     *
+     * @type {string}
+     */
     get distanceModel() {
         return this._distanceModel;
     }
 
     /**
-     * The maximum distance from the listener at which audio falloff stops. Note the volume of the
-     * audio is not 0 after this distance, but just doesn't fall off anymore. Defaults to 10000.
+     * Sets the maximum distance from the listener at which audio falloff stops. Note that the
+     * volume of the audio is not 0 after this distance, but just doesn't fall off anymore.
+     * Defaults to 10000.
      *
      * @type {number}
      */
@@ -163,12 +207,17 @@ class SoundComponent extends Component {
         this._updateSoundInstances('maxDistance', value, false);
     }
 
+    /**
+     * Gets the maximum distance from the listener at which audio falloff stops.
+     *
+     * @type {number}
+     */
     get maxDistance() {
         return this._maxDistance;
     }
 
     /**
-     * The reference distance for reducing volume as the sound source moves further from the
+     * Sets the reference distance for reducing volume as the sound source moves further from the
      * listener. Defaults to 1.
      *
      * @type {number}
@@ -178,12 +227,18 @@ class SoundComponent extends Component {
         this._updateSoundInstances('refDistance', value, false);
     }
 
+    /**
+     * Gets the reference distance for reducing volume as the sound source moves further from the
+     * listener.
+     *
+     * @type {number}
+     */
     get refDistance() {
         return this._refDistance;
     }
 
     /**
-     * The factor used in the falloff equation. Defaults to 1.
+     * Sets the factor used in the falloff equation. Defaults to 1.
      *
      * @type {number}
      */
@@ -192,12 +247,17 @@ class SoundComponent extends Component {
         this._updateSoundInstances('rollOffFactor', value, false);
     }
 
+    /**
+     * Gets the factor used in the falloff equation.
+     *
+     * @type {number}
+     */
     get rollOffFactor() {
         return this._rollOffFactor;
     }
 
     /**
-     * The pitch modifier to play the audio with. Must be larger than 0.01. Defaults to 1.
+     * Sets the pitch modifier to play the audio with. Must be larger than 0.01. Defaults to 1.
      *
      * @type {number}
      */
@@ -206,12 +266,17 @@ class SoundComponent extends Component {
         this._updateSoundInstances('pitch', value, true);
     }
 
+    /**
+     * Gets the pitch modifier to play the audio with.
+     *
+     * @type {number}
+     */
     get pitch() {
         return this._pitch;
     }
 
     /**
-     * The volume modifier to play the audio with. In range 0-1. Defaults to 1.
+     * Sets the volume modifier to play the audio with. In range 0-1. Defaults to 1.
      *
      * @type {number}
      */
@@ -220,13 +285,19 @@ class SoundComponent extends Component {
         this._updateSoundInstances('volume', value, true);
     }
 
+    /**
+     * Gets the volume modifier to play the audio with.
+     *
+     * @type {number}
+     */
     get volume() {
         return this._volume;
     }
 
     /**
-     * If true the audio will play back at the location of the Entity in space, so the audio will
-     * be affected by the position of the {@link AudioListenerComponent}. Defaults to true.
+     * Sets whether the component plays positional sound. If true, the audio will play back at the
+     * location of the Entity in space, so the audio will be affected by the position of the
+     * {@link AudioListenerComponent}. Defaults to true.
      *
      * @type {boolean}
      */
@@ -247,8 +318,9 @@ class SoundComponent extends Component {
                 for (let i = oldLength - 1; i >= 0; i--) {
                     const isPlaying = instances[i].isPlaying || instances[i].isSuspended;
                     const currentTime = instances[i].currentTime;
-                    if (isPlaying)
+                    if (isPlaying) {
                         instances[i].stop();
+                    }
 
                     const instance = slot._createInstance();
                     if (isPlaying) {
@@ -262,12 +334,17 @@ class SoundComponent extends Component {
         }
     }
 
+    /**
+     * Gets whether the component plays positional sound.
+     *
+     * @type {boolean}
+     */
     get positional() {
         return this._positional;
     }
 
     /**
-     * A dictionary that contains the {@link SoundSlot}s managed by this SoundComponent.
+     * Sets a dictionary that contains the {@link SoundSlot}s managed by this SoundComponent.
      *
      * @type {Object<string, SoundSlot>}
      */
@@ -297,10 +374,17 @@ class SoundComponent extends Component {
         this._slots = slots;
 
         // call onEnable in order to start autoPlay slots
-        if (this.enabled && this.entity.enabled)
+        if (this.enabled && this.entity.enabled) {
             this.onEnable();
+        }
     }
 
+    /**
+     * Gets a dictionary that contains the {@link SoundSlot}s managed by this SoundComponent. Use
+     * addSlot and removeSlot to change slots.
+     *
+     * @type {Readonly<Record<string, SoundSlot>>}
+     */
     get slots() {
         return this._slots;
     }
@@ -349,7 +433,7 @@ class SoundComponent extends Component {
         this._playingBeforeDisable = playingBeforeDisable;
     }
 
-    onRemove() {
+    onBeforeRemove() {
         this.off();
     }
 
@@ -360,16 +444,16 @@ class SoundComponent extends Component {
      * @param {object} [options] - Settings for the slot.
      * @param {number} [options.volume] - The playback volume, between 0 and 1. Defaults to 1.
      * @param {number} [options.pitch] - The relative pitch. Defaults to 1 (plays at normal pitch).
-     * @param {boolean} [options.loop] - If true the sound will restart when it reaches the end.
+     * @param {boolean} [options.loop] - If true, the sound will restart when it reaches the end.
      * Defaults to false.
      * @param {number} [options.startTime] - The start time from which the sound will start playing.
      * Defaults to 0 to start at the beginning.
      * @param {number} [options.duration] - The duration of the sound that the slot will play
      * starting from startTime. Defaults to `null` which means play to end of the sound.
-     * @param {boolean} [options.overlap] - If true then sounds played from slot will be played
+     * @param {boolean} [options.overlap] - If true, then sounds played from slot will be played
      * independently of each other. Otherwise the slot will first stop the current sound before
      * starting the new one. Defaults to false.
-     * @param {boolean} [options.autoPlay] - If true the slot will start playing as soon as its
+     * @param {boolean} [options.autoPlay] - If true, the slot will start playing as soon as its
      * audio asset is loaded. Defaults to false.
      * @param {number} [options.asset] - The asset id of the audio asset that is going to be played
      * by this slot.
@@ -436,7 +520,8 @@ class SoundComponent extends Component {
      *
      * @param {string} name - The name of the {@link SoundSlot} to look for.
      * @param {string} property - The name of the property to look for.
-     * @returns {*} The value from the looked property inside the slot with specified name. May be undefined if slot does not exist.
+     * @returns {*} The value from the looked property inside the slot with specified name. May be
+     * undefined if slot does not exist.
      * @private
      */
     _getSlotProperty(name, property) {
@@ -499,9 +584,9 @@ class SoundComponent extends Component {
      * created and played.
      *
      * @param {string} name - The name of the {@link SoundSlot} to play.
-     * @returns {import('../../../platform/sound/instance.js').SoundInstance|null} The sound
-     * instance that will be played. Returns null if the component or its parent entity is disabled
-     * or if the SoundComponent has no slot with the specified name.
+     * @returns {SoundInstance|null} The sound instance that will be played. Returns null if the
+     * component or its parent entity is disabled or if the SoundComponent has no slot with the
+     * specified name.
      * @example
      * // get asset by id
      * const asset = app.assets.get(10);
@@ -527,7 +612,7 @@ class SoundComponent extends Component {
 
     /**
      * Pauses playback of the slot with the specified name. If the name is undefined then all slots
-     * currently played will be paused. The slots can be resumed by calling {@link SoundComponent#resume}.
+     * currently played will be paused. The slots can be resumed by calling {@link resume}.
      *
      * @param {string} [name] - The name of the slot to pause. Leave undefined to pause everything.
      * @example

@@ -1,4 +1,3 @@
-import { Debug } from '../debug.js';
 import { Mat4 } from '../math/mat4.js';
 import { Vec3 } from '../math/vec3.js';
 
@@ -12,12 +11,31 @@ const tmpSphere = new BoundingSphere();
 const tmpMat4 = new Mat4();
 
 /**
- * Oriented Box.
+ * An oriented bounding box is a box that can be rotated and translated in 3D space. It is defined
+ * by a world transform and half extents. Unlike an axis-aligned bounding box, an OBB can be
+ * oriented arbitrarily.
  *
+ * The constructor takes a {@link Mat4} holding the box's position and rotation, then its half
+ * extents. Scale is assumed to be one, so size the box with the half extents rather than the
+ * matrix. {@link worldTransform} can be reassigned at any time and the setter copies the matrix, so
+ * assigning an entity's world transform each frame gives a box that follows it. The tests
+ * {@link containsPoint}, {@link intersectsRay} and {@link intersectsBoundingSphere} return a
+ * boolean and allocate nothing.
+ *
+ * @example
+ * // A 2 x 1 x 4 box that follows an entity
+ * const box = new OrientedBox(entity.getWorldTransform(), new Vec3(1, 0.5, 2));
+ *
+ * // later, after the entity has moved
+ * box.worldTransform = entity.getWorldTransform();
+ * if (box.containsPoint(player.getPosition())) {
+ *     // the player is inside the box
+ * }
  * @category Math
  */
 class OrientedBox {
-    halfExtents;
+    /** @private */
+    halfExtents = new Vec3(0.5, 0.5, 0.5);
 
     /**
      * @type {Mat4}
@@ -41,15 +59,15 @@ class OrientedBox {
      * Create a new OrientedBox instance.
      *
      * @param {Mat4} [worldTransform] - Transform that has the orientation and position of the box.
-     * Scale is assumed to be one.
-     * @param {Vec3} [halfExtents] - Half the distance across the box in each local axis. The
-     * constructor takes a reference of this parameter.
+     * Scale is assumed to be one. Defaults to identity matrix.
+     * @param {Vec3} [halfExtents] - Half the distance across the box in each local axis. Defaults
+     * to (0.5, 0.5, 0.5).
      */
-    constructor(worldTransform = new Mat4(), halfExtents = new Vec3(0.5, 0.5, 0.5)) {
-        Debug.assert(!Object.isFrozen(worldTransform), 'The constructor of \'OrientedBox\' does not accept a constant (frozen) object as a \'worldTransform\' parameter');
-        Debug.assert(!Object.isFrozen(halfExtents), 'The constructor of \'OrientedBox\' does not accept a constant (frozen) object as a \'halfExtents\' parameter');
+    constructor(worldTransform = new Mat4(), halfExtents) {
 
-        this.halfExtents = halfExtents;
+        if (halfExtents) {
+            this.halfExtents.copy(halfExtents);
+        }
 
         this._modelTransform = worldTransform.clone().invert();
         this._worldTransform = worldTransform.clone();
@@ -57,7 +75,7 @@ class OrientedBox {
     }
 
     /**
-     * The world transform of the OBB.
+     * Sets the world transform of the OBB.
      *
      * @type {Mat4}
      */
@@ -66,16 +84,21 @@ class OrientedBox {
         this._modelTransform.copy(value).invert();
     }
 
+    /**
+     * Gets the world transform of the OBB.
+     *
+     * @type {Mat4}
+     */
     get worldTransform() {
         return this._worldTransform;
     }
 
     /**
-     * Test if a ray intersects with the OBB.
+     * Test if a ray intersects with the OBB. A ray that starts inside the OBB intersects it.
      *
      * @param {Ray} ray - Ray to test against (direction must be normalized).
      * @param {Vec3} [point] - If there is an intersection, the intersection point will be copied
-     * into here.
+     * into here. For a ray that starts inside the OBB, this is the point where the ray leaves it.
      * @returns {boolean} True if there is an intersection.
      */
     intersectsRay(ray, point) {
@@ -92,7 +115,7 @@ class OrientedBox {
     }
 
     /**
-     * Test if a point is inside a OBB.
+     * Test if a point is inside an OBB.
      *
      * @param {Vec3} point - Point to test.
      * @returns {boolean} True if the point is inside the OBB and false otherwise.

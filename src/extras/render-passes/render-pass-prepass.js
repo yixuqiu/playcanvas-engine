@@ -1,24 +1,20 @@
 import {
-    LAYERID_DEPTH,
-    SHADER_PREPASS_VELOCITY
-} from '../../scene/constants.js';
-import {
-    FILTER_NEAREST,
-    PIXELFORMAT_RGBA32F,
-    PIXELFORMAT_RGBA16F,
-    ADDRESS_CLAMP_TO_EDGE
+    PIXELFORMAT_R32F,
+    PIXELFORMAT_RGBA8
 } from '../../platform/graphics/constants.js';
 import { Texture } from '../../platform/graphics/texture.js';
 import { RenderPass } from '../../platform/graphics/render-pass.js';
 import { RenderTarget } from '../../platform/graphics/render-target.js';
 
+import {
+    LAYERID_DEPTH,
+    SHADER_PREPASS
+} from '../../scene/constants.js';
+import { Color } from '../../core/math/color.js';
+import { Debug } from '../../core/debug.js';
+import { FloatPacking } from '../../core/math/float-packing.js';
+
 const tempMeshInstances = [];
-
-// uniform name of the depth texture
-const DEPTH_UNIFORM_NAME = 'uSceneDepthMap';
-
-// uniform name of the velocity texture
-const VELOCITY_UNIFORM_NAME = 'uSceneVelocityMap';
 
 /**
  * A render pass which typically executes before the rendering of the main scene, and renders data
@@ -29,69 +25,81 @@ const VELOCITY_UNIFORM_NAME = 'uSceneVelocityMap';
  * @ignore
  */
 class RenderPassPrepass extends RenderPass {
-    /** @type {import('../../platform/graphics/bind-group.js').BindGroup[]} */
-    viewBindGroups = [];
-
     /** @type {Texture} */
-    velocityTexture;
+    linearDepthTexture;
 
-    constructor(device, scene, renderer, camera, depthBuffer, options) {
+    /** @type {Color} */
+    linearDepthClearValue = new Color(0, 0, 0, 0);
+
+    /**
+     * The layerList indices of the sub-layers this prepass renders. Rebuilt each frame in
+     * frameUpdate (where culling is also requested) and consumed by execute.
+     *
+     * @type {number[]}
+     */
+    _qualifiedLayerIndices = [];
+
+    constructor(device, scene, renderer, camera, options) {
         super(device);
         this.scene = scene;
         this.renderer = renderer;
         this.camera = camera;
 
-        this.setupRenderTarget(depthBuffer, options);
+        this.setupRenderTarget(options);
     }
 
     destroy() {
         super.destroy();
+        this.camera.shaderParams.sceneDepthMapLinear = false;
+        this.camera.shaderParams.sceneDepthMapPacked = false;
+        this.camera.shaderParams.sceneDepthMapReciprocal = false;
         this.renderTarget?.destroy();
         this.renderTarget = null;
-        this.velocityTexture?.destroy();
-        this.velocityTexture = null;
-
-        this.viewBindGroups.forEach((bg) => {
-            bg.defaultUniformBuffer.destroy();
-            bg.destroy();
-        });
-        this.viewBindGroups.length = 0;
+        this.linearDepthTexture?.destroy();
+        this.linearDepthTexture = null;
     }
 
-    setupRenderTarget(depthBuffer, options) {
+    setupRenderTarget(options) {
 
         const { device } = this;
 
-        // TODO: only two channel texture is needed here, but that is not supported by WebGL
-        const velocityFormat = device.getRenderableHdrFormat([PIXELFORMAT_RGBA32F, PIXELFORMAT_RGBA16F]);
-        this.velocityTexture = new Texture(device, {
-            name: 'VelocityTexture',
-            width: 4,
-            height: 4,
-            format: velocityFormat,
-            mipmaps: false,
-            minFilter: FILTER_NEAREST,
-            magFilter: FILTER_NEAREST,
-            addressU: ADDRESS_CLAMP_TO_EDGE,
-            addressV: ADDRESS_CLAMP_TO_EDGE
-        });
+        // when float textures cannot be rendered to, the depth is bit-packed into RGBA8 instead,
+        // which is lossless and so preferable to a lower precision float format. Note that the
+        // shader side of the packing (float2vec4) selects its encoding using the global
+        // CAPS_TEXTURE_FLOAT_RENDERABLE define, which has to agree with the format chosen here.
+        this.linearDepthFormat = device.textureFloatRenderable ? PIXELFORMAT_R32F : PIXELFORMAT_RGBA8;
+        this.linearDepthTexture = Texture.createDataTexture2D(device, 'SceneLinearDepthTexture', 1, 1, this.linearDepthFormat);
 
         const renderTarget = new RenderTarget({
             name: 'PrepassRT',
-            // colorBuffer: this.velocityTexture,
-            depthBuffer: depthBuffer
+            colorBuffer: this.linearDepthTexture,
+
+            // use depth buffer, but this can be discarded after the prepass as the depth is stored in the linearDepthTexture
+            depth: true,
+
+            // always single sampled
+            samples: 1
         });
 
+        // the WGSL screenDepth chunk implements no packed decode, as WebGPU always supports
+        // rendering to float textures
+        Debug.assert(!(device.isWebGPU && this.linearDepthFormat === PIXELFORMAT_RGBA8));
+
+        // declare how this pass stores the depth, so that the shaders sampling it decode what was
+        // actually written instead of inferring it from the device capabilities. Declared at setup,
+        // because the post-processing passes resolve these defines when they are constructed.
+        const { shaderParams } = this.camera;
+        shaderParams.sceneDepthMapLinear = true;
+        shaderParams.sceneDepthMapPacked = this.linearDepthFormat === PIXELFORMAT_RGBA8;
+        shaderParams.sceneDepthMapReciprocal = false;
+
         this.init(renderTarget, options);
-        this.depthStencilOps.storeDepth = true;
     }
 
     after() {
-
-        // Assign the depth to the uniform. Note that the depth buffer is still used as a render
-        // target in the following scene passes, and cannot be used as a texture inside those passes.
-        this.device.scope.resolve(DEPTH_UNIFORM_NAME).setValue(this.renderTarget.depthBuffer);
-        this.device.scope.resolve(VELOCITY_UNIFORM_NAME).setValue(this.velocityTexture);
+        // publish the linear depth texture, which the pass writes outright
+        this.camera.camera.publishSceneDepthMap(this.linearDepthTexture, this.device.renderVersion,
+            true, this.linearDepthFormat === PIXELFORMAT_RGBA8, false, this.renderTarget.flipY);
     }
 
     execute() {
@@ -99,50 +107,77 @@ class RenderPassPrepass extends RenderPass {
         const { renderer, scene, renderTarget } = this;
         const camera = this.camera.camera;
         const layers = scene.layers.layerList;
-        const subLayerEnabled = scene.layers.subLayerEnabled;
         const isTransparent = scene.layers.subLayerList;
 
-        for (let i = 0; i < layers.length; i++) {
+        // render the sub-layers collected (and culled) in frameUpdate
+        for (const i of this._qualifiedLayerIndices) {
             const layer = layers[i];
 
-            if (layer.enabled && subLayerEnabled[i]) {
+            const culledInstances = layer.getCulledInstances(camera);
+            const meshInstances = isTransparent[i] ? culledInstances.transparent : culledInstances.opaque;
 
-                // if the layer is rendered by the camera
-                if (layer.camerasSet.has(camera)) {
+            for (let j = 0; j < meshInstances.length; j++) {
+                const meshInstance = meshInstances[j];
 
-                    // only render the layers before the depth layer
-                    if (layer.id === LAYERID_DEPTH)
-                        break;
-
-                    const culledInstances = layer.getCulledInstances(camera);
-                    const meshInstances = isTransparent[i] ? culledInstances.transparent : culledInstances.opaque;
-
-                    for (let j = 0; j < meshInstances.length; j++) {
-                        const meshInstance = meshInstances[j];
-
-                        // only collect meshes that update the depth
-                        if (meshInstance.material?.depthWrite) {
-                            tempMeshInstances.push(meshInstance);
-                        }
-                    }
-
-                    renderer.renderForwardLayer(camera, renderTarget, null, undefined, SHADER_PREPASS_VELOCITY, this.viewBindGroups, {
-                        meshInstances: tempMeshInstances
-                    });
-
-                    tempMeshInstances.length = 0;
+                // only collect meshes that update the depth
+                if (meshInstance.material?.depthWrite) {
+                    tempMeshInstances.push(meshInstance);
                 }
             }
+
+            renderer.renderForwardLayer(camera, renderTarget, null, undefined, SHADER_PREPASS, {
+                meshInstances: tempMeshInstances
+            });
+
+            tempMeshInstances.length = 0;
         }
+    }
+
+    precompile() {
+
+        // the layers render as when the pass executes, into a precompile pass of the device. The
+        // depth it would write is published as in a frame, for the passes which read it
+        this.precompileExecute();
+        this.after();
     }
 
     frameUpdate() {
 
         super.frameUpdate();
 
-        // depth clear value (1 or no clear) set up each frame
+        // depth clear value set up each frame
         const { camera } = this;
         this.setClearDepth(camera.clearDepthBuffer ? 1 : undefined);
+
+        // linear depth clear value set up each frame, or undefined to disable clearing
+        let clearValue;
+        if (camera.clearDepthBuffer) {
+            const farClip = camera.farClip - Number.MIN_VALUE;
+            clearValue = this.linearDepthClearValue;
+            if (this.linearDepthFormat === PIXELFORMAT_R32F) {
+                clearValue.r = farClip;  // only R is used
+            } else {
+                FloatPacking.float2RGBA8(farClip, clearValue);
+            }
+        }
+        this.setClearColor(clearValue);
+
+        // collect the sub-layers this prepass will render and request culling of each, so their
+        // culled lists are ready when execute() reads them (execute() reuses these indices)
+        const { renderer, scene } = this;
+        const cullCamera = this.camera.camera;
+        const composition = scene.layers;
+        const layerList = composition.layerList;
+        const qualified = this._qualifiedLayerIndices;
+        qualified.length = 0;
+        for (let i = 0; i < layerList.length; i++) {
+            // only render the layers before the depth layer
+            if (layerList[i].id === LAYERID_DEPTH) break;
+            if (composition.isSubLayerRenderedByCamera(i, cullCamera)) {
+                qualified.push(i);
+                renderer.culler.requestMeshInstanceCull(cullCamera, layerList[i]);
+            }
+        }
     }
 }
 

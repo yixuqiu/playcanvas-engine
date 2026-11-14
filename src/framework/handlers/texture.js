@@ -1,5 +1,4 @@
 import { path } from '../../core/path.js';
-
 import {
     TEXHINT_ASSET,
     ADDRESS_CLAMP_TO_EDGE, ADDRESS_MIRRORED_REPEAT, ADDRESS_REPEAT,
@@ -9,15 +8,18 @@ import {
 } from '../../platform/graphics/constants.js';
 import { Texture } from '../../platform/graphics/texture.js';
 import { TextureUtils } from '../../platform/graphics/texture-utils.js';
-
 import { BasisParser } from '../parsers/texture/basis.js';
 import { ImgParser } from '../parsers/texture/img.js';
 import { KtxParser } from '../parsers/texture/ktx.js';
 import { Ktx2Parser } from '../parsers/texture/ktx2.js';
 import { DdsParser } from '../parsers/texture/dds.js';
 import { HdrParser } from '../parsers/texture/hdr.js';
-
 import { ResourceHandler } from './handler.js';
+
+/**
+ * @import { AppBase } from '../app-base.js'
+ * @import { Asset } from '../asset/asset.js'
+ */
 
 const JSON_ADDRESS_MODE = {
     'repeat': ADDRESS_REPEAT,
@@ -42,6 +44,54 @@ const JSON_TEXTURE_TYPE = {
     'swizzleGGGR': TEXTURETYPE_SWIZZLEGGGR
 };
 
+// the type of the texture of a texture asset, as its data specifies it (this is bit of a mess)
+const getAssetDataTextureType = (asset) => {
+    const assetData = asset.data;
+    if (assetData.hasOwnProperty('type')) {
+        return JSON_TEXTURE_TYPE[assetData.type];
+    }
+    if (assetData.hasOwnProperty('rgbm') && assetData.rgbm) {
+        return TEXTURETYPE_RGBM;
+    }
+    if (asset.file && (asset.file.opt & 8) !== 0) {
+        // basis normalmaps flag the variant as swizzled
+        return TEXTURETYPE_SWIZZLEGGGR;
+    }
+    return TEXTURETYPE_DEFAULT;
+};
+
+// whether the file of a texture asset is an .hdr file, by the extension the parser is selected by
+const isHdrFile = (asset) => {
+    const name = asset.file?.filename || asset.file?.url;
+    return !!name && path.getExtension(name.split('?')[0]).toLowerCase() === '.hdr';
+};
+
+/**
+ * Returns whether the texture of a texture asset is sRGB, and its type, which together decide how
+ * a shader decodes the texture. These are known before the asset loads: its data specifies them,
+ * unless its per-load texture options override them.
+ *
+ * A few files decide these themselves, and are only known once loaded: a KTX file storing an sRGB
+ * format when the asset data does not specify srgb, a basis normal map which the transcoder
+ * unswizzles, and a DXT5 normal map.
+ *
+ * @param {Asset} asset - The texture asset.
+ * @returns {{srgb: boolean, type: string}} Whether the texture is sRGB, and its type.
+ * @ignore
+ */
+const getTextureAssetEncoding = (asset) => {
+    const options = asset.options?.texture;
+
+    // the hdr parser records the rgbe type of an .hdr file in the asset data as it starts loading
+    // the file, which can be after this is needed - such as when the file is in a bundle
+    const type = !asset.data.type && isHdrFile(asset) ? TEXTURETYPE_RGBE : getAssetDataTextureType(asset);
+
+    return {
+        srgb: !!(options?.srgb ?? asset.data.srgb),
+        type: options?.type ?? type
+    };
+};
+
 // In the case where a texture has more than 1 level of mip data specified, but not the full
 // mip chain, we generate the missing levels here.
 // This is to overcome an issue where iphone xr and xs ignores further updates to the mip data
@@ -53,9 +103,9 @@ const _completePartialMipmapChain = function (texture) {
     const requiredMipLevels = TextureUtils.calcMipLevelsCount(texture._width, texture._height);
 
     const isHtmlElement = function (object) {
-        return (object instanceof HTMLCanvasElement) ||
-               (object instanceof HTMLImageElement) ||
-               (object instanceof HTMLVideoElement);
+        return (typeof HTMLCanvasElement !== 'undefined' && object instanceof HTMLCanvasElement) ||
+               (typeof HTMLImageElement !== 'undefined' && object instanceof HTMLImageElement) ||
+               (typeof HTMLVideoElement !== 'undefined' && object instanceof HTMLVideoElement);
     };
 
     if (!(texture._format === PIXELFORMAT_RGBA8 ||
@@ -113,37 +163,36 @@ const _completePartialMipmapChain = function (texture) {
 };
 
 /**
- * Resource handler used for loading 2D and 3D {@link Texture} resources.
+ * Resource handler for the `texture` asset type. Loads 2D and 3D {@link Texture} resources from
+ * any image format the browser decodes, such as PNG, JPEG, WebP and AVIF, and from DDS, KTX,
+ * KTX2, Basis and HDR files.
  *
- * @category Graphics
+ * @category Asset
  */
 class TextureHandler extends ResourceHandler {
     /**
      * Create a new TextureHandler instance.
      *
-     * @param {import('../app-base.js').AppBase} app - The running {@link AppBase}.
+     * @param {AppBase} app - The running {@link AppBase}.
      * @ignore
      */
     constructor(app) {
         super(app, 'texture');
 
-        const assets = app.assets;
         const device = app.graphicsDevice;
-
         this._device = device;
-        this._assets = assets;
 
-        // img parser handles all browser-supported image formats, this
-        // parser will be used when other more specific parsers are not found.
-        this.imgParser = new ImgParser(assets, device);
+        // img parser handles all browser-supported image formats and acts as the catch-all. It is
+        // registered first so the format-specific parsers below - and any user-registered parsers -
+        // take precedence during newest-first selection.
+        this.imgParser = new ImgParser(app.assets, device);
+        this.addParser(this.imgParser);
 
-        this.parsers = {
-            dds: new DdsParser(assets),
-            ktx: new KtxParser(assets),
-            ktx2: new Ktx2Parser(assets, device),
-            basis: new BasisParser(assets, device),
-            hdr: new HdrParser(assets)
-        };
+        this.addParser(new DdsParser());
+        this.addParser(new KtxParser());
+        this.addParser(new Ktx2Parser(device));
+        this.addParser(new BasisParser(device));
+        this.addParser(new HdrParser());
     }
 
     set crossOrigin(value) {
@@ -152,28 +201,6 @@ class TextureHandler extends ResourceHandler {
 
     get crossOrigin() {
         return this.imgParser.crossOrigin;
-    }
-
-    set maxRetries(value) {
-        this.imgParser.maxRetries = value;
-        for (const parser in this.parsers) {
-            if (this.parsers.hasOwnProperty(parser)) {
-                this.parsers[parser].maxRetries = value;
-            }
-        }
-    }
-
-    get maxRetries() {
-        return this.imgParser.maxRetries;
-    }
-
-    _getUrlWithoutParams(url) {
-        return url.indexOf('?') >= 0 ? url.split('?')[0] : url;
-    }
-
-    _getParser(url) {
-        const ext = path.getExtension(this._getUrlWithoutParams(url)).toLowerCase().replace('.', '');
-        return this.parsers[ext] || this.imgParser;
     }
 
     _getTextureOptions(asset) {
@@ -219,37 +246,39 @@ class TextureHandler extends ResourceHandler {
                 options.flipY = !!assetData.flipY;
             }
 
-            // extract asset type (this is bit of a mess)
-            if (assetData.hasOwnProperty('type')) {
-                options.type = JSON_TEXTURE_TYPE[assetData.type];
-            } else if (assetData.hasOwnProperty('rgbm') && assetData.rgbm) {
-                options.type = TEXTURETYPE_RGBM;
-            } else if (asset.file && (asset.file.opt & 8) !== 0) {
-                // basis normalmaps flag the variant as swizzled
-                options.type = TEXTURETYPE_SWIZZLEGGGR;
+            if (assetData.hasOwnProperty('srgb')) {
+                options.srgb = !!assetData.srgb;
+            }
+
+            options.type = getAssetDataTextureType(asset);
+
+            // per-load creation options (raw Texture constructor options, for example
+            // { mipmaps: false, minFilter: FILTER_LINEAR }) override the asset-derived options
+            if (asset.options?.texture) {
+                Object.assign(options, asset.options.texture);
             }
         }
 
         return options;
     }
 
-    load(url, callback, asset) {
-        if (typeof url === 'string') {
-            url = {
-                load: url,
-                original: url
-            };
+    open(url, data, asset) {
+        // no url means no parser can be selected (the loader.open path) - not supported for textures
+        if (!url) {
+            return undefined;
         }
 
-        this._getParser(url.original).load(url, callback, asset);
-    }
+        // texture parsers use an extended open(url, data, device, textureOptions) signature, so the
+        // handler drives the delegation (and the shared post-processing below) instead of the base open
+        const parser = this._selectParser(this._makeContext(url, asset));
 
-    open(url, data, asset) {
-        if (!url)
+        // the img catch-all normally guarantees a parser - guard against a user-modified registry
+        // (for example with the img parser removed to reject unknown formats)
+        if (!parser) {
             return undefined;
-
+        }
         const textureOptions = this._getTextureOptions(asset);
-        let texture = this._getParser(url).open(url, data, this._device, textureOptions);
+        let texture = parser.open(url, data, this._device, textureOptions);
 
         if (texture === null) {
             texture = new Texture(this._device, {
@@ -285,4 +314,4 @@ class TextureHandler extends ResourceHandler {
     }
 }
 
-export { TextureHandler };
+export { TextureHandler, getTextureAssetEncoding };

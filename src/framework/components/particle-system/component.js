@@ -1,44 +1,75 @@
-import { LAYERID_DEPTH } from '../../../scene/constants.js';
+import { Debug } from '../../../core/debug.js';
+import { Vec3 } from '../../../core/math/vec3.js';
+import { BLEND_NORMAL, EMITTERSHAPE_BOX, LAYERID_DEPTH, LAYERID_WORLD, PARTICLEORIENTATION_SCREEN } from '../../../scene/constants.js';
 import { Mesh } from '../../../scene/mesh.js';
 import { ParticleEmitter } from '../../../scene/particle-system/particle-emitter.js';
-
 import { Asset } from '../../asset/asset.js';
-
 import { Component } from '../component.js';
 
-// properties that do not need rebuilding the particle system
-const SIMPLE_PROPERTIES = [
-    'emitterExtents',
-    'emitterRadius',
-    'emitterExtentsInner',
-    'emitterRadiusInner',
-    'loop',
-    'initialVelocity',
-    'animSpeed',
-    'normalMap',
-    'particleNormal'
-];
+/**
+ * @import { CurveSet } from '../../../core/math/curve-set.js'
+ * @import { Curve } from '../../../core/math/curve.js'
+ * @import { EventHandle } from '../../../core/event-handle.js'
+ * @import { Texture } from '../../../platform/graphics/texture.js'
+ */
 
-// properties that need rebuilding the particle system
-const COMPLEX_PROPERTIES = [
+const ASSET_PROPERTIES = ['colorMapAsset', 'normalMapAsset', 'meshAsset', 'renderAsset'];
+
+// properties that the component can be initialized with, in the order they are applied
+const _properties = [
+    'autoPlay',
     'numParticles',
     'lifetime',
     'rate',
     'rate2',
     'startAngle',
     'startAngle2',
+    'loop',
+    'preWarm',
     'lighting',
     'halfLambert',
     'intensity',
-    'wrap',
-    'wrapBounds',
     'depthWrite',
-    'noFog',
+    'useFog',
+    'useTonemap',
+    'depthSoftening',
     'sort',
+    'blendType',
     'stretch',
     'alignToMotion',
-    'preWarm',
     'emitterShape',
+    'emitterExtents',
+    'emitterExtentsInner',
+    'emitterRadius',
+    'emitterRadiusInner',
+    'initialVelocity',
+    'wrap',
+    'wrapBounds',
+    'localSpace',
+    'screenSpace',
+    'colorMapAsset',
+    'normalMapAsset',
+    'mesh',
+    'meshAsset',
+    'renderAsset',
+    'orientation',
+    'particleNormal',
+    'localVelocityGraph',
+    'localVelocityGraph2',
+    'velocityGraph',
+    'velocityGraph2',
+    'rotationSpeedGraph',
+    'rotationSpeedGraph2',
+    'radialSpeedGraph',
+    'radialSpeedGraph2',
+    'scaleGraph',
+    'scaleGraph2',
+    'colorGraph',
+    'colorGraph2',
+    'alphaGraph',
+    'alphaGraph2',
+    'colorMap',
+    'normalMap',
     'animTilesX',
     'animTilesY',
     'animStartFrame',
@@ -46,324 +77,713 @@ const COMPLEX_PROPERTIES = [
     'animNumAnimations',
     'animIndex',
     'randomizeAnimIndex',
+    'animSpeed',
     'animLoop',
-    'colorMap',
-    'localSpace',
-    'screenSpace',
-    'orientation'
+    'layers'
 ];
-
-const GRAPH_PROPERTIES = [
-    'scaleGraph',
-    'scaleGraph2',
-
-    'colorGraph',
-    'colorGraph2',
-
-    'alphaGraph',
-    'alphaGraph2',
-
-    'velocityGraph',
-    'velocityGraph2',
-
-    'localVelocityGraph',
-    'localVelocityGraph2',
-
-    'rotationSpeedGraph',
-    'rotationSpeedGraph2',
-
-    'radialSpeedGraph',
-    'radialSpeedGraph2'
-];
-
-const ASSET_PROPERTIES = ['colorMapAsset', 'normalMapAsset', 'meshAsset', 'renderAsset'];
 
 let depthLayer;
 
 /**
- * Used to simulate particles and produce renderable particle mesh on either CPU or GPU. GPU
- * simulation is generally much faster than its CPU counterpart, because it avoids slow CPU-GPU
- * synchronization and takes advantage of many GPU cores. However, it requires client to support
- * reasonable uniform count, reading from multiple textures in vertex shader and OES_texture_float
- * extension, including rendering into float textures. Most mobile devices fail to satisfy these
- * requirements, so it's not recommended to simulate thousands of particles on them. GPU version
- * also can't sort particles, so enabling sorting forces CPU mode too. Particle rotation is
- * specified by a single angle parameter: default billboard particles rotate around camera facing
- * axis, while mesh particles rotate around 2 different view-independent axes. Most of the
- * simulation parameters are specified with {@link Curve} or {@link CurveSet}. Curves are
- * interpolated based on each particle's lifetime, therefore parameters are able to change over
- * time. Most of the curve parameters can also be specified by 2 minimum/maximum curves, this way
- * each particle will pick a random value in-between.
+ * The ParticleSystemComponent enables an {@link Entity} to simulate particles and produce a
+ * renderable particle mesh on either CPU or GPU. GPU simulation is generally much faster than
+ * its CPU counterpart, because it avoids slow CPU-GPU synchronization and takes advantage of
+ * many GPU cores. However, it requires client support for reasonable uniform counts, reading
+ * from multiple textures in a vertex shader and the OES_texture_float extension, including
+ * rendering into float textures. Most mobile devices fail to satisfy these requirements, so it's
+ * not recommended to simulate thousands of particles on them. The GPU version also can't sort
+ * particles, so enabling sorting forces CPU mode too.
  *
+ * Particle rotation is specified by a single angle parameter: default billboard particles rotate
+ * around the camera-facing axis, while mesh particles rotate around two different view-independent
+ * axes. Most of the simulation parameters are specified with {@link Curve} or {@link CurveSet}.
+ * Curves are interpolated based on each particle's lifetime, therefore parameters are able to
+ * change over time. Most curve parameters can also be specified by 2 minimum/maximum curves, so
+ * that each particle picks a random value in-between.
+ *
+ * You should never need to use the ParticleSystemComponent constructor directly. To add a
+ * ParticleSystemComponent to an {@link Entity}, use {@link Entity#addComponent}:
+ *
+ * ```javascript
+ * const entity = new Entity();
+ * entity.addComponent('particlesystem', {
+ *     numParticles: 100,
+ *     lifetime: 2,
+ *     rate: 0.1
+ * });
+ * ```
+ *
+ * Once the ParticleSystemComponent is added to the entity, you can access it via the
+ * {@link Entity#particlesystem} property:
+ *
+ * ```javascript
+ * entity.particlesystem.loop = false; // Play the system once then stop
+ *
+ * console.log(entity.particlesystem.loop); // Get the loop flag and print it
+ * ```
+ *
+ * Relevant Engine API examples:
+ *
+ * - [Particle Animated Index](https://playcanvas.github.io/#/particles/anim-index)
+ * - [Particle Mesh](https://playcanvas.github.io/#/particles/mesh)
+ * - [Particle Random Sprites](https://playcanvas.github.io/#/particles/random-sprites)
+ * - [Particle Snow](https://playcanvas.github.io/#/particles/snow)
+ * - [Particle Spark](https://playcanvas.github.io/#/particles/spark)
+ * - [Particles in a user interface](https://playcanvas.github.io/#/user-interface/particle-system)
+ *
+ * @hideconstructor
  * @category Graphics
  */
 class ParticleSystemComponent extends Component {
+    /**
+     * The particle emitter that performs the simulation. Only set while the component is or has
+     * been enabled and the platform supports particle systems.
+     *
+     * @type {ParticleEmitter|null}
+     * @ignore
+     */
+    emitter = null;
+
     /** @private */
     _requestedDepth = false;
 
     /** @private */
     _drawOrder = 0;
 
+    /** @private */
+    _paused = false;
+
     /**
-     * Create a new ParticleSystemComponent.
-     *
-     * @param {import('./system.js').ParticleSystemComponentSystem} system - The ComponentSystem
-     * that created this Component.
-     * @param {import('../../entity.js').Entity} entity - The Entity this Component is attached to.
+     * @type {EventHandle|null}
+     * @private
      */
-    constructor(system, entity) {
-        super(system, entity);
+    _evtLayersChanged = null;
 
-        this.on('set_colorMapAsset', this.onSetColorMapAsset, this);
-        this.on('set_normalMapAsset', this.onSetNormalMapAsset, this);
-        this.on('set_meshAsset', this.onSetMeshAsset, this);
-        this.on('set_mesh', this.onSetMesh, this);
-        this.on('set_renderAsset', this.onSetRenderAsset, this);
-        this.on('set_loop', this.onSetLoop, this);
-        this.on('set_blendType', this.onSetBlendType, this);
-        this.on('set_depthSoftening', this.onSetDepthSoftening, this);
-        this.on('set_layers', this.onSetLayers, this);
-
-        SIMPLE_PROPERTIES.forEach((prop) => {
-            this.on(`set_${prop}`, this.onSetSimpleProperty, this);
-        });
-
-        COMPLEX_PROPERTIES.forEach((prop) => {
-            this.on(`set_${prop}`, this.onSetComplexProperty, this);
-        });
-
-        GRAPH_PROPERTIES.forEach((prop) => {
-            this.on(`set_${prop}`, this.onSetGraphProperty, this);
-        });
-    }
-
-    // TODO: Remove this override in upgrading component
     /**
-     * @type {import('./data.js').ParticleSystemComponentData}
-     * @ignore
+     * @type {EventHandle|null}
+     * @private
      */
-    get data() {
-        const record = this.system.store[this.entity.getGuid()];
-        return record ? record.data : null;
-    }
+    _evtLayerAdded = null;
 
     /**
-     * @type {boolean}
+     * @type {EventHandle|null}
+     * @private
      */
-    set enabled(arg) {
-        this._setValue('enabled', arg);
-    }
-
-    get enabled() {
-        return this.data.enabled;
-    }
+    _evtLayerRemoved = null;
 
     /**
-     * Controls whether the particle system plays automatically on creation.
-     * If set to false, it is necessary to call {@link ParticleSystemComponent#play} for
-     * the particle system to play. Defaults to true.
+     * @type {EventHandle|null}
+     * @private
+     */
+    _evtSetMeshes = null;
+
+    /** @private */
+    _autoPlay = true;
+
+    /** @private */
+    _numParticles = 1;
+
+    /** @private */
+    _lifetime = 50;
+
+    /** @private */
+    _rate = 1;
+
+    /**
+     * @type {number|null}
+     * @private
+     */
+    _rate2 = null;
+
+    /** @private */
+    _startAngle = 0;
+
+    /**
+     * @type {number|null}
+     * @private
+     */
+    _startAngle2 = null;
+
+    /** @private */
+    _loop = true;
+
+    /** @private */
+    _preWarm = false;
+
+    /** @private */
+    _lighting = false;
+
+    /** @private */
+    _halfLambert = false;
+
+    /** @private */
+    _intensity = 1;
+
+    /** @private */
+    _depthWrite = false;
+
+    /** @private */
+    _useFog = true;
+
+    /** @private */
+    _useTonemap = true;
+
+    /** @private */
+    _depthSoftening = 0;
+
+    /** @private */
+    _sort = 0;
+
+    /** @private */
+    _blendType = BLEND_NORMAL;
+
+    /** @private */
+    _stretch = 0.0;
+
+    /** @private */
+    _alignToMotion = false;
+
+    /** @private */
+    _emitterShape = EMITTERSHAPE_BOX;
+
+    /** @private */
+    _emitterExtents = new Vec3();
+
+    /** @private */
+    _emitterExtentsInner = new Vec3();
+
+    /** @private */
+    _emitterRadius = 0;
+
+    /** @private */
+    _emitterRadiusInner = 0;
+
+    /** @private */
+    _initialVelocity = 0;
+
+    /** @private */
+    _wrap = false;
+
+    /** @private */
+    _wrapBounds = new Vec3();
+
+    /** @private */
+    _localSpace = false;
+
+    /** @private */
+    _screenSpace = false;
+
+    /**
+     * @type {number|null}
+     * @private
+     */
+    _colorMapAsset = null;
+
+    /**
+     * @type {number|null}
+     * @private
+     */
+    _normalMapAsset = null;
+
+    /**
+     * @type {Mesh|null}
+     * @private
+     */
+    _mesh = null;
+
+    /**
+     * @type {number|null}
+     * @private
+     */
+    _meshAsset = null;
+
+    /**
+     * @type {number|null}
+     * @private
+     */
+    _renderAsset = null;
+
+    /** @private */
+    _orientation = PARTICLEORIENTATION_SCREEN;
+
+    /** @private */
+    _particleNormal = new Vec3(0, 1, 0);
+
+    /**
+     * @type {CurveSet|null}
+     * @private
+     */
+    _localVelocityGraph = null;
+
+    /**
+     * @type {CurveSet|null}
+     * @private
+     */
+    _localVelocityGraph2 = null;
+
+    /**
+     * @type {CurveSet|null}
+     * @private
+     */
+    _velocityGraph = null;
+
+    /**
+     * @type {CurveSet|null}
+     * @private
+     */
+    _velocityGraph2 = null;
+
+    /**
+     * @type {Curve|null}
+     * @private
+     */
+    _rotationSpeedGraph = null;
+
+    /**
+     * @type {Curve|null}
+     * @private
+     */
+    _rotationSpeedGraph2 = null;
+
+    /**
+     * @type {Curve|null}
+     * @private
+     */
+    _radialSpeedGraph = null;
+
+    /**
+     * @type {Curve|null}
+     * @private
+     */
+    _radialSpeedGraph2 = null;
+
+    /**
+     * @type {Curve|null}
+     * @private
+     */
+    _scaleGraph = null;
+
+    /**
+     * @type {Curve|null}
+     * @private
+     */
+    _scaleGraph2 = null;
+
+    /**
+     * @type {CurveSet|null}
+     * @private
+     */
+    _colorGraph = null;
+
+    /**
+     * @type {CurveSet|null}
+     * @private
+     */
+    _colorGraph2 = null;
+
+    /**
+     * @type {Curve|null}
+     * @private
+     */
+    _alphaGraph = null;
+
+    /**
+     * @type {Curve|null}
+     * @private
+     */
+    _alphaGraph2 = null;
+
+    /**
+     * @type {Texture|null}
+     * @private
+     */
+    _colorMap = null;
+
+    /**
+     * @type {Texture|null}
+     * @private
+     */
+    _normalMap = null;
+
+    /** @private */
+    _animTilesX = 1;
+
+    /** @private */
+    _animTilesY = 1;
+
+    /** @private */
+    _animStartFrame = 0;
+
+    /** @private */
+    _animNumFrames = 1;
+
+    /** @private */
+    _animNumAnimations = 1;
+
+    /** @private */
+    _animIndex = 0;
+
+    /** @private */
+    _randomizeAnimIndex = false;
+
+    /** @private */
+    _animSpeed = 1;
+
+    /** @private */
+    _animLoop = true;
+
+    /**
+     * @type {number[]}
+     * @private
+     */
+    _layers = [LAYERID_WORLD];
+
+    /**
+     * Sets whether the particle system plays automatically on creation. If set to false, it is
+     * necessary to call {@link play} for the particle system to play. Defaults to true.
      *
      * @type {boolean}
      */
     set autoPlay(arg) {
-        this._setValue('autoPlay', arg);
-    }
-
-    get autoPlay() {
-        return this.data.autoPlay;
+        this._autoPlay = arg;
     }
 
     /**
-     * Maximum number of simulated particles.
+     * Gets whether the particle system plays automatically on creation.
+     *
+     * @type {boolean}
+     */
+    get autoPlay() {
+        return this._autoPlay;
+    }
+
+    /**
+     * Sets the maximum number of simulated particles.
      *
      * @type {number}
      */
     set numParticles(arg) {
-        this._setValue('numParticles', arg);
-    }
-
-    get numParticles() {
-        return this.data.numParticles;
+        this._setComplexProperty('numParticles', arg);
     }
 
     /**
-     * The length of time in seconds between a particle's birth and its death.
+     * Gets the maximum number of simulated particles.
+     *
+     * @type {number}
+     */
+    get numParticles() {
+        return this._numParticles;
+    }
+
+    /**
+     * Sets the length of time in seconds between a particle's birth and its death.
      *
      * @type {number}
      */
     set lifetime(arg) {
-        this._setValue('lifetime', arg);
-    }
-
-    get lifetime() {
-        return this.data.lifetime;
+        this._setComplexProperty('lifetime', arg);
     }
 
     /**
-     * Minimal interval in seconds between particle births.
+     * Gets the length of time in seconds between a particle's birth and its death.
+     *
+     * @type {number}
+     */
+    get lifetime() {
+        return this._lifetime;
+    }
+
+    /**
+     * Sets the minimal interval in seconds between particle births.
      *
      * @type {number}
      */
     set rate(arg) {
-        this._setValue('rate', arg);
-    }
-
-    get rate() {
-        return this.data.rate;
+        this._setComplexProperty('rate', arg);
     }
 
     /**
-     * Maximal interval in seconds between particle births.
+     * Gets the minimal interval in seconds between particle births.
+     *
+     * @type {number}
+     */
+    get rate() {
+        return this._rate;
+    }
+
+    /**
+     * Sets the maximal interval in seconds between particle births.
      *
      * @type {number}
      */
     set rate2(arg) {
-        this._setValue('rate2', arg);
-    }
-
-    get rate2() {
-        return this.data.rate2;
+        this._setComplexProperty('rate2', arg);
     }
 
     /**
-     * Minimal initial Euler angle of a particle.
+     * Gets the maximal interval in seconds between particle births.
+     *
+     * @type {number}
+     */
+    get rate2() {
+        return this._rate2;
+    }
+
+    /**
+     * Sets the minimal initial Euler angle of a particle.
      *
      * @type {number}
      */
     set startAngle(arg) {
-        this._setValue('startAngle', arg);
-    }
-
-    get startAngle() {
-        return this.data.startAngle;
+        this._setComplexProperty('startAngle', arg);
     }
 
     /**
-     * Maximal initial Euler angle of a particle.
+     * Gets the minimal initial Euler angle of a particle.
+     *
+     * @type {number}
+     */
+    get startAngle() {
+        return this._startAngle;
+    }
+
+    /**
+     * Sets the maximal initial Euler angle of a particle.
      *
      * @type {number}
      */
     set startAngle2(arg) {
-        this._setValue('startAngle2', arg);
-    }
-
-    get startAngle2() {
-        return this.data.startAngle2;
+        this._setComplexProperty('startAngle2', arg);
     }
 
     /**
-     * Enables or disables respawning of particles.
+     * Gets the maximal initial Euler angle of a particle.
+     *
+     * @type {number}
+     */
+    get startAngle2() {
+        return this._startAngle2;
+    }
+
+    /**
+     * Sets whether the particle system loops.
      *
      * @type {boolean}
      */
     set loop(arg) {
-        this._setValue('loop', arg);
-    }
-
-    get loop() {
-        return this.data.loop;
+        this._loop = arg;
+        if (this.emitter) {
+            this.emitter.loop = arg;
+            this.emitter.resetTime(arg ? undefined : this.emitter.lifetime);
+            this.emitter.resetMaterial();
+        }
     }
 
     /**
-     * If enabled, the particle system will be initialized as though it had already completed a full
-     * cycle. This only works with looping particle systems.
+     * Gets whether the particle system loops.
+     *
+     * @type {boolean}
+     */
+    get loop() {
+        return this._loop;
+    }
+
+    /**
+     * Sets whether the particle system will be initialized as though it has already completed a
+     * full cycle. This only works with looping particle systems.
      *
      * @type {boolean}
      */
     set preWarm(arg) {
-        this._setValue('preWarm', arg);
-    }
-
-    get preWarm() {
-        return this.data.preWarm;
+        this._setComplexProperty('preWarm', arg);
     }
 
     /**
-     * If enabled, particles will be lit by ambient and directional lights.
+     * Gets whether the particle system will be initialized as though it has already completed a
+     * full cycle.
+     *
+     * @type {boolean}
+     */
+    get preWarm() {
+        return this._preWarm;
+    }
+
+    /**
+     * Sets whether particles will be lit by ambient and directional lights.
      *
      * @type {boolean}
      */
     set lighting(arg) {
-        this._setValue('lighting', arg);
-    }
-
-    get lighting() {
-        return this.data.lighting;
+        this._setComplexProperty('lighting', arg);
     }
 
     /**
-     * Enabling Half Lambert lighting avoids particles looking too flat in shadowed areas. It is a
-     * completely non-physical lighting model but can give more pleasing visual results.
+     * Gets whether particles will be lit by ambient and directional lights.
+     *
+     * @type {boolean}
+     */
+    get lighting() {
+        return this._lighting;
+    }
+
+    /**
+     * Sets whether Half Lambert lighting is enabled. Enabling Half Lambert lighting avoids
+     * particles looking too flat in shadowed areas. It is a completely non-physical lighting model
+     * but can give more pleasing visual results.
      *
      * @type {boolean}
      */
     set halfLambert(arg) {
-        this._setValue('halfLambert', arg);
-    }
-
-    get halfLambert() {
-        return this.data.halfLambert;
+        this._setComplexProperty('halfLambert', arg);
     }
 
     /**
-     * Color multiplier.
+     * Gets whether Half Lambert lighting is enabled.
+     *
+     * @type {boolean}
+     */
+    get halfLambert() {
+        return this._halfLambert;
+    }
+
+    /**
+     * Sets the color multiplier.
      *
      * @type {number}
      */
     set intensity(arg) {
-        this._setValue('intensity', arg);
-    }
-
-    get intensity() {
-        return this.data.intensity;
+        this._setComplexProperty('intensity', arg);
     }
 
     /**
-     * If enabled, the particles will write to the depth buffer. If disabled, the depth buffer is
-     * left unchanged and particles will be guaranteed to overwrite one another in the order in
-     * which they are rendered.
+     * Gets the color multiplier.
+     *
+     * @type {number}
+     */
+    get intensity() {
+        return this._intensity;
+    }
+
+    /**
+     * Sets whether depth writes is enabled. If enabled, the particles will write to the depth
+     * buffer. If disabled, the depth buffer is left unchanged and particles will be guaranteed to
+     * overwrite one another in the order in which they are rendered.
      *
      * @type {boolean}
      */
     set depthWrite(arg) {
-        this._setValue('depthWrite', arg);
-    }
-
-    get depthWrite() {
-        return this.data.depthWrite;
+        this._setComplexProperty('depthWrite', arg);
     }
 
     /**
-     * Disable fogging.
+     * Gets whether depth writes is enabled.
      *
      * @type {boolean}
      */
-    set noFog(arg) {
-        this._setValue('noFog', arg);
-    }
-
-    get noFog() {
-        return this.data.noFog;
+    get depthWrite() {
+        return this._depthWrite;
     }
 
     /**
-     * Controls fading of particles near their intersections with scene geometry. This effect, when
-     * it's non-zero, requires scene depth map to be rendered. Multiple depth-dependent effects can
-     * share the same map, but if you only use it for particles, bear in mind that it can double
-     * engine draw calls.
+     * Sets whether the camera's fog is applied to the particles. When false, the particles ignore
+     * fog even if the rendering camera has it enabled. Defaults to true.
+     *
+     * @type {boolean}
+     */
+    set useFog(arg) {
+        this._setComplexProperty('useFog', arg);
+    }
+
+    /**
+     * Gets whether the camera's fog is applied to the particles.
+     *
+     * @type {boolean}
+     */
+    get useFog() {
+        return this._useFog;
+    }
+
+    /**
+     * Sets whether the camera's tonemapping and the scene exposure are applied to the particles.
+     * When false, the particles keep their authored colors, unaffected by {@link Scene#exposure}
+     * and {@link CameraComponent#toneMapping}. Fog, when enabled, still applies. Defaults to true.
+     *
+     * @type {boolean}
+     */
+    set useTonemap(arg) {
+        this._setComplexProperty('useTonemap', arg);
+    }
+
+    /**
+     * Gets whether the camera's tonemapping and the scene exposure are applied to the particles.
+     *
+     * @type {boolean}
+     */
+    get useTonemap() {
+        return this._useTonemap;
+    }
+
+    /**
+     * Sets whether fogging is ignored.
+     *
+     * @type {boolean}
+     * @deprecated Use {@link ParticleSystemComponent#useFog} instead.
+     * @ignore
+     */
+    set noFog(arg) {
+        Debug.deprecated('ParticleSystemComponent#noFog is deprecated. Use ParticleSystemComponent#useFog instead.');
+        this.useFog = !arg;
+    }
+
+    /**
+     * Gets whether fogging is ignored.
+     *
+     * @type {boolean}
+     * @deprecated Use {@link ParticleSystemComponent#useFog} instead.
+     * @ignore
+     */
+    get noFog() {
+        Debug.deprecated('ParticleSystemComponent#noFog is deprecated. Use ParticleSystemComponent#useFog instead.');
+        return !this.useFog;
+    }
+
+    /**
+     * Sets whether depth softening is enabled. Controls fading of particles near their
+     * intersections with scene geometry. This effect, when it's non-zero, requires scene depth map
+     * to be rendered. Multiple depth-dependent effects can share the same map, but if you only use
+     * it for particles, bear in mind that it can double engine draw calls.
      *
      * @type {number}
      */
     set depthSoftening(arg) {
-        this._setValue('depthSoftening', arg);
-    }
-
-    get depthSoftening() {
-        return this.data.depthSoftening;
+        const oldValue = this._depthSoftening;
+        if (oldValue !== arg) {
+            this._depthSoftening = arg;
+            if (arg) {
+                if (this.enabled && this.entity.enabled) this._requestDepth();
+            } else {
+                if (this.enabled && this.entity.enabled) this._releaseDepth();
+            }
+            if (this.emitter) {
+                this.emitter.depthSoftening = arg;
+                this.reset();
+                this.emitter.resetMaterial();
+                this.rebuild();
+            }
+        }
     }
 
     /**
-     * Sorting mode. Forces CPU simulation, so be careful.
+     * Gets whether depth softening is enabled.
+     *
+     * @type {number}
+     */
+    get depthSoftening() {
+        return this._depthSoftening;
+    }
+
+    /**
+     * Sets the particle sorting mode. Forces CPU simulation, so be careful.
      *
      * - {@link PARTICLESORT_NONE}: No sorting, particles are drawn in arbitrary order. Can be
      * simulated on GPU.
@@ -374,15 +794,20 @@ class ParticleSystemComponent extends Component {
      * @type {number}
      */
     set sort(arg) {
-        this._setValue('sort', arg);
-    }
-
-    get sort() {
-        return this.data.sort;
+        this._setComplexProperty('sort', arg);
     }
 
     /**
-     * Controls how particles are blended when being written to the currently active render target.
+     * Gets the particle sorting mode.
+     *
+     * @type {number}
+     */
+    get sort() {
+        return this._sort;
+    }
+
+    /**
+     * Sets how particles are blended when being written to the currently active render target.
      * Can be:
      *
      * - {@link BLEND_SUBTRACTIVE}: Subtract the color of the source fragment from the destination
@@ -406,43 +831,65 @@ class ParticleSystemComponent extends Component {
      * @type {number}
      */
     set blendType(arg) {
-        this._setValue('blendType', arg);
-    }
-
-    get blendType() {
-        return this.data.blendType;
+        this._blendType = arg;
+        if (this.emitter) {
+            this.emitter.blendType = arg;
+            this.emitter.material.blendType = arg;
+            this.emitter.resetMaterial();
+            this.rebuild();
+        }
     }
 
     /**
-     * A value in world units that controls the amount by which particles are stretched based on
-     * their velocity. Particles are stretched from their center towards their previous position.
+     * Gets how particles are blended when being written to the currently active render target.
+     *
+     * @type {number}
+     */
+    get blendType() {
+        return this._blendType;
+    }
+
+    /**
+     * Sets how much particles are stretched in their direction of motion. This is a value in world
+     * units that controls the amount by which particles are stretched based on their velocity.
+     * Particles are stretched from their center towards their previous position.
      *
      * @type {number}
      */
     set stretch(arg) {
-        this._setValue('stretch', arg);
-    }
-
-    get stretch() {
-        return this.data.stretch;
+        this._setComplexProperty('stretch', arg);
     }
 
     /**
-     * Orient particles in their direction of motion.
+     * Gets how much particles are stretched in their direction of motion.
+     *
+     * @type {number}
+     */
+    get stretch() {
+        return this._stretch;
+    }
+
+    /**
+     * Sets whether particles are oriented in their direction of motion or not.
      *
      * @type {boolean}
      */
     set alignToMotion(arg) {
-        this._setValue('alignToMotion', arg);
-    }
-
-    get alignToMotion() {
-        return this.data.alignToMotion;
+        this._setComplexProperty('alignToMotion', arg);
     }
 
     /**
-     * Shape of the emitter. Defines the bounds inside which particles are spawned. Also affects the
-     * direction of initial velocity.
+     * Gets whether particles are oriented in their direction of motion or not.
+     *
+     * @type {boolean}
+     */
+    get alignToMotion() {
+        return this._alignToMotion;
+    }
+
+    /**
+     * Sets the shape of the emitter. Defines the bounds inside which particles are spawned. Also
+     * affects the direction of initial velocity.
      *
      * - {@link EMITTERSHAPE_BOX}: Box shape parameterized by emitterExtents. Initial velocity is
      * directed towards local Z axis.
@@ -452,212 +899,389 @@ class ParticleSystemComponent extends Component {
      * @type {number}
      */
     set emitterShape(arg) {
-        this._setValue('emitterShape', arg);
-    }
-
-    get emitterShape() {
-        return this.data.emitterShape;
+        this._setComplexProperty('emitterShape', arg);
     }
 
     /**
-     * (Only for EMITTERSHAPE_BOX)
-     * The extents of a local space bounding box within which particles are spawned at random positions.
+     * Gets the shape of the emitter.
      *
-     * @type {import('../../../core/math/vec3.js').Vec3}
+     * @type {number}
+     */
+    get emitterShape() {
+        return this._emitterShape;
+    }
+
+    /**
+     * Sets the extents of a local space bounding box within which particles are spawned at random
+     * positions. This only applies to particle system with the shape `EMITTERSHAPE_BOX`.
+     *
+     * @type {Vec3}
      */
     set emitterExtents(arg) {
-        this._setValue('emitterExtents', arg);
-    }
-
-    get emitterExtents() {
-        return this.data.emitterExtents;
+        this._setSimpleProperty('emitterExtents', arg);
     }
 
     /**
-     * (Only for EMITTERSHAPE_BOX)
-     * The exception of extents of a local space bounding box within
-     * which particles are not spawned. Aligned to the center of EmitterExtents.
+     * Gets the extents of a local space bounding box within which particles are spawned at random
+     * positions.
      *
-     * @type {import('../../../core/math/vec3.js').Vec3}
+     * @type {Vec3}
+     */
+    get emitterExtents() {
+        return this._emitterExtents;
+    }
+
+    /**
+     * Sets the exception of extents of a local space bounding box within which particles are not
+     * spawned. It is aligned to the center of emitterExtents. This only applies to particle system
+     * with the shape `EMITTERSHAPE_BOX`.
+     *
+     * @type {Vec3}
      */
     set emitterExtentsInner(arg) {
-        this._setValue('emitterExtentsInner', arg);
-    }
-
-    get emitterExtentsInner() {
-        return this.data.emitterExtentsInner;
+        this._setSimpleProperty('emitterExtentsInner', arg);
     }
 
     /**
-     * (Only for EMITTERSHAPE_SPHERE)
-     * The radius within which particles are spawned at random positions.
+     * Gets the exception of extents of a local space bounding box within which particles are not
+     * spawned.
+     *
+     * @type {Vec3}
+     */
+    get emitterExtentsInner() {
+        return this._emitterExtentsInner;
+    }
+
+    /**
+     * Sets the radius within which particles are spawned at random positions. This only applies to
+     * particle system with the shape `EMITTERSHAPE_SPHERE`.
      *
      * @type {number}
      */
     set emitterRadius(arg) {
-        this._setValue('emitterRadius', arg);
-    }
-
-    get emitterRadius() {
-        return this.data.emitterRadius;
+        this._setSimpleProperty('emitterRadius', arg);
     }
 
     /**
-     * (Only for EMITTERSHAPE_SPHERE)
-     * The inner radius within which particles are not spawned.
+     * Gets the radius within which particles are spawned at random positions.
+     *
+     * @type {number}
+     */
+    get emitterRadius() {
+        return this._emitterRadius;
+    }
+
+    /**
+     * Sets the inner radius within which particles are not spawned. This only applies to particle
+     * system with the shape `EMITTERSHAPE_SPHERE`.
      *
      * @type {number}
      */
     set emitterRadiusInner(arg) {
-        this._setValue('emitterRadiusInner', arg);
-    }
-
-    get emitterRadiusInner() {
-        return this.data.emitterRadiusInner;
+        this._setSimpleProperty('emitterRadiusInner', arg);
     }
 
     /**
-     * Defines magnitude of the initial emitter velocity. Direction is given by emitter shape.
+     * Gets the inner radius within which particles are not spawned.
+     *
+     * @type {number}
+     */
+    get emitterRadiusInner() {
+        return this._emitterRadiusInner;
+    }
+
+    /**
+     * Sets the magnitude of the initial emitter velocity. Direction is given by emitter shape.
      *
      * @type {number}
      */
     set initialVelocity(arg) {
-        this._setValue('initialVelocity', arg);
-    }
-
-    get initialVelocity() {
-        return this.data.initialVelocity;
+        this._setSimpleProperty('initialVelocity', arg);
     }
 
     /**
-     * Enable particle wrapping.
+     * Gets the magnitude of the initial emitter velocity.
+     *
+     * @type {number}
+     */
+    get initialVelocity() {
+        return this._initialVelocity;
+    }
+
+    /**
+     * Sets whether particles wrap based on the set wrap bounds.
      *
      * @type {boolean}
      */
     set wrap(arg) {
-        this._setValue('wrap', arg);
-    }
-
-    get wrap() {
-        return this.data.wrap;
+        this._setComplexProperty('wrap', arg);
     }
 
     /**
-     * The half extents of a world space box volume centered on the owner entity's position.
-     * If a particle crosses the boundary of one side of the volume, it teleports to the
-     * opposite side.
+     * Gets whether particles wrap based on the set wrap bounds.
      *
-     * @type {import('../../../core/math/vec3.js').Vec3}
+     * @type {boolean}
+     */
+    get wrap() {
+        return this._wrap;
+    }
+
+    /**
+     * Sets the wrap bounds of the particle system. This is half extents of a world space box
+     * volume centered on the owner entity's position. If a particle crosses the boundary of one
+     * side of the volume, it teleports to the opposite side.
+     *
+     * @type {Vec3}
      */
     set wrapBounds(arg) {
-        this._setValue('wrapBounds', arg);
-    }
-
-    get wrapBounds() {
-        return this.data.wrapBounds;
+        this._setComplexProperty('wrapBounds', arg);
     }
 
     /**
-     * Binds particles to emitter transformation rather then world space.
+     * Gets the wrap bounds of the particle system.
+     *
+     * @type {Vec3}
+     */
+    get wrapBounds() {
+        return this._wrapBounds;
+    }
+
+    /**
+     * Sets whether particles move with respect to the emitter's transform rather then world space.
      *
      * @type {boolean}
      */
     set localSpace(arg) {
-        this._setValue('localSpace', arg);
-    }
-
-    get localSpace() {
-        return this.data.localSpace;
+        this._setComplexProperty('localSpace', arg);
     }
 
     /**
-     * Renders particles in 2D screen space. This needs to be set when particle system is part of
-     * hierarchy with {@link ScreenComponent} as its ancestor, and allows particle system to
-     * integrate with the rendering of {@link ElementComponent}s. Note that an entity with
-     * ParticleSystem component cannot be parented directly to {@link ScreenComponent}, but has to
-     * be a child of a {@link ElementComponent}, for example {@link LayoutGroupComponent}.
+     * Gets whether particles move with respect to the emitter's transform rather then world space.
+     *
+     * @type {boolean}
+     */
+    get localSpace() {
+        return this._localSpace;
+    }
+
+    /**
+     * Sets whether particles are rendered in 2D screen space. This needs to be set when particle
+     * system is part of hierarchy with {@link ScreenComponent} as its ancestor, and allows
+     * particle system to integrate with the rendering of {@link ElementComponent}s. Note that an
+     * entity with ParticleSystem component cannot be parented directly to {@link ScreenComponent},
+     * but has to be a child of a {@link ElementComponent}, for example {@link LayoutGroupComponent}.
+     * In screen space, particle sizes are measured in viewport heights on both axes, so a size of 1
+     * in {@link scaleGraph} makes a particle as tall as the viewport and just as wide.
      *
      * @type {boolean}
      */
     set screenSpace(arg) {
-        this._setValue('screenSpace', arg);
-    }
-
-    get screenSpace() {
-        return this.data.screenSpace;
+        this._setComplexProperty('screenSpace', arg);
     }
 
     /**
-     * The {@link Asset} used to set the colorMap.
+     * Gets whether particles are rendered in 2D screen space.
      *
-     * @type {Asset}
+     * @type {boolean}
+     */
+    get screenSpace() {
+        return this._screenSpace;
+    }
+
+    /**
+     * Sets the {@link Asset} used to set the colorMap.
+     *
+     * @type {Asset|null}
      */
     set colorMapAsset(arg) {
-        this._setValue('colorMapAsset', arg);
-    }
+        const assets = this.system.app.assets;
 
-    get colorMapAsset() {
-        return this.data.colorMapAsset;
+        if (this._colorMapAsset) {
+            const asset = assets.get(this._colorMapAsset);
+            if (asset) {
+                this._unbindColorMapAsset(asset);
+            }
+        }
+
+        if (arg instanceof Asset) {
+            arg = arg.id;
+        }
+        this._colorMapAsset = arg;
+
+        if (arg) {
+            const asset = assets.get(arg);
+            if (asset) {
+                this._bindColorMapAsset(asset);
+            } else {
+                assets.once(`add:${arg}`, (asset) => {
+                    this._bindColorMapAsset(asset);
+                });
+            }
+        } else {
+            this.colorMap = null;
+        }
     }
 
     /**
-     * The {@link Asset} used to set the normalMap.
+     * Gets the {@link Asset} used to set the colorMap.
      *
-     * @type {Asset}
+     * @type {Asset|null}
+     */
+    get colorMapAsset() {
+        return this._colorMapAsset;
+    }
+
+    /**
+     * Sets the {@link Asset} used to set the normalMap.
+     *
+     * @type {Asset|null}
      */
     set normalMapAsset(arg) {
-        this._setValue('normalMapAsset', arg);
-    }
+        const assets = this.system.app.assets;
 
-    get normalMapAsset() {
-        return this.data.normalMapAsset;
+        if (this._normalMapAsset) {
+            const asset = assets.get(this._normalMapAsset);
+            if (asset) {
+                this._unbindNormalMapAsset(asset);
+            }
+        }
+
+        if (arg instanceof Asset) {
+            arg = arg.id;
+        }
+        this._normalMapAsset = arg;
+
+        if (arg) {
+            const asset = assets.get(arg);
+            if (asset) {
+                this._bindNormalMapAsset(asset);
+            } else {
+                assets.once(`add:${arg}`, (asset) => {
+                    this._bindNormalMapAsset(asset);
+                });
+            }
+        } else {
+            this.normalMap = null;
+        }
     }
 
     /**
-     * Triangular mesh to be used as a particle. Only first vertex/index buffer is used. Vertex buffer
-     * must contain local position at first 3 floats of each vertex.
+     * Gets the {@link Asset} used to set the normalMap.
+     *
+     * @type {Asset|null}
+     */
+    get normalMapAsset() {
+        return this._normalMapAsset;
+    }
+
+    /**
+     * Sets the polygonal mesh to be used as a particle. Only first vertex/index buffer is used.
+     * Vertex buffer must contain local position at first 3 floats of each vertex.
      *
      * @type {Mesh}
      */
     set mesh(arg) {
-        this._setValue('mesh', arg);
-    }
-
-    get mesh() {
-        return this.data.mesh;
+        // if the value being set is null, an asset or an asset id, then assume we are
+        // setting the mesh asset, which will in turn update the mesh
+        if (!arg || arg instanceof Asset || typeof arg === 'number') {
+            this.meshAsset = arg;
+        } else {
+            this._onMeshChanged(arg);
+        }
     }
 
     /**
-     * The {@link Asset} used to set the mesh.
+     * Gets the polygonal mesh to be used as a particle.
      *
-     * @type {Asset}
+     * @type {Mesh}
+     */
+    get mesh() {
+        return this._mesh;
+    }
+
+    /**
+     * Sets the {@link Asset} used to set the mesh.
+     *
+     * @type {Asset|null}
      */
     set meshAsset(arg) {
-        this._setValue('meshAsset', arg);
-    }
+        const assets = this.system.app.assets;
 
-    get meshAsset() {
-        return this.data.meshAsset;
+        if (this._meshAsset) {
+            const asset = assets.get(this._meshAsset);
+            if (asset) {
+                this._unbindMeshAsset(asset);
+            }
+        }
+
+        if (arg instanceof Asset) {
+            arg = arg.id;
+        }
+        this._meshAsset = arg;
+
+        if (arg) {
+            const asset = assets.get(arg);
+            if (asset) {
+                this._bindMeshAsset(asset);
+            }
+        } else {
+            this._onMeshChanged(null);
+        }
     }
 
     /**
-     * The Render {@link Asset} used to set the mesh.
+     * Gets the {@link Asset} used to set the mesh.
      *
-     * @type {Asset}
+     * @type {Asset|null}
+     */
+    get meshAsset() {
+        return this._meshAsset;
+    }
+
+    /**
+     * Sets the Render {@link Asset} used to set the mesh.
+     *
+     * @type {Asset|null}
      */
     set renderAsset(arg) {
-        this._setValue('renderAsset', arg);
-    }
+        const assets = this.system.app.assets;
 
-    get renderAsset() {
-        return this.data.renderAsset;
+        if (this._renderAsset) {
+            const asset = assets.get(this._renderAsset);
+            if (asset) {
+                this._unbindRenderAsset(asset);
+            }
+        }
+
+        if (arg instanceof Asset) {
+            arg = arg.id;
+        }
+        this._renderAsset = arg;
+
+        if (arg) {
+            const asset = assets.get(arg);
+            if (asset) {
+                this._bindRenderAsset(asset);
+            }
+        } else {
+            this._onRenderChanged(null);
+        }
     }
 
     /**
-     * Sorting mode. Forces CPU simulation, so be careful.
+     * Gets the Render {@link Asset} used to set the mesh.
+     *
+     * @type {Asset|null}
+     */
+    get renderAsset() {
+        return this._renderAsset;
+    }
+
+    /**
+     * Sets the particle orientation mode. Can be:
      *
      * - {@link PARTICLEORIENTATION_SCREEN}: Particles are facing camera.
-     * - {@link PARTICLEORIENTATION_WORLD}: User defines world space normal (particleNormal) to set
+     * - {@link PARTICLEORIENTATION_WORLD}: User defined world space normal (particleNormal) to set
      * planes orientation.
      * - {@link PARTICLEORIENTATION_EMITTER}: Similar to previous, but the normal is affected by
      * emitter (entity) transformation.
@@ -665,376 +1289,544 @@ class ParticleSystemComponent extends Component {
      * @type {number}
      */
     set orientation(arg) {
-        this._setValue('orientation', arg);
-    }
-
-    get orientation() {
-        return this.data.orientation;
+        this._setComplexProperty('orientation', arg);
     }
 
     /**
-     * (Only for PARTICLEORIENTATION_WORLD and PARTICLEORIENTATION_EMITTER)
-     * The exception of extents of a local space bounding box within which particles are not spawned.
-     * Aligned to the center of EmitterExtents.
+     * Gets the particle orientation mode.
      *
-     * @type {import('../../../core/math/vec3.js').Vec3}
+     * @type {number}
+     */
+    get orientation() {
+        return this._orientation;
+    }
+
+    /**
+     * Sets the particle normal. This only applies to particle system with the orientation modes
+     * `PARTICLEORIENTATION_WORLD` and `PARTICLEORIENTATION_EMITTER`.
+     *
+     * @type {Vec3}
      */
     set particleNormal(arg) {
-        this._setValue('particleNormal', arg);
-    }
-
-    get particleNormal() {
-        return this.data.particleNormal;
+        this._setSimpleProperty('particleNormal', arg);
     }
 
     /**
-     * Velocity relative to emitter over lifetime.
+     * Gets the particle normal.
      *
-     * @type {import('../../../core/math/curve-set.js').CurveSet}
+     * @type {Vec3}
+     */
+    get particleNormal() {
+        return this._particleNormal;
+    }
+
+    /**
+     * Sets the local space velocity graph.
+     *
+     * @type {CurveSet}
      */
     set localVelocityGraph(arg) {
-        this._setValue('localVelocityGraph', arg);
-    }
-
-    get localVelocityGraph() {
-        return this.data.localVelocityGraph;
+        this._setGraphProperty('localVelocityGraph', arg);
     }
 
     /**
-     * If not null, particles pick random values between localVelocityGraph and localVelocityGraph2.
+     * Gets the local space velocity graph.
      *
-     * @type {import('../../../core/math/curve-set.js').CurveSet}
+     * @type {CurveSet}
+     */
+    get localVelocityGraph() {
+        return this._localVelocityGraph;
+    }
+
+    /**
+     * Sets the second velocity graph. If not null, particles pick random values between
+     * localVelocityGraph and localVelocityGraph2.
+     *
+     * @type {CurveSet}
      */
     set localVelocityGraph2(arg) {
-        this._setValue('localVelocityGraph2', arg);
-    }
-
-    get localVelocityGraph2() {
-        return this.data.localVelocityGraph2;
+        this._setGraphProperty('localVelocityGraph2', arg);
     }
 
     /**
-     * World-space velocity over lifetime.
+     * Gets the second velocity graph.
      *
-     * @type {import('../../../core/math/curve-set.js').CurveSet}
+     * @type {CurveSet}
+     */
+    get localVelocityGraph2() {
+        return this._localVelocityGraph2;
+    }
+
+    /**
+     * Sets the world space velocity graph.
+     *
+     * @type {CurveSet}
      */
     set velocityGraph(arg) {
-        this._setValue('velocityGraph', arg);
-    }
-
-    get velocityGraph() {
-        return this.data.velocityGraph;
+        this._setGraphProperty('velocityGraph', arg);
     }
 
     /**
-     * If not null, particles pick random values between velocityGraph and velocityGraph2.
+     * Gets the world space velocity graph.
      *
-     * @type {import('../../../core/math/curve-set.js').CurveSet}
+     * @type {CurveSet}
+     */
+    get velocityGraph() {
+        return this._velocityGraph;
+    }
+
+    /**
+     * Sets the second world space velocity graph. If not null, particles pick random values
+     * between velocityGraph and velocityGraph2.
+     *
+     * @type {CurveSet}
      */
     set velocityGraph2(arg) {
-        this._setValue('velocityGraph2', arg);
-    }
-
-    get velocityGraph2() {
-        return this.data.velocityGraph2;
+        this._setGraphProperty('velocityGraph2', arg);
     }
 
     /**
-     * Rotation speed over lifetime.
+     * Gets the second world space velocity graph.
      *
-     * @type {import('../../../core/math/curve.js').Curve}
+     * @type {CurveSet}
+     */
+    get velocityGraph2() {
+        return this._velocityGraph2;
+    }
+
+    /**
+     * Sets the rotation speed graph.
+     *
+     * @type {Curve}
      */
     set rotationSpeedGraph(arg) {
-        this._setValue('rotationSpeedGraph', arg);
-    }
-
-    get rotationSpeedGraph() {
-        return this.data.rotationSpeedGraph;
+        this._setGraphProperty('rotationSpeedGraph', arg);
     }
 
     /**
-     * If not null, particles pick random values between rotationSpeedGraph and rotationSpeedGraph2.
+     * Gets the rotation speed graph.
      *
-     * @type {import('../../../core/math/curve.js').Curve}
+     * @type {Curve}
+     */
+    get rotationSpeedGraph() {
+        return this._rotationSpeedGraph;
+    }
+
+    /**
+     * Sets the second rotation speed graph. If not null, particles pick random values between
+     * rotationSpeedGraph and rotationSpeedGraph2.
+     *
+     * @type {Curve}
      */
     set rotationSpeedGraph2(arg) {
-        this._setValue('rotationSpeedGraph2', arg);
-    }
-
-    get rotationSpeedGraph2() {
-        return this.data.rotationSpeedGraph2;
+        this._setGraphProperty('rotationSpeedGraph2', arg);
     }
 
     /**
-     * Radial speed over lifetime, velocity vector points from emitter origin to particle pos.
+     * Gets the second rotation speed graph.
      *
-     * @type {import('../../../core/math/curve.js').Curve}
+     * @type {Curve}
+     */
+    get rotationSpeedGraph2() {
+        return this._rotationSpeedGraph2;
+    }
+
+    /**
+     * Sets the radial speed graph. Velocity vector points from emitter origin to particle position.
+     *
+     * @type {Curve}
      */
     set radialSpeedGraph(arg) {
-        this._setValue('radialSpeedGraph', arg);
-    }
-
-    get radialSpeedGraph() {
-        return this.data.radialSpeedGraph;
+        this._setGraphProperty('radialSpeedGraph', arg);
     }
 
     /**
-     * If not null, particles pick random values between radialSpeedGraph and radialSpeedGraph2.
+     * Gets the radial speed graph.
      *
-     * @type {import('../../../core/math/curve.js').Curve}
+     * @type {Curve}
+     */
+    get radialSpeedGraph() {
+        return this._radialSpeedGraph;
+    }
+
+    /**
+     * Sets the second radial speed graph. If not null, particles pick random values between
+     * radialSpeedGraph and radialSpeedGraph2. Velocity vector points from emitter origin to
+     * particle position.
+     *
+     * @type {Curve}
      */
     set radialSpeedGraph2(arg) {
-        this._setValue('radialSpeedGraph2', arg);
-    }
-
-    get radialSpeedGraph2() {
-        return this.data.radialSpeedGraph2;
+        this._setGraphProperty('radialSpeedGraph2', arg);
     }
 
     /**
-     * Scale over lifetime.
+     * Gets the second radial speed graph.
      *
-     * @type {import('../../../core/math/curve.js').Curve}
+     * @type {Curve}
+     */
+    get radialSpeedGraph2() {
+        return this._radialSpeedGraph2;
+    }
+
+    /**
+     * Sets the scale graph.
+     *
+     * @type {Curve}
      */
     set scaleGraph(arg) {
-        this._setValue('scaleGraph', arg);
-    }
-
-    get scaleGraph() {
-        return this.data.scaleGraph;
+        this._setGraphProperty('scaleGraph', arg);
     }
 
     /**
-     * If not null, particles pick random values between scaleGraph and scaleGraph2.
+     * Gets the scale graph.
      *
-     * @type {import('../../../core/math/curve.js').Curve}
+     * @type {Curve}
+     */
+    get scaleGraph() {
+        return this._scaleGraph;
+    }
+
+    /**
+     * Sets the second scale graph. If not null, particles pick random values between `scaleGraph`
+     * and `scaleGraph2`.
+     *
+     * @type {Curve}
      */
     set scaleGraph2(arg) {
-        this._setValue('scaleGraph2', arg);
-    }
-
-    get scaleGraph2() {
-        return this.data.scaleGraph2;
+        this._setGraphProperty('scaleGraph2', arg);
     }
 
     /**
-     * Color over lifetime.
+     * Gets the second scale graph.
      *
-     * @type {import('../../../core/math/curve-set.js').CurveSet}
+     * @type {Curve}
+     */
+    get scaleGraph2() {
+        return this._scaleGraph2;
+    }
+
+    /**
+     * Sets the color graph.
+     *
+     * @type {CurveSet}
      */
     set colorGraph(arg) {
-        this._setValue('colorGraph', arg);
-    }
-
-    get colorGraph() {
-        return this.data.colorGraph;
+        this._setGraphProperty('colorGraph', arg);
     }
 
     /**
-     * If not null, particles pick random values between colorGraph and colorGraph2.
+     * Gets the color graph.
      *
-     * @type {import('../../../core/math/curve-set.js').CurveSet}
+     * @type {CurveSet}
+     */
+    get colorGraph() {
+        return this._colorGraph;
+    }
+
+    /**
+     * Sets the second color graph. If not null, particles pick random values between `colorGraph`
+     * and `colorGraph2`.
+     *
+     * @type {CurveSet}
      */
     set colorGraph2(arg) {
-        this._setValue('colorGraph2', arg);
-    }
-
-    get colorGraph2() {
-        return this.data.colorGraph2;
+        this._setGraphProperty('colorGraph2', arg);
     }
 
     /**
-     * Alpha over lifetime.
+     * Gets the second color graph.
      *
-     * @type {import('../../../core/math/curve.js').Curve}
+     * @type {CurveSet}
+     */
+    get colorGraph2() {
+        return this._colorGraph2;
+    }
+
+    /**
+     * Sets the alpha graph.
+     *
+     * @type {Curve}
      */
     set alphaGraph(arg) {
-        this._setValue('alphaGraph', arg);
-    }
-
-    get alphaGraph() {
-        return this.data.alphaGraph;
+        this._setGraphProperty('alphaGraph', arg);
     }
 
     /**
-     * If not null, particles pick random values between alphaGraph and alphaGraph2.
+     * Gets the alpha graph.
      *
-     * @type {import('../../../core/math/curve.js').Curve}
+     * @type {Curve}
+     */
+    get alphaGraph() {
+        return this._alphaGraph;
+    }
+
+    /**
+     * Sets the second alpha graph. If not null, particles pick random values between `alphaGraph`
+     * and `alphaGraph2`.
+     *
+     * @type {Curve}
      */
     set alphaGraph2(arg) {
-        this._setValue('alphaGraph2', arg);
-    }
-
-    get alphaGraph2() {
-        return this.data.alphaGraph2;
+        this._setGraphProperty('alphaGraph2', arg);
     }
 
     /**
-     * The color map texture to apply to all particles in the system. If no texture is assigned, a
-     * default spot texture is used.
+     * Gets the second alpha graph.
      *
-     * @type {import('../../../platform/graphics/texture.js').Texture}
+     * @type {Curve}
+     */
+    get alphaGraph2() {
+        return this._alphaGraph2;
+    }
+
+    /**
+     * Sets the color map texture to apply to all particles in the system. If no texture is
+     * assigned, a default spot texture is used.
+     *
+     * @type {Texture}
      */
     set colorMap(arg) {
-        this._setValue('colorMap', arg);
-    }
-
-    get colorMap() {
-        return this.data.colorMap;
+        this._setComplexProperty('colorMap', arg);
     }
 
     /**
-     * The normal map texture to apply to all particles in the system. If no texture is assigned,
-     * an approximate spherical normal is calculated for each vertex.
+     * Gets the color map texture to apply to all particles in the system.
      *
-     * @type {import('../../../platform/graphics/texture.js').Texture}
+     * @type {Texture}
+     */
+    get colorMap() {
+        return this._colorMap;
+    }
+
+    /**
+     * Sets the normal map texture to apply to all particles in the system. If no texture is
+     * assigned, an approximate spherical normal is calculated for each vertex.
+     *
+     * @type {Texture}
      */
     set normalMap(arg) {
-        this._setValue('normalMap', arg);
-    }
-
-    get normalMap() {
-        return this.data.normalMap;
+        this._setSimpleProperty('normalMap', arg);
     }
 
     /**
-     * Number of horizontal tiles in the sprite sheet.
+     * Gets the normal map texture to apply to all particles in the system.
+     *
+     * @type {Texture}
+     */
+    get normalMap() {
+        return this._normalMap;
+    }
+
+    /**
+     * Sets the number of horizontal tiles in the sprite sheet.
      *
      * @type {number}
      */
     set animTilesX(arg) {
-        this._setValue('animTilesX', arg);
-    }
-
-    get animTilesX() {
-        return this.data.animTilesX;
+        this._setComplexProperty('animTilesX', arg);
     }
 
     /**
-     * Number of vertical tiles in the sprite sheet.
+     * Gets the number of horizontal tiles in the sprite sheet.
+     *
+     * @type {number}
+     */
+    get animTilesX() {
+        return this._animTilesX;
+    }
+
+    /**
+     * Sets the number of vertical tiles in the sprite sheet.
      *
      * @type {number}
      */
     set animTilesY(arg) {
-        this._setValue('animTilesY', arg);
-    }
-
-    get animTilesY() {
-        return this.data.animTilesY;
+        this._setComplexProperty('animTilesY', arg);
     }
 
     /**
-     * The sprite sheet frame that the animation should begin playing from. Indexed from the start
-     * of the current animation.
+     * Gets the number of vertical tiles in the sprite sheet.
+     *
+     * @type {number}
+     */
+    get animTilesY() {
+        return this._animTilesY;
+    }
+
+    /**
+     * Sets the sprite sheet frame that the animation should begin playing from. Indexed from the
+     * start of the current animation.
      *
      * @type {number}
      */
     set animStartFrame(arg) {
-        this._setValue('animStartFrame', arg);
-    }
-
-    get animStartFrame() {
-        return this.data.animStartFrame;
+        this._setComplexProperty('animStartFrame', arg);
     }
 
     /**
-     * Number of sprite sheet frames in the current sprite sheet animation. The number of animations
-     * multiplied by number of frames should be a value less than animTilesX multiplied by animTilesY.
+     * Gets the sprite sheet frame that the animation should begin playing from.
+     *
+     * @type {number}
+     */
+    get animStartFrame() {
+        return this._animStartFrame;
+    }
+
+    /**
+     * Sets the number of sprite sheet frames in the current sprite sheet animation. The number of
+     * animations multiplied by number of frames should be a value less than `animTilesX`
+     * multiplied by `animTilesY`.
      *
      * @type {number}
      */
     set animNumFrames(arg) {
-        this._setValue('animNumFrames', arg);
-    }
-
-    get animNumFrames() {
-        return this.data.animNumFrames;
+        this._setComplexProperty('animNumFrames', arg);
     }
 
     /**
-     * Number of sprite sheet animations contained within the current sprite sheet. The number of
-     * animations multiplied by number of frames should be a value less than animTilesX multiplied
-     * by animTilesY.
+     * Gets the number of sprite sheet frames in the current sprite sheet animation.
+     *
+     * @type {number}
+     */
+    get animNumFrames() {
+        return this._animNumFrames;
+    }
+
+    /**
+     * Sets the number of sprite sheet animations contained within the current sprite sheet. The
+     * number of animations multiplied by number of frames should be a value less than `animTilesX`
+     * multiplied by `animTilesY`.
      *
      * @type {number}
      */
     set animNumAnimations(arg) {
-        this._setValue('animNumAnimations', arg);
-    }
-
-    get animNumAnimations() {
-        return this.data.animNumAnimations;
+        this._setComplexProperty('animNumAnimations', arg);
     }
 
     /**
-     * When animNumAnimations is greater than 1, the sprite sheet animation index determines which
-     * animation the particle system should play.
+     * Gets the number of sprite sheet animations contained within the current sprite sheet.
+     *
+     * @type {number}
+     */
+    get animNumAnimations() {
+        return this._animNumAnimations;
+    }
+
+    /**
+     * Sets the index of the animation to play. When `animNumAnimations` is greater than 1, the
+     * sprite sheet animation index determines which animation the particle system should play.
      *
      * @type {number}
      */
     set animIndex(arg) {
-        this._setValue('animIndex', arg);
-    }
-
-    get animIndex() {
-        return this.data.animIndex;
+        this._setComplexProperty('animIndex', arg);
     }
 
     /**
-     * Each particle emitted by the system will play a random animation from the sprite sheet, up to
-     * animNumAnimations.
+     * Gets the index of the animation to play.
      *
      * @type {number}
      */
-    set randomizeAnimIndex(arg) {
-        this._setValue('randomizeAnimIndex', arg);
-    }
-
-    get randomizeAnimIndex() {
-        return this.data.randomizeAnimIndex;
+    get animIndex() {
+        return this._animIndex;
     }
 
     /**
-     * Sprite sheet animation speed. 1 = particle lifetime, 2 = twice during lifetime etc.
+     * Sets whether each particle emitted by the system will play a random animation from the
+     * sprite sheet, up to `animNumAnimations`.
+     *
+     * @type {boolean}
+     */
+    set randomizeAnimIndex(arg) {
+        this._setComplexProperty('randomizeAnimIndex', arg);
+    }
+
+    /**
+     * Gets whether each particle emitted by the system will play a random animation from the
+     * sprite sheet, up to `animNumAnimations`.
+     *
+     * @type {boolean}
+     */
+    get randomizeAnimIndex() {
+        return this._randomizeAnimIndex;
+    }
+
+    /**
+     * Sets the sprite sheet animation speed. 1 = particle lifetime, 2 = double the particle
+     * lifetime, etc.
      *
      * @type {number}
      */
     set animSpeed(arg) {
-        this._setValue('animSpeed', arg);
-    }
-
-    get animSpeed() {
-        return this.data.animSpeed;
+        this._setSimpleProperty('animSpeed', arg);
     }
 
     /**
-     * Controls whether the sprite sheet animation plays once or loops continuously.
+     * Gets the sprite sheet animation speed.
+     *
+     * @type {number}
+     */
+    get animSpeed() {
+        return this._animSpeed;
+    }
+
+    /**
+     * Sets whether the sprite sheet animation plays once or loops continuously.
      *
      * @type {boolean}
      */
     set animLoop(arg) {
-        this._setValue('animLoop', arg);
-    }
-
-    get animLoop() {
-        return this.data.animLoop;
+        this._setComplexProperty('animLoop', arg);
     }
 
     /**
-     * An array of layer IDs ({@link Layer#id}) to which this particle system should belong. Don't
-     * push/pop/splice or modify this array, if you want to change it - set a new one instead.
+     * Gets whether the sprite sheet animation plays once or loops continuously.
+     *
+     * @type {boolean}
+     */
+    get animLoop() {
+        return this._animLoop;
+    }
+
+    /**
+     * Sets the array of layer IDs ({@link Layer#id}) to which this particle system should belong.
+     * Don't push/pop/splice or modify this array. If you want to change it, set a new one instead.
      *
      * @type {number[]}
      */
     set layers(arg) {
-        this._setValue('layers', arg);
-    }
+        const oldLayers = this._layers;
+        this._layers = arg;
 
-    get layers() {
-        return this.data.layers;
+        if (!this.emitter) return;
+        for (let i = 0; i < oldLayers.length; i++) {
+            const layer = this.system.app.scene.layers.getLayerById(oldLayers[i]);
+            if (!layer) continue;
+            layer.removeMeshInstances([this.emitter.meshInstance]);
+        }
+        if (!this.enabled || !this.entity.enabled) return;
+        for (let i = 0; i < arg.length; i++) {
+            const layer = this.system.app.scene.layers.getLayerById(arg[i]);
+            if (!layer) continue;
+            layer.addMeshInstances([this.emitter.meshInstance]);
+        }
     }
 
     /**
+     * Gets the array of layer IDs ({@link Layer#id}) to which this particle system belongs.
+     *
+     * @type {ReadonlyArray<number>}
+     */
+    get layers() {
+        return this._layers;
+    }
+
+    /**
+     * Sets the draw order of the component. A higher value means that the component will be
+     * rendered on top of other components in the same layer. This is not used unless the layer's
+     * sort order is set to {@link SORTMODE_MANUAL}.
+     *
      * @type {number}
      */
     set drawOrder(drawOrder) {
@@ -1044,22 +1836,71 @@ class ParticleSystemComponent extends Component {
         }
     }
 
+    /**
+     * Gets the draw order of the component.
+     *
+     * @type {number}
+     */
     get drawOrder() {
         return this._drawOrder;
     }
 
-    /** @ignore */
-    _setValue(name, value) {
-        const data = this.data;
-        const oldValue = data[name];
-        data[name] = value;
-        this.fire('set', name, oldValue, value);
+    /**
+     * Sets a property that only requires the emitter material to be updated.
+     *
+     * @param {string} name - The name of the property to set.
+     * @param {*} arg - The new value of the property.
+     * @private
+     */
+    _setSimpleProperty(name, arg) {
+        this[`_${name}`] = arg;
+        if (this.emitter) {
+            this.emitter[name] = arg;
+            this.emitter.resetMaterial();
+        }
+    }
+
+    /**
+     * Sets a property that requires the particle system to be rebuilt.
+     *
+     * @param {string} name - The name of the property to set.
+     * @param {*} arg - The new value of the property.
+     * @private
+     */
+    _setComplexProperty(name, arg) {
+        this[`_${name}`] = arg;
+        if (this.emitter) {
+            this.emitter[name] = arg;
+            this.emitter.resetMaterial();
+            this.rebuild();
+            this.reset();
+        }
+    }
+
+    /**
+     * Sets a curve property that requires the emitter graphs to be rebuilt.
+     *
+     * @param {string} name - The name of the property to set.
+     * @param {*} arg - The new value of the property.
+     * @private
+     */
+    _setGraphProperty(name, arg) {
+        this[`_${name}`] = arg;
+        if (this.emitter) {
+            this.emitter[name] = arg;
+            this.emitter.rebuildGraphs();
+
+            // velocity and scale graphs are inputs to the local bounds, and unlike the spawn
+            // volume they cannot be cheaply compared each frame, so refresh the bounds here
+            this.emitter.calculateLocalBounds();
+            this.emitter.resetMaterial();
+        }
     }
 
     addMeshInstanceToLayers() {
         if (!this.emitter) return;
-        for (let i = 0; i < this.layers.length; i++) {
-            const layer = this.system.app.scene.layers.getLayerById(this.layers[i]);
+        for (let i = 0; i < this._layers.length; i++) {
+            const layer = this.system.app.scene.layers.getLayerById(this._layers[i]);
             if (!layer) continue;
             layer.addMeshInstances([this.emitter.meshInstance]);
             this.emitter._layer = layer;
@@ -1068,46 +1909,33 @@ class ParticleSystemComponent extends Component {
 
     removeMeshInstanceFromLayers() {
         if (!this.emitter) return;
-        for (let i = 0; i < this.layers.length; i++) {
-            const layer = this.system.app.scene.layers.getLayerById(this.layers[i]);
+        for (let i = 0; i < this._layers.length; i++) {
+            const layer = this.system.app.scene.layers.getLayerById(this._layers[i]);
             if (!layer) continue;
             layer.removeMeshInstances([this.emitter.meshInstance]);
-        }
-    }
-
-    onSetLayers(name, oldValue, newValue) {
-        if (!this.emitter) return;
-        for (let i = 0; i < oldValue.length; i++) {
-            const layer = this.system.app.scene.layers.getLayerById(oldValue[i]);
-            if (!layer) continue;
-            layer.removeMeshInstances([this.emitter.meshInstance]);
-        }
-        if (!this.enabled || !this.entity.enabled) return;
-        for (let i = 0; i < newValue.length; i++) {
-            const layer = this.system.app.scene.layers.getLayerById(newValue[i]);
-            if (!layer) continue;
-            layer.addMeshInstances([this.emitter.meshInstance]);
         }
     }
 
     onLayersChanged(oldComp, newComp) {
         this.addMeshInstanceToLayers();
-        oldComp.off('add', this.onLayerAdded, this);
-        oldComp.off('remove', this.onLayerRemoved, this);
-        newComp.on('add', this.onLayerAdded, this);
-        newComp.on('remove', this.onLayerRemoved, this);
+
+        // store the new handles, so that onDisable can unsubscribe from the current composition
+        this._evtLayerAdded?.off();
+        this._evtLayerAdded = newComp.on('add', this.onLayerAdded, this);
+        this._evtLayerRemoved?.off();
+        this._evtLayerRemoved = newComp.on('remove', this.onLayerRemoved, this);
     }
 
     onLayerAdded(layer) {
         if (!this.emitter) return;
-        const index = this.layers.indexOf(layer.id);
+        const index = this._layers.indexOf(layer.id);
         if (index < 0) return;
         layer.addMeshInstances([this.emitter.meshInstance]);
     }
 
     onLayerRemoved(layer) {
         if (!this.emitter) return;
-        const index = this.layers.indexOf(layer.id);
+        const index = this._layers.indexOf(layer.id);
         if (index < 0) return;
         layer.removeMeshInstances([this.emitter.meshInstance]);
     }
@@ -1148,34 +1976,6 @@ class ParticleSystemComponent extends Component {
 
     _onColorMapAssetChange(asset) {}
 
-    onSetColorMapAsset(name, oldValue, newValue) {
-        const assets = this.system.app.assets;
-        if (oldValue) {
-            const asset = assets.get(oldValue);
-            if (asset) {
-                this._unbindColorMapAsset(asset);
-            }
-        }
-
-        if (newValue) {
-            if (newValue instanceof Asset) {
-                this.data.colorMapAsset = newValue.id;
-                newValue = newValue.id;
-            }
-
-            const asset = assets.get(newValue);
-            if (asset) {
-                this._bindColorMapAsset(asset);
-            } else {
-                assets.once('add:' + newValue, (asset) => {
-                    this._bindColorMapAsset(asset);
-                });
-            }
-        } else {
-            this.colorMap = null;
-        }
-    }
-
     _bindNormalMapAsset(asset) {
         asset.on('load', this._onNormalMapAssetLoad, this);
         asset.on('unload', this._onNormalMapAssetUnload, this);
@@ -1211,35 +2011,6 @@ class ParticleSystemComponent extends Component {
     }
 
     _onNormalMapAssetChange(asset) {}
-
-    onSetNormalMapAsset(name, oldValue, newValue) {
-        const assets = this.system.app.assets;
-
-        if (oldValue) {
-            const asset = assets.get(oldValue);
-            if (asset) {
-                this._unbindNormalMapAsset(asset);
-            }
-        }
-
-        if (newValue) {
-            if (newValue instanceof Asset) {
-                this.data.normalMapAsset = newValue.id;
-                newValue = newValue.id;
-            }
-
-            const asset = assets.get(newValue);
-            if (asset) {
-                this._bindNormalMapAsset(asset);
-            } else {
-                assets.once('add:' + newValue, (asset) => {
-                    this._bindNormalMapAsset(asset);
-                });
-            }
-        } else {
-            this.normalMap = null;
-        }
-    }
 
     _bindMeshAsset(asset) {
         asset.on('load', this._onMeshAssetLoad, this);
@@ -1277,45 +2048,9 @@ class ParticleSystemComponent extends Component {
 
     _onMeshAssetChange(asset) {}
 
-    onSetMeshAsset(name, oldValue, newValue) {
-        const assets = this.system.app.assets;
-
-        if (oldValue) {
-            const asset = assets.get(oldValue);
-            if (asset) {
-                this._unbindMeshAsset(asset);
-            }
-        }
-
-        if (newValue) {
-            if (newValue instanceof Asset) {
-                this.data.meshAsset = newValue.id;
-                newValue = newValue.id;
-            }
-
-            const asset = assets.get(newValue);
-            if (asset) {
-                this._bindMeshAsset(asset);
-            }
-        } else {
-            this._onMeshChanged(null);
-        }
-    }
-
-    onSetMesh(name, oldValue, newValue) {
-        // hack this for now
-        // if the value being set is null, an asset or an asset id, then assume we are
-        // setting the mesh asset, which will in turn update the mesh
-        if (!newValue || newValue instanceof Asset || typeof newValue === 'number') {
-            this.meshAsset = newValue;
-        } else {
-            this._onMeshChanged(newValue);
-        }
-    }
-
     _onMeshChanged(mesh) {
         if (mesh && !(mesh instanceof Mesh)) {
-            // if mesh is a pc.Model, use the first meshInstance
+            // if mesh is a Model, use the first meshInstance
             if (mesh.meshInstances[0]) {
                 mesh = mesh.meshInstances[0].mesh;
             } else {
@@ -1323,37 +2058,12 @@ class ParticleSystemComponent extends Component {
             }
         }
 
-        this.data.mesh = mesh;
+        this._mesh = mesh;
 
         if (this.emitter) {
             this.emitter.mesh = mesh;
             this.emitter.resetMaterial();
             this.rebuild();
-        }
-    }
-
-    onSetRenderAsset(name, oldValue, newValue) {
-        const assets = this.system.app.assets;
-
-        if (oldValue) {
-            const asset = assets.get(oldValue);
-            if (asset) {
-                this._unbindRenderAsset(asset);
-            }
-        }
-
-        if (newValue) {
-            if (newValue instanceof Asset) {
-                this.data.renderAsset = newValue.id;
-                newValue = newValue.id;
-            }
-
-            const asset = assets.get(newValue);
-            if (asset) {
-                this._bindRenderAsset(asset);
-            }
-        } else {
-            this._onRenderChanged(null);
         }
     }
 
@@ -1376,9 +2086,8 @@ class ParticleSystemComponent extends Component {
         asset.off('unload', this._onRenderAssetUnload, this);
         asset.off('remove', this._onRenderAssetRemove, this);
 
-        if (asset.resource) {
-            asset.resource.off('set:meshes', this._onRenderSetMeshes, this);
-        }
+        this._evtSetMeshes?.off();
+        this._evtSetMeshes = null;
     }
 
     _onRenderAssetLoad(asset) {
@@ -1399,8 +2108,8 @@ class ParticleSystemComponent extends Component {
             return;
         }
 
-        render.off('set:meshes', this._onRenderSetMeshes, this);
-        render.on('set:meshes', this._onRenderSetMeshes, this);
+        this._evtSetMeshes?.off();
+        this._evtSetMeshes = render.on('set:meshes', this._onRenderSetMeshes, this);
 
         if (render.meshes) {
             this._onRenderSetMeshes(render.meshes);
@@ -1409,22 +2118,6 @@ class ParticleSystemComponent extends Component {
 
     _onRenderSetMeshes(meshes) {
         this._onMeshChanged(meshes && meshes[0]);
-    }
-
-    onSetLoop(name, oldValue, newValue) {
-        if (this.emitter) {
-            this.emitter[name] = newValue;
-            this.emitter.resetTime();
-        }
-    }
-
-    onSetBlendType(name, oldValue, newValue) {
-        if (this.emitter) {
-            this.emitter[name] = newValue;
-            this.emitter.material.blendType = newValue;
-            this.emitter.resetMaterial();
-            this.rebuild();
-        }
     }
 
     _requestDepth() {
@@ -1444,54 +2137,13 @@ class ParticleSystemComponent extends Component {
         }
     }
 
-    onSetDepthSoftening(name, oldValue, newValue) {
-        if (oldValue !== newValue) {
-            if (newValue) {
-                if (this.enabled && this.entity.enabled) this._requestDepth();
-                if (this.emitter) this.emitter[name] = newValue;
-            } else {
-                if (this.enabled && this.entity.enabled) this._releaseDepth();
-                if (this.emitter) this.emitter[name] = newValue;
-            }
-            if (this.emitter) {
-                this.reset();
-                this.emitter.resetMaterial();
-                this.rebuild();
-            }
-        }
-    }
-
-    onSetSimpleProperty(name, oldValue, newValue) {
-        if (this.emitter) {
-            this.emitter[name] = newValue;
-            this.emitter.resetMaterial();
-        }
-    }
-
-    onSetComplexProperty(name, oldValue, newValue) {
-        if (this.emitter) {
-            this.emitter[name] = newValue;
-            this.emitter.resetMaterial();
-            this.rebuild();
-            this.reset();
-        }
-    }
-
-    onSetGraphProperty(name, oldValue, newValue) {
-        if (this.emitter) {
-            this.emitter[name] = newValue;
-            this.emitter.rebuildGraphs();
-            this.emitter.resetMaterial();
-        }
-    }
-
     onEnable() {
-        // get data store once
-        const data = this.data;
+        const scene = this.system.app.scene;
+        const layers = scene.layers;
 
         // load any assets that haven't been loaded yet
         for (let i = 0, len = ASSET_PROPERTIES.length; i < len; i++) {
-            let asset = data[ASSET_PROPERTIES[i]];
+            let asset = this[`_${ASSET_PROPERTIES[i]}`];
             if (asset) {
                 if (!(asset instanceof Asset)) {
                     const id = parseInt(asset, 10);
@@ -1514,90 +2166,83 @@ class ParticleSystemComponent extends Component {
         }
 
         if (!this.emitter) {
-            let mesh = data.mesh;
-
-            // mesh might be an asset id of an asset
-            // that hasn't been loaded yet
-            if (!(mesh instanceof Mesh)) {
-                mesh = null;
-            }
-
             this.emitter = new ParticleEmitter(this.system.app.graphicsDevice, {
-                numParticles: data.numParticles,
-                emitterExtents: data.emitterExtents,
-                emitterExtentsInner: data.emitterExtentsInner,
-                emitterRadius: data.emitterRadius,
-                emitterRadiusInner: data.emitterRadiusInner,
-                emitterShape: data.emitterShape,
-                initialVelocity: data.initialVelocity,
-                wrap: data.wrap,
-                localSpace: data.localSpace,
-                screenSpace: data.screenSpace,
-                wrapBounds: data.wrapBounds,
-                lifetime: data.lifetime,
-                rate: data.rate,
-                rate2: data.rate2,
+                numParticles: this._numParticles,
+                emitterExtents: this._emitterExtents,
+                emitterExtentsInner: this._emitterExtentsInner,
+                emitterRadius: this._emitterRadius,
+                emitterRadiusInner: this._emitterRadiusInner,
+                emitterShape: this._emitterShape,
+                initialVelocity: this._initialVelocity,
+                wrap: this._wrap,
+                localSpace: this._localSpace,
+                screenSpace: this._screenSpace,
+                wrapBounds: this._wrapBounds,
+                lifetime: this._lifetime,
+                rate: this._rate,
+                rate2: this._rate2,
 
-                orientation: data.orientation,
-                particleNormal: data.particleNormal,
+                orientation: this._orientation,
+                particleNormal: this._particleNormal,
 
-                animTilesX: data.animTilesX,
-                animTilesY: data.animTilesY,
-                animStartFrame: data.animStartFrame,
-                animNumFrames: data.animNumFrames,
-                animNumAnimations: data.animNumAnimations,
-                animIndex: data.animIndex,
-                randomizeAnimIndex: data.randomizeAnimIndex,
-                animSpeed: data.animSpeed,
-                animLoop: data.animLoop,
+                animTilesX: this._animTilesX,
+                animTilesY: this._animTilesY,
+                animStartFrame: this._animStartFrame,
+                animNumFrames: this._animNumFrames,
+                animNumAnimations: this._animNumAnimations,
+                animIndex: this._animIndex,
+                randomizeAnimIndex: this._randomizeAnimIndex,
+                animSpeed: this._animSpeed,
+                animLoop: this._animLoop,
 
-                startAngle: data.startAngle,
-                startAngle2: data.startAngle2,
+                startAngle: this._startAngle,
+                startAngle2: this._startAngle2,
 
-                scaleGraph: data.scaleGraph,
-                scaleGraph2: data.scaleGraph2,
+                scaleGraph: this._scaleGraph,
+                scaleGraph2: this._scaleGraph2,
 
-                colorGraph: data.colorGraph,
-                colorGraph2: data.colorGraph2,
+                colorGraph: this._colorGraph,
+                colorGraph2: this._colorGraph2,
 
-                alphaGraph: data.alphaGraph,
-                alphaGraph2: data.alphaGraph2,
+                alphaGraph: this._alphaGraph,
+                alphaGraph2: this._alphaGraph2,
 
-                localVelocityGraph: data.localVelocityGraph,
-                localVelocityGraph2: data.localVelocityGraph2,
+                localVelocityGraph: this._localVelocityGraph,
+                localVelocityGraph2: this._localVelocityGraph2,
 
-                velocityGraph: data.velocityGraph,
-                velocityGraph2: data.velocityGraph2,
+                velocityGraph: this._velocityGraph,
+                velocityGraph2: this._velocityGraph2,
 
-                rotationSpeedGraph: data.rotationSpeedGraph,
-                rotationSpeedGraph2: data.rotationSpeedGraph2,
+                rotationSpeedGraph: this._rotationSpeedGraph,
+                rotationSpeedGraph2: this._rotationSpeedGraph2,
 
-                radialSpeedGraph: data.radialSpeedGraph,
-                radialSpeedGraph2: data.radialSpeedGraph2,
+                radialSpeedGraph: this._radialSpeedGraph,
+                radialSpeedGraph2: this._radialSpeedGraph2,
 
-                colorMap: data.colorMap,
-                normalMap: data.normalMap,
-                loop: data.loop,
-                preWarm: data.preWarm,
-                sort: data.sort,
-                stretch: data.stretch,
-                alignToMotion: data.alignToMotion,
-                lighting: data.lighting,
-                halfLambert: data.halfLambert,
-                intensity: data.intensity,
-                depthSoftening: data.depthSoftening,
+                colorMap: this._colorMap,
+                normalMap: this._normalMap,
+                loop: this._loop,
+                preWarm: this._preWarm,
+                sort: this._sort,
+                stretch: this._stretch,
+                alignToMotion: this._alignToMotion,
+                lighting: this._lighting,
+                halfLambert: this._halfLambert,
+                intensity: this._intensity,
+                depthSoftening: this._depthSoftening,
                 scene: this.system.app.scene,
-                mesh: mesh,
-                depthWrite: data.depthWrite,
-                noFog: data.noFog,
+                mesh: this._mesh,
+                depthWrite: this._depthWrite,
+                useFog: this._useFog,
+                useTonemap: this._useTonemap,
                 node: this.entity,
-                blendType: data.blendType
+                blendType: this._blendType
             });
 
             this.emitter.meshInstance.node = this.entity;
-            this.emitter.drawOrder = this.drawOrder;
+            this.emitter.drawOrder = this._drawOrder;
 
-            if (!data.autoPlay) {
+            if (!this._autoPlay) {
                 this.pause();
                 this.emitter.meshInstance.visible = false;
             }
@@ -1607,27 +2252,35 @@ class ParticleSystemComponent extends Component {
             this.addMeshInstanceToLayers();
         }
 
-        this.system.app.scene.on('set:layers', this.onLayersChanged, this);
-        if (this.system.app.scene.layers) {
-            this.system.app.scene.layers.on('add', this.onLayerAdded, this);
-            this.system.app.scene.layers.on('remove', this.onLayerRemoved, this);
+        this._evtLayersChanged = scene.on('set:layers', this.onLayersChanged, this);
+
+        if (layers) {
+            this._evtLayerAdded = layers.on('add', this.onLayerAdded, this);
+            this._evtLayerRemoved = layers.on('remove', this.onLayerRemoved, this);
         }
 
-        if (this.enabled && this.entity.enabled && data.depthSoftening) {
+        if (this.enabled && this.entity.enabled && this._depthSoftening) {
             this._requestDepth();
         }
     }
 
     onDisable() {
-        this.system.app.scene.off('set:layers', this.onLayersChanged, this);
-        if (this.system.app.scene.layers) {
-            this.system.app.scene.layers.off('add', this.onLayerAdded, this);
-            this.system.app.scene.layers.off('remove', this.onLayerRemoved, this);
+        const scene = this.system.app.scene;
+        const layers = scene.layers;
+
+        this._evtLayersChanged?.off();
+        this._evtLayersChanged = null;
+
+        if (layers) {
+            this._evtLayerAdded?.off();
+            this._evtLayerAdded = null;
+            this._evtLayerRemoved?.off();
+            this._evtLayerRemoved = null;
         }
 
         if (this.emitter) {
             this.removeMeshInstanceFromLayers();
-            if (this.data.depthSoftening) this._releaseDepth();
+            if (this._depthSoftening) this._releaseDepth();
 
             // clear camera as it isn't updated while disabled and we don't want to hold
             // onto old reference
@@ -1649,7 +2302,7 @@ class ParticleSystemComponent extends Component {
         for (let i = 0; i < ASSET_PROPERTIES.length; i++) {
             const prop = ASSET_PROPERTIES[i];
 
-            if (this.data[prop]) {
+            if (this[`_${prop}`]) {
                 this[prop] = null;
             }
         }
@@ -1672,7 +2325,7 @@ class ParticleSystemComponent extends Component {
     stop() {
         if (this.emitter) {
             this.emitter.loop = false;
-            this.emitter.resetTime();
+            this.emitter.resetTime(this.emitter.lifetime);
             this.emitter.addTime(0, true);
         }
     }
@@ -1681,24 +2334,33 @@ class ParticleSystemComponent extends Component {
      * Freezes the simulation.
      */
     pause() {
-        this.data.paused = true;
+        this._paused = true;
     }
 
     /**
      * Unfreezes the simulation.
      */
+    resume() {
+        this._paused = false;
+    }
+
+    /**
+     * @deprecated Use {@link ParticleSystemComponent#resume} instead.
+     * @ignore
+     */
     unpause() {
-        this.data.paused = false;
+        Debug.deprecated('ParticleSystemComponent#unpause is deprecated. Use ParticleSystemComponent#resume instead.');
+        this.resume();
     }
 
     /**
      * Enables/unfreezes the simulation.
      */
     play() {
-        this.data.paused = false;
+        this._paused = false;
         if (this.emitter) {
             this.emitter.meshInstance.visible = true;
-            this.emitter.loop = this.data.loop;
+            this.emitter.loop = this._loop;
             this.emitter.resetTime();
         }
     }
@@ -1709,16 +2371,27 @@ class ParticleSystemComponent extends Component {
      * @returns {boolean} True if the particle system is currently playing and false otherwise.
      */
     isPlaying() {
-        if (this.data.paused) {
+        if (this._paused || !this.emitter) {
             return false;
         }
-        if (this.emitter && this.emitter.loop) {
+        if (this.emitter.loop) {
             return true;
         }
 
-        // possible bug here what happens if the non looping emitter
-        // was paused in the meantime?
-        return Date.now() <= this.emitter.endTime;
+        return this.emitter.simTimeTotal <= this.emitter.endTime;
+    }
+
+    /**
+     * Called by the Editor when the component is selected, to allow custom in Editor behavior.
+     *
+     * @private
+     */
+    setInTools() {
+        const { emitter } = this;
+        if (emitter && !emitter.inTools) {
+            emitter.inTools = true;
+            this.rebuild();
+        }
     }
 
     /**
@@ -1731,10 +2404,9 @@ class ParticleSystemComponent extends Component {
         this.enabled = false;
         if (this.emitter) {
             this.emitter.rebuild(); // worst case: required to rebuild buffers/shaders
-            this.emitter.meshInstance.node = this.entity;
         }
         this.enabled = enabled;
     }
 }
 
-export { ParticleSystemComponent };
+export { _properties, ParticleSystemComponent };

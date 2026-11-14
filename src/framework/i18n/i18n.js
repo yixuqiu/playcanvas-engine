@@ -1,30 +1,36 @@
 import { EventHandler } from '../../core/event-handler.js';
-
 import { Asset } from '../asset/asset.js';
+import { DEFAULT_LOCALE, DEFAULT_LOCALE_FALLBACKS } from './constants.js';
+import { findAvailableLocale, getLang, getPluralFn, replaceLang } from './utils.js';
 import { I18nParser } from './i18n-parser.js';
 
-import {
-    DEFAULT_LOCALE,
-    DEFAULT_LOCALE_FALLBACKS
-} from './constants.js';
-
-import {
-    replaceLang,
-    getLang,
-    getPluralFn,
-    findAvailableLocale
-} from './utils.js';
+/**
+ * @import { AppBase } from '../app-base.js'
+ */
 
 /**
  * Handles localization. Responsible for loading localization assets and returning translations for
  * a certain key. Can also handle plural forms. To override its default behavior define a different
- * implementation for {@link I18n#getText} and {@link I18n#getPluralText}.
+ * implementation for {@link getText} and {@link getPluralText}.
+ *
+ * @category Framework
  */
 class I18n extends EventHandler {
     /**
+     * Fired when the locale is changed.
+     *
+     * @event
+     * @example
+     * app.i18n.on('change', (newLocale, oldLocale) => {
+     *    console.log(`Locale changed from ${oldLocale} to ${newLocale}`);
+     * });
+     */
+    static EVENT_CHANGE = 'change';
+
+    /**
      * Create a new I18n instance.
      *
-     * @param {import('../app-base.js').AppBase} app - The application.
+     * @param {AppBase} app - The application.
      */
     constructor(app) {
         super();
@@ -38,9 +44,9 @@ class I18n extends EventHandler {
     }
 
     /**
-     * An array of asset ids or assets that contain localization data in the expected format. I18n
-     * will automatically load translations from these assets as the assets are loaded and it will
-     * also automatically unload translations if the assets get removed or unloaded at runtime.
+     * Sets the array of asset ids or assets that contain localization data in the expected format.
+     * I18n will automatically load translations from these assets as the assets are loaded and it
+     * will also automatically unload translations if the assets get removed or unloaded at runtime.
      *
      * @type {number[]|Asset[]}
      */
@@ -58,7 +64,7 @@ class I18n extends EventHandler {
         while (i--) {
             const id = this._assets[i];
             if (!index[id]) {
-                this._app.assets.off('add:' + id, this._onAssetAdd, this);
+                this._app.assets.off(`add:${id}`, this._onAssetAdd, this);
                 const asset = this._app.assets.get(id);
                 if (asset) {
                     this._onAssetRemove(asset);
@@ -75,20 +81,25 @@ class I18n extends EventHandler {
             this._assets.push(idNum);
             const asset = this._app.assets.get(idNum);
             if (!asset) {
-                this._app.assets.once('add:' + idNum, this._onAssetAdd, this);
+                this._app.assets.once(`add:${idNum}`, this._onAssetAdd, this);
             } else {
                 this._onAssetAdd(asset);
             }
         }
     }
 
+    /**
+     * Gets the array of asset ids that contain localization data in the expected format.
+     *
+     * @type {number[]|Asset[]}
+     */
     get assets() {
         return this._assets;
     }
 
     /**
-     * The current locale for example "en-US". Changing the locale will raise an event which will
-     * cause localized Text Elements to change language to the new locale.
+     * Sets the current locale. For example, "en-US". Changing the locale will raise an event which
+     * will cause localized Text Elements to change language to the new locale.
      *
      * @type {string}
      */
@@ -116,9 +127,14 @@ class I18n extends EventHandler {
         this._pluralFn = getPluralFn(this._lang);
 
         // raise event
-        this.fire('set:locale', value, old);
+        this.fire(I18n.EVENT_CHANGE, value, old);
     }
 
+    /**
+     * Gets the current locale.
+     *
+     * @type {string}
+     */
     get locale() {
         return this._locale;
     }
@@ -134,7 +150,7 @@ class I18n extends EventHandler {
      * @example
      * // With a defined dictionary of locales
      * const availableLocales = { en: 'en-US', fr: 'fr-FR' };
-     * const locale = pc.I18n.getText('en-US', availableLocales);
+     * const locale = I18n.getText('en-US', availableLocales);
      * // returns 'en'
      * @ignore
      */
@@ -299,7 +315,7 @@ class I18n extends EventHandler {
         try {
             parsed = this._parser.parse(data);
         } catch (err) {
-            console.error(err);
+            console.error(`I18n.addData: failed to parse localization data: ${err?.message ?? err}`, err);
             return;
         }
 
@@ -328,14 +344,14 @@ class I18n extends EventHandler {
      * Removes localization data.
      *
      * @param {object} data - The localization data. The data is expected to be in the same format
-     * as {@link I18n#addData}.
+     * as {@link addData}.
      */
     removeData(data) {
         let parsed;
         try {
             parsed = this._parser.parse(data);
         } catch (err) {
-            console.error(err);
+            console.error(`I18n.removeData: failed to parse localization data: ${err?.message ?? err}`, err);
             return;
         }
 
@@ -426,7 +442,7 @@ class I18n extends EventHandler {
             this.removeData(asset.resource);
         }
 
-        this._app.assets.once('add:' + asset.id, this._onAssetAdd, this);
+        this._app.assets.once(`add:${asset.id}`, this._onAssetAdd, this);
     }
 
     _onAssetUnload(asset) {

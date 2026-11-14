@@ -2,11 +2,13 @@ import { AnimTarget } from '../../anim/evaluator/anim-target.js';
 import { DefaultAnimBinder } from '../../anim/binder/default-anim-binder.js';
 import { AnimBinder } from '../../anim/binder/anim-binder.js';
 
+import { Debug } from '../../../core/debug.js';
 import { Color } from '../../../core/math/color.js';
 import { Quat } from '../../../core/math/quat.js';
 import { Vec2 } from '../../../core/math/vec2.js';
 import { Vec3 } from '../../../core/math/vec3.js';
 import { Vec4 } from '../../../core/math/vec4.js';
+import { GraphNode } from '../../../scene/graph-node.js';
 
 const v2 = new Vec2();
 const v3 = new Vec3();
@@ -80,6 +82,9 @@ class AnimComponentBinder extends DefaultAnimBinder {
         switch (path.component) {
             case 'entity':
                 entity = this._getEntityFromHierarchy(path.entityPath);
+                if (!entity) {
+                    return null;
+                }
                 targetPath = AnimBinder.encode(
                     entity.path,
                     'entity',
@@ -98,9 +103,13 @@ class AnimComponentBinder extends DefaultAnimBinder {
                 break;
             default:
                 entity = this._getEntityFromHierarchy(path.entityPath);
-                propertyComponent = entity.findComponent(path.component);
-                if (!propertyComponent)
+                if (!entity) {
                     return null;
+                }
+                propertyComponent = entity.findComponent(path.component);
+                if (!propertyComponent) {
+                    return null;
+                }
                 targetPath = AnimBinder.encode(
                     entity.path,
                     path.component,
@@ -115,25 +124,23 @@ class AnimComponentBinder extends DefaultAnimBinder {
     }
 
     update(deltaTime) {
-        // flag active nodes as dirty
-        const activeNodes = this.activeNodes;
-        if (activeNodes) {
-            for (let i = 0; i < activeNodes.length; i++) {
-                activeNodes[i]._dirtifyLocal();
-            }
-        }
+        // the setters of the animated properties mark their nodes dirty, so there is nothing to do
     }
 
     _getEntityFromHierarchy(entityHierarchy) {
-        if (!this.animComponent.entity.name === entityHierarchy[0]) {
-            return null;
-        }
-
         const currEntity = this.animComponent.entity;
 
+        // a single element path can only refer to the anim component's own entity, so bind it
+        // regardless of the authored root name - clips remain usable after the entity is renamed
         if (entityHierarchy.length === 1) {
             return currEntity;
         }
+
+        if (currEntity.name !== entityHierarchy[0]) {
+            Debug.warnOnce(`Anim Binder: entity path '${entityHierarchy.join('/')}' is not rooted at the anim component's entity '${currEntity.name}'; the curve will not be bound.`);
+            return null;
+        }
+
         return currEntity._parent.findByPath(entityHierarchy);
     }
 
@@ -154,10 +161,19 @@ class AnimComponentBinder extends DefaultAnimBinder {
         const key = path[path.length - 1];
 
         // if the object has a setter function, use it
-        const setterFuncName = 'set' + key.substring(0, 1).toUpperCase() + key.substring(1);
+        const setterFuncName = `set${key.substring(0, 1).toUpperCase()}${key.substring(1)}`;
+
+        // the local transform of a graph node is written directly, which avoids packing the values
+        // and calling the setter for each of them, as many are animated every frame. This is done
+        // only when the node uses the setter of the graph node, which an element component replaces
+        const directTransform = this._directTransformSetter(obj, key, setterFuncName);
+        if (directTransform) {
+            return directTransform;
+        }
+
         if (obj[setterFuncName]) {
             // if the object has a setter function, use it
-            const getterFunc = obj['get' + key.substring(0, 1).toUpperCase() + key.substring(1)].bind(obj);
+            const getterFunc = obj[`get${key.substring(0, 1).toUpperCase()}${key.substring(1)}`].bind(obj);
             let baseValues = getterFunc();
             baseValues = [baseValues.x, baseValues.y, baseValues.z, baseValues.w];
             const setterFunc = obj[setterFuncName].bind(obj);
@@ -196,6 +212,52 @@ class AnimComponentBinder extends DefaultAnimBinder {
         };
     }
 
+    /**
+     * Returns a setter writing the local position, rotation or scale of a graph node directly, or
+     * null if the property is not one of them, or the node uses its own setter for it.
+     *
+     * @param {object} obj - The object owning the property.
+     * @param {string} key - The name of the property.
+     * @param {string} setterFuncName - The name of the setter of the property.
+     * @returns {{ set: function(number[]): void, get: function(): number[] }|null} The setter.
+     * @private
+     */
+    _directTransformSetter(obj, key, setterFuncName) {
+        if (!(obj instanceof GraphNode) || obj[setterFuncName] !== GraphNode.prototype[setterFuncName]) {
+            return null;
+        }
+
+        const node = obj;
+        if (key === 'localPosition') {
+            const position = node.getLocalPosition();
+            const baseValues = [position.x, position.y, position.z];
+            return {
+                set: values => node.setLocalPositionFromArray(values),
+                get: () => baseValues
+            };
+        }
+
+        if (key === 'localRotation') {
+            const rotation = node.getLocalRotation();
+            const baseValues = [rotation.x, rotation.y, rotation.z, rotation.w];
+            return {
+                set: values => node.setLocalRotationFromArray(values),
+                get: () => baseValues
+            };
+        }
+
+        if (key === 'localScale') {
+            const scale = node.getLocalScale();
+            const baseValues = [scale.x, scale.y, scale.z];
+            return {
+                set: values => node.setLocalScaleFromArray(values),
+                get: () => baseValues
+            };
+        }
+
+        return null;
+    }
+
     _createAnimTargetForProperty(propertyComponent, propertyHierarchy, targetPath) {
 
         if (this.handlers && propertyHierarchy[0].startsWith('weight.')) {
@@ -210,8 +272,9 @@ class AnimComponentBinder extends DefaultAnimBinder {
 
         const property = this._resolvePath(propertyComponent, propertyHierarchy, true);
 
-        if (typeof property === 'undefined')
+        if (typeof property === 'undefined') {
             return null;
+        }
 
         let setter;
         let animDataType;
@@ -259,7 +322,7 @@ class AnimComponentBinder extends DefaultAnimBinder {
 
         // materials must have update called after changing settings
         if (propertyHierarchy.indexOf('material') !== -1) {
-            return new AnimTarget(function (values) {
+            return new AnimTarget((values) => {
                 setter(values);
                 propertyComponent.material.update();
             }, animDataType, animDataComponents, targetPath);

@@ -1,24 +1,49 @@
 import { AnimTrack } from '../../anim/evaluator/anim-track.js';
-import { Component } from '../component.js';
 import { ComponentSystem } from '../system.js';
-
-import { AnimComponent } from './component.js';
-import { AnimComponentData } from './data.js';
-
-const _schema = [
-    'enabled'
-];
+import { AnimComponent, ANIMUPDATE_OFFSCREEN, ANIMUPDATE_EVALUATED } from './component.js';
 
 /**
- * The AnimComponentSystem manages creating and deleting AnimComponents.
+ * @import { AppBase } from '../../app-base.js'
+ * @import { Component } from '../component.js'
+ * @import { Entity } from '../../entity.js'
+ */
+
+/**
+ * Options of the `anim` component accepted by {@link AnimComponentSystem} that differ from the
+ * properties of {@link AnimComponent}. Each replaces the same-named property of the options that
+ * {@link Entity#addComponent} derives from the component class; see
+ * {@link ComponentOptionsOverrides}.
+ *
+ * @typedef {object} AnimComponentOptionsOverrides
+ * @property {{ name: string, weight?: number, mask?: object, blendType?: string }[]} [layers] -
+ * Layers to add with {@link AnimComponent#addLayer}, each with a `name` and optional `weight`,
+ * `mask` and `blendType`.
+ * @property {{ [layer: string]: { mask: object } }} [masks] - Bone masks to assign to the added
+ * layers, keyed by layer name.
+ * @ignore
+ */
+
+/**
+ * Manages the {@link AnimComponent}s of an application and advances their state graphs each
+ * frame. Reach it through `app.systems.anim`; components are created with
+ * {@link Entity#addComponent}, never by calling the system directly.
  *
  * @category Animation
  */
 class AnimComponentSystem extends ComponentSystem {
     /**
+     * The number of animation updates performed, used to schedule the anim components with an
+     * evaluation interval.
+     *
+     * @type {number}
+     * @ignore
+     */
+    updateIndex = 0;
+
+    /**
      * Create an AnimComponentSystem instance.
      *
-     * @param {import('../../app-base.js').AppBase} app - The application managing this system.
+     * @param {AppBase} app - The application managing this system.
      * @ignore
      */
     constructor(app) {
@@ -27,16 +52,18 @@ class AnimComponentSystem extends ComponentSystem {
         this.id = 'anim';
 
         this.ComponentType = AnimComponent;
-        this.DataType = AnimComponentData;
 
-        this.schema = _schema;
+        // 'layers' is read-only (managed via addLayer) and 'masks' is not a component property; both
+        // are consumed directly in initializeComponentData
+        this.extraDataProperties = ['layers', 'masks'];
 
         this.on('beforeremove', this.onBeforeRemove, this);
         this.app.systems.on('animationUpdate', this.onAnimationUpdate, this);
+        this.app.systems.on('meshInstancesChange', this.onMeshInstancesChange, this);
     }
 
     initializeComponentData(component, data, properties) {
-        super.initializeComponentData(component, data, _schema);
+        super.initializeComponentData(component, data);
         const complexProperties = ['animationAssets', 'stateGraph', 'layers', 'masks'];
         Object.keys(data).forEach((key) => {
             // these properties will be initialized manually below
@@ -48,24 +75,29 @@ class AnimComponentSystem extends ComponentSystem {
             component.loadStateGraph(component.stateGraph);
         }
         if (data.layers) {
-            data.layers.forEach((layer, i) => {
+            data.layers.forEach((layer) => {
+                // Layers added dynamically via addLayer() aren't part of the state graph, so
+                // loadStateGraph() above won't have recreated them. Resolve (or create) the
+                // matching clone layer by name before assigning its animations.
+                const cloneLayer = component.addLayer(layer.name, layer.weight, layer.mask, layer.blendType);
                 layer._controller.states.forEach((stateKey) => {
                     layer._controller._states[stateKey]._animationList.forEach((node) => {
                         if (!node.animTrack || node.animTrack === AnimTrack.EMPTY) {
-                            const animationAsset = this.app.assets.get(layer._component._animationAssets[layer.name + ':' + node.name].asset);
+                            const animationAsset = this.app.assets.get(layer._component._animationAssets[`${layer.name}:${node.name}`].asset);
                             // If there is an animation asset that hasn't been loaded, assign it once it has loaded. If it is already loaded it will be assigned already.
                             if (animationAsset && !animationAsset.loaded) {
                                 animationAsset.once('load', () => {
-                                    component.layers[i].assignAnimation(node.name, animationAsset.resource);
+                                    cloneLayer.assignAnimation(node.name, animationAsset.resource);
                                 });
                             }
                         } else {
-                            component.layers[i].assignAnimation(node.name, node.animTrack);
+                            cloneLayer.assignAnimation(node.name, node.animTrack);
                         }
                     });
                 });
             });
-        } else if (data.animationAssets) {
+        }
+        if (data.animationAssets) {
             component.animationAssets = Object.assign(component.animationAssets, data.animationAssets);
         }
 
@@ -84,15 +116,57 @@ class AnimComponentSystem extends ComponentSystem {
     }
 
     onAnimationUpdate(dt) {
+        this.updateIndex++;
+
         const components = this.store;
+        let evaluated = 0;
+        let offscreen = 0;
+        let skipped = 0;
 
         for (const id in components) {
             if (components.hasOwnProperty(id)) {
                 const component = components[id].entity.anim;
-                const componentData = component.data;
 
-                if (componentData.enabled && component.entity.enabled && component.playing) {
-                    component.update(dt);
+                if (component.enabled && component.entity.enabled && component.playing) {
+                    const result = component.update(dt);
+                    if (result === ANIMUPDATE_EVALUATED) {
+                        evaluated++;
+                    } else if (result === ANIMUPDATE_OFFSCREEN) {
+                        offscreen++;
+                    } else {
+                        skipped++;
+                    }
+                }
+            }
+        }
+
+        // the number of anim components which evaluated their animation, which skipped it as they
+        // were not visible, and which skipped it due to their evaluation interval
+        const stats = this.app.stats.frame;
+        stats.animEvaluated = evaluated;
+        stats.animOffscreen = offscreen;
+        stats.animIntervalSkipped = skipped;
+    }
+
+    /**
+     * Rebinds every component animating a hierarchy which contains the entity whose mesh instances
+     * changed. Anim targets which reference mesh instances - morph target weights and animated
+     * material textures - are resolved once and then cached, so they have to be re-resolved when the
+     * mesh instances they point at are created or destroyed. Disabled components are included, as
+     * they keep their bindings and are not rebound when re-enabled.
+     *
+     * @param {Component} component - The component whose mesh instances changed.
+     * @private
+     */
+    onMeshInstancesChange(component) {
+        const components = this.store;
+
+        for (const id in components) {
+            if (components.hasOwnProperty(id)) {
+                const animComponent = components[id].entity.anim;
+
+                if (animComponent.animatesEntity(component.entity)) {
+                    animComponent.rebind();
                 }
             }
         }
@@ -100,7 +174,8 @@ class AnimComponentSystem extends ComponentSystem {
 
     cloneComponent(entity, clone) {
         let masks;
-        // If the component animaites from the components entity, any layer mask hierarchy should be updated from the old entity to the cloned entity.
+        // If the component animates from the components entity, any layer mask hierarchy should be
+        // updated from the old entity to the cloned entity.
         if (!entity.anim.rootBone || entity.anim.rootBone === entity) {
             masks = {};
             entity.anim.layers.forEach((layer, i) => {
@@ -118,11 +193,14 @@ class AnimComponentSystem extends ComponentSystem {
             });
         }
         const data = {
+            enabled: entity.anim.enabled,
             stateGraphAsset: entity.anim.stateGraphAsset,
             animationAssets: entity.anim.animationAssets,
             speed: entity.anim.speed,
             activate: entity.anim.activate,
             playing: entity.anim.playing,
+            offscreenUpdate: entity.anim.offscreenUpdate,
+            evaluationInterval: entity.anim.evaluationInterval,
             rootBone: entity.anim.rootBone,
             stateGraph: entity.anim.stateGraph,
             layers: entity.anim.layers,
@@ -142,9 +220,8 @@ class AnimComponentSystem extends ComponentSystem {
         super.destroy();
 
         this.app.systems.off('animationUpdate', this.onAnimationUpdate, this);
+        this.app.systems.off('meshInstancesChange', this.onMeshInstancesChange, this);
     }
 }
-
-Component._buildAccessors(AnimComponent.prototype, _schema);
 
 export { AnimComponentSystem };

@@ -5,13 +5,12 @@ import {
     PIXELFORMAT_DXT1, PIXELFORMAT_DXT3, PIXELFORMAT_DXT5,
     PIXELFORMAT_ETC1, PIXELFORMAT_ETC2_RGB, PIXELFORMAT_ETC2_RGBA,
     PIXELFORMAT_PVRTC_4BPP_RGB_1, PIXELFORMAT_PVRTC_2BPP_RGB_1, PIXELFORMAT_PVRTC_4BPP_RGBA_1, PIXELFORMAT_PVRTC_2BPP_RGBA_1,
-    PIXELFORMAT_RGB8, PIXELFORMAT_RGBA8, PIXELFORMAT_SRGB, PIXELFORMAT_SRGBA,
-    PIXELFORMAT_111110F, PIXELFORMAT_RGB16F, PIXELFORMAT_RGBA16F,
+    PIXELFORMAT_RGB8, PIXELFORMAT_RGBA8, PIXELFORMAT_SRGB8, PIXELFORMAT_SRGBA8,
+    PIXELFORMAT_RG11B10F, PIXELFORMAT_RGB16F, PIXELFORMAT_RGBA16F,
     TEXHINT_ASSET
 } from '../../../platform/graphics/constants.js';
 import { Texture } from '../../../platform/graphics/texture.js';
-
-import { Asset } from '../../asset/asset.js';
+import { Http } from '../../../platform/net/http.js';
 
 import { TextureParser } from './texture.js';
 
@@ -32,34 +31,31 @@ const KNOWN_FORMATS = {
     0x8C03: PIXELFORMAT_PVRTC_2BPP_RGBA_1,
 
     // uncompressed formats
-    0x8051: PIXELFORMAT_RGB8,       // GL_RGB8
-    0x8058: PIXELFORMAT_RGBA8,    // GL_RGBA8
-    0x8C41: PIXELFORMAT_SRGB,           // GL_SRGB8
-    0x8C43: PIXELFORMAT_SRGBA,          // GL_SRGB8_ALPHA8
-    0x8C3A: PIXELFORMAT_111110F,        // GL_R11F_G11F_B10F
+    0x8051: PIXELFORMAT_RGB8,           // GL_RGB8
+    0x8058: PIXELFORMAT_RGBA8,          // GL_RGBA8
+    0x8C41: PIXELFORMAT_SRGB8,          // GL_SRGB8
+    0x8C43: PIXELFORMAT_SRGBA8,         // GL_SRGB8_ALPHA8
+    0x8C3A: PIXELFORMAT_RG11B10F,        // GL_R11F_G11F_B10F
     0x881B: PIXELFORMAT_RGB16F,         // GL_RGB16F
     0x881A: PIXELFORMAT_RGBA16F         // GL_RGBA16F
 };
 
 function createContainer(pixelFormat, buffer, byteOffset, byteSize) {
-    return (pixelFormat === PIXELFORMAT_111110F) ?
+    return (pixelFormat === PIXELFORMAT_RG11B10F) ?
         new Uint32Array(buffer, byteOffset, byteSize / 4) :
         new Uint8Array(buffer, byteOffset, byteSize);
 }
 
 /**
  * Texture parser for ktx files.
- *
- * @ignore
  */
 class KtxParser extends TextureParser {
-    constructor(registry) {
-        super();
-        this.maxRetries = 0;
+    canParse(context) {
+        return context.ext === 'ktx';
     }
 
     load(url, callback, asset) {
-        Asset.fetchArrayBuffer(url.load, callback, asset, this.maxRetries);
+        this.handler.fetch(url, Http.ResponseType.ARRAY_BUFFER, callback, asset);
     }
 
     open(url, data, device, textureOptions = {}) {
@@ -81,6 +77,10 @@ class KtxParser extends TextureParser {
             format: textureData.format,
             cubemap: textureData.cubemap,
             levels: textureData.levels,
+
+            // derive mipmaps from the actual level count, so a single-level file isn't treated as an
+            // incomplete mip chain (which renders black); matches the dds parser
+            mipmaps: textureData.levels.length > 1,
 
             ...textureOptions
         });
@@ -134,7 +134,7 @@ class KtxParser extends TextureParser {
 
         // only support subset of pixel formats
         if (format === undefined) {
-            Debug.warn('Unknown glInternalFormat: ' + header.glInternalFormat);
+            Debug.warn(`Unknown glInternalFormat: ${header.glInternalFormat}`);
             return null;
         }
 

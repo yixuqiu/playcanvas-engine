@@ -1,9 +1,7 @@
-import config from '@examples/config';
-
+/** @type {Record<string, string>} */
 const files = {
     'example.mjs': '',
-    'controls.mjs': '',
-    ...config.FILES
+    'controls.jsx': ''
 };
 
 export default files;

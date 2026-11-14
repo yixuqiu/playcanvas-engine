@@ -1,16 +1,97 @@
-import { CoreExporter } from "./core-exporter.js";
+import { CoreExporter } from './core-exporter.js';
 import { zipSync, strToU8 } from 'fflate';
+import { Color } from '../../core/math/color.js';
+import { Mat3 } from '../../core/math/mat3.js';
+import { Mat4 } from '../../core/math/mat4.js';
+import { Vec3 } from '../../core/math/vec3.js';
 
 import {
     SEMANTIC_POSITION,
     SEMANTIC_NORMAL,
     SEMANTIC_TEXCOORD0,
-    SEMANTIC_TEXCOORD1
-} from "../../platform/graphics/constants.js";
+    SEMANTIC_TEXCOORD1,
+    SEMANTIC_BLENDINDICES,
+    SEMANTIC_BLENDWEIGHT
+} from '../../platform/graphics/constants.js';
 
-import { Color } from '../../core/math/color.js';
+/**
+ * @import { Entity } from '../../framework/entity.js'
+ * @import { Material } from '../../scene/materials/material.js'
+ * @import { Mesh } from '../../scene/mesh.js'
+ * @import { SkinInstance } from '../../scene/skin-instance.js'
+ * @import { Texture } from '../../platform/graphics/texture.js'
+ */
 
 const ROOT_FILE_NAME = 'root';
+
+const _skinMatrix = new Mat4();
+const _normalMatrix = new Mat3();
+const _vec = new Vec3();
+
+/**
+ * Moves the vertices of a skinned mesh from its bind pose to where its bones currently place
+ * them in world space.
+ *
+ * @param {Mesh} mesh - The skinned mesh.
+ * @param {SkinInstance} skinInstance - The skin instance that holds the bones.
+ * @param {number[]} positions - The vertex positions, transformed in place.
+ * @param {number[]} normals - The vertex normals, transformed in place. Can be empty.
+ */
+const skinVertices = (mesh, skinInstance, positions, normals) => {
+
+    const boneIndices = [];
+    const boneWeights = [];
+    mesh.getVertexStream(SEMANTIC_BLENDINDICES, boneIndices);
+    const numVerts = mesh.getVertexStream(SEMANTIC_BLENDWEIGHT, boneWeights);
+    const numInfluences = boneWeights.length / numVerts;
+
+    // transforms from the bind pose to the current pose of each bone
+    const { bones, skin } = skinInstance;
+    const boneMatrices = bones.map((bone, i) => {
+        return new Mat4().mul2(bone.getWorldTransform(), skin.inverseBindPose[i]);
+    });
+
+    const m = _skinMatrix.data;
+    for (let v = 0; v < numVerts; v++) {
+
+        // blend the bone matrices by the vertex weights
+        m.fill(0);
+        let totalWeight = 0;
+        for (let j = v * numInfluences; j < (v + 1) * numInfluences; j++) {
+            const weight = boneWeights[j];
+            if (weight > 0) {
+                const bm = boneMatrices[boneIndices[j]].data;
+                for (let k = 0; k < 16; k++) {
+                    m[k] += weight * bm[k];
+                }
+                totalWeight += weight;
+            }
+        }
+
+        // weights stored as normalized integers are read back unnormalized
+        if (totalWeight > 0) {
+            for (let k = 0; k < 16; k++) {
+                m[k] /= totalWeight;
+            }
+        }
+
+        const i = v * 3;
+        _vec.set(positions[i], positions[i + 1], positions[i + 2]);
+        _skinMatrix.transformPoint(_vec, _vec);
+        positions[i] = _vec.x;
+        positions[i + 1] = _vec.y;
+        positions[i + 2] = _vec.z;
+
+        if (normals.length) {
+            _normalMatrix.invertMat4(_skinMatrix).transpose();
+            _vec.set(normals[i], normals[i + 1], normals[i + 2]);
+            _normalMatrix.transformVector(_vec, _vec).normalize();
+            normals[i] = _vec.x;
+            normals[i + 1] = _vec.y;
+            normals[i + 2] = _vec.z;
+        }
+    }
+};
 
 const header = `#usda 1.0
 (
@@ -74,7 +155,7 @@ class UsdzExporter extends CoreExporter {
     /**
      * Maps a mesh to a reference (path) inside the usdz container
      *
-     * @type {Map<import('../../scene/mesh.js').Mesh, string>}
+     * @type {Map<Mesh, string>}
      * @ignore
      */
     meshMap;
@@ -82,7 +163,7 @@ class UsdzExporter extends CoreExporter {
     /**
      * Maps a material to a reference (path) inside the usdz container
      *
-     * @type {Map<import('../../scene/materials/material.js').Material, string>}
+     * @type {Map<Material, string>}
      * @ignore
      */
     materialMap;
@@ -97,7 +178,7 @@ class UsdzExporter extends CoreExporter {
     /**
      * A map of texture requests
      *
-     * @type {Map<import('../../platform/graphics/texture.js').Texture, string>}
+     * @type {Map<Texture, string>}
      * @ignore
      */
     textureMap;
@@ -138,9 +219,10 @@ class UsdzExporter extends CoreExporter {
     }
 
     /**
-     * Converts a hierarchy of entities to USDZ format.
+     * Converts a hierarchy of entities to USDZ format. Skinned meshes are exported in their current
+     * pose.
      *
-     * @param {import('../../framework/entity.js').Entity} entity - The root of the entity hierarchy to convert.
+     * @param {Entity} entity - The root of the entity hierarchy to convert.
      * @param {object} options - Object for passing optional arguments.
      * @param {number} [options.maxTextureSize] - Maximum texture size. Texture is resized if over
      * the size.
@@ -156,7 +238,7 @@ class UsdzExporter extends CoreExporter {
         // find all mesh instances
         const allMeshInstances = [];
         if (entity) {
-            const renders = entity.findComponents("render");
+            const renders = entity.findComponents('render');
             renders.forEach((render) => {
                 allMeshInstances.push(...render.meshInstances);
             });
@@ -259,7 +341,7 @@ class UsdzExporter extends CoreExporter {
     getFileIds(category, name, ref, extension = 'usda') {
 
         // filename inside the zip archive
-        const fileName = (category ? `${category}/` : '') + `${name}.${extension}`;
+        const fileName = `${category ? `${category}/` : ''}${name}.${extension}`;
 
         // string representing a reference to the file and the refName object inside it
         const refName = `@./${fileName}@</${ref}>`;
@@ -276,7 +358,7 @@ class UsdzExporter extends CoreExporter {
         // prepare the content with the header
         let contentU8 = null;
         if (content) {
-            content = header + '\n' + content;
+            content = `${header}\n${content}`;
             contentU8 = strToU8(content);
         }
 
@@ -394,7 +476,7 @@ class UsdzExporter extends CoreExporter {
                 const textureIds = this.getTextureFileIds(texture);
                 this.textureMap.set(texture, textureIds.refName);
 
-                const channel = material[textureSlot + 'Channel'] || 'rgb';
+                const channel = material[`${textureSlot}Channel`] || 'rgb';
                 const textureValue = materialPropertyPath(`/${textureIds.name}_${valueName}.outputs:${channel}`);
                 inputs.push(materialValueTemplate(propType, `${propName}.connect`, textureValue));
 
@@ -405,12 +487,12 @@ class UsdzExporter extends CoreExporter {
                     }
                 }
 
-                const tiling = material[textureSlot + 'Tiling'];
-                const offset = material[textureSlot + 'Offset'];
-                const rotation = material[textureSlot + 'Rotation'];
+                const tiling = material[`${textureSlot}Tiling`];
+                const offset = material[`${textureSlot}Offset`];
+                const rotation = material[`${textureSlot}Rotation`];
 
                 // which texture coordinate set to use
-                const uvChannel = material[textureSlot + 'Uv'] === 1 ? 'st1' : 'st';
+                const uvChannel = material[`${textureSlot}Uv`] === 1 ? 'st1' : 'st';
 
                 // texture tint
                 const tintColor = tintTexture && uniform ? uniform : Color.WHITE;
@@ -432,8 +514,14 @@ class UsdzExporter extends CoreExporter {
         addTexture('normalMap', null, 'normal3f', 'normal', 'normal');
         addTexture('emissiveMap', material.emissive, 'color3f', 'emissiveColor', 'emissive', false, true);
         addTexture('aoMap', null, 'float', 'occlusion', 'occlusion');
-        addTexture('metalnessMap', material.metalness, 'float', 'metallic', 'metallic');
-        addTexture('glossMap', material.gloss, 'float', 'roughness', 'roughness');
+
+        // only export metalness for metalness workflow materials
+        const metalness = material.useMetalness ? material.metalness : 0;
+        addTexture('metalnessMap', metalness, 'float', 'metallic', 'metallic');
+
+        // convert gloss to roughness (they are inverse of each other)
+        const roughness = material.glossInvert ? material.gloss : 1 - material.gloss;
+        addTexture('glossMap', roughness, 'float', 'roughness', 'roughness');
 
         // main material object
         const materialObject = `
@@ -474,7 +562,7 @@ ${inputs.join('\n')}
         return materialPropertyPath('');
     }
 
-    buildMesh(mesh) {
+    buildMesh(mesh, skinInstance = null, fileName = `Mesh_${mesh.id}`) {
 
         let positions = [];
         const indices = [];
@@ -488,14 +576,19 @@ ${inputs.join('\n')}
         mesh.getVertexStream(SEMANTIC_TEXCOORD1, uv1);
         mesh.getIndices(indices);
 
+        if (skinInstance) {
+            skinVertices(mesh, skinInstance, positions, normals);
+        }
+
         // vertex counts for each faces (all are triangles)
         const indicesCount = indices.length || positions.length;
         const faceVertexCounts = Array(indicesCount / 3).fill(3).join(', ');
 
         // face indices if no index buffer
         if (!indices.length) {
-            for (let i = 0; i < indicesCount; i++)
+            for (let i = 0; i < indicesCount; i++) {
                 indices[i] = i;
+            }
         }
 
         // missing normals or uvs
@@ -510,20 +603,11 @@ ${inputs.join('\n')}
         uv1 = this.buildArray2(uv1);
         const meshObject = meshTemplate(faceVertexCounts, indices, normals, positions, uv0, uv1);
 
-        const refPath = this.addFile('mesh', `Mesh_${mesh.id}`, 'Mesh', meshObject);
+        const refPath = this.addFile('mesh', fileName, 'Mesh', meshObject);
         return refPath;
     }
 
     buildMeshInstance(meshInstance) {
-
-        // build a mesh file, get back a reference path to it
-        const meshRefPath = this.getMeshRef(meshInstance.mesh);
-
-        // build a material file, get back a reference path to it
-        const materialRefPath = this.getMaterialRef(meshInstance.material);
-
-        // world matrix
-        const worldMatrix = this.buildMat4(meshInstance.node.getWorldTransform());
 
         // sanitize node name
         const name = meshInstance.node.name.replace(/[^a-z0-9]/gi, '_');
@@ -534,6 +618,20 @@ ${inputs.join('\n')}
             nodeName = `${name}_${Math.random().toString(36).slice(2, 7)}`;
         }
         this.nodeNames.add(nodeName);
+
+        // build a mesh file, get back a reference path to it. A skinned mesh is placed by its
+        // bones, not its node, so it gets a file of its own, holding its current world space pose
+        const { mesh, skinInstance } = meshInstance;
+        const meshRefPath = skinInstance ?
+            this.buildMesh(mesh, skinInstance, `Mesh_${mesh.id}_${nodeName}`) :
+            this.getMeshRef(mesh);
+
+        // build a material file, get back a reference path to it
+        const materialRefPath = this.getMaterialRef(meshInstance.material);
+
+        // world matrix
+        const worldTransform = skinInstance ? Mat4.IDENTITY : meshInstance.node.getWorldTransform();
+        const worldMatrix = this.buildMat4(worldTransform);
 
         return meshInstanceTemplate(nodeName, meshRefPath, worldMatrix, materialRefPath);
     }

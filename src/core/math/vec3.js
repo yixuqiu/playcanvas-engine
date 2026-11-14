@@ -1,50 +1,93 @@
+import { Debug } from '../debug.js';
+
 /**
- * 3-dimensional vector.
+ * A 3-dimensional vector. Vec3 is commonly used to represent 3D positions, directions, Euler angles
+ * or scales.
  *
+ * Operations follow one convention throughout the math classes: a method that modifies the vector
+ * it is called on returns it, so calls can be chained and nothing is allocated, while queries such
+ * as {@link distance} and {@link dot} return a number. Two-operand forms such as {@link add2},
+ * {@link sub2} and {@link cross} write the result of `lhs op rhs` into `this`, and it is safe for
+ * `this` to also be one of the operands. Use {@link clone} for an independent copy and {@link copy}
+ * to overwrite one vector with another.
+ *
+ * The static constants such as {@link ZERO}, {@link UP} and {@link FORWARD} are frozen shared
+ * instances: read them freely, but writing to one throws. Vectors returned by engine getters such
+ * as {@link GraphNode#getPosition} are internal storage and should be treated as read-only; clone
+ * them if you need to keep or modify the value.
+ *
+ * @example
+ * // Move a point 5 units along a direction without allocating
+ * const position = new Vec3(1, 2, 3);
+ * const direction = new Vec3(0, 0, -1);
+ * position.addScaled(direction, 5);   // position is now [1, 2, -2]
+ * @example
+ * // Chain mutating operations; each returns the vector it was called on
+ * const toTarget = new Vec3().sub2(target, origin).normalize();
+ * const distance = target.distance(origin);
+ * @example
+ * // Keep a copy of an entity's position, then modify it safely
+ * const start = entity.getPosition().clone();
+ * start.y += 1;
  * @category Math
  */
 class Vec3 {
     /**
-     * The first component of the vector.
+     * Creates a new Vec3 instance.
      *
-     * @type {number}
+     * @overload
+     * @param {number} [x] - The x value. Defaults to 0.
+     * @param {number} [y] - The y value. Defaults to 0.
+     * @param {number} [z] - The z value. Defaults to 0.
+     * @example
+     * const v1 = new Vec3(); // defaults to 0, 0, 0
+     * const v2 = new Vec3(1, 2, 3);
      */
-    x;
-
     /**
-     * The second component of the vector.
+     * Creates a new Vec3 instance.
      *
-     * @type {number}
+     * @overload
+     * @param {number[]} arr - The array to set the vector values from.
+     * @example
+     * const v = new Vec3([1, 2, 3]);
      */
-    y;
-
     /**
-     * The third component of the vector.
-     *
-     * @type {number}
-     */
-    z;
-
-    /**
-     * Creates a new Vec3 object.
-     *
      * @param {number|number[]} [x] - The x value. Defaults to 0. If x is an array of length 3, the
      * array will be used to populate all components.
      * @param {number} [y] - The y value. Defaults to 0.
      * @param {number} [z] - The z value. Defaults to 0.
-     * @example
-     * const v = new pc.Vec3(1, 2, 3);
      */
     constructor(x = 0, y = 0, z = 0) {
         if (x.length === 3) {
-            this.x = x[0];
-            this.y = x[1];
-            this.z = x[2];
-        } else {
-            this.x = x;
-            this.y = y;
-            this.z = z;
+            z = x[2];
+            y = x[1];
+            x = x[0];
         }
+
+        // Fields are assigned once here instead of declared as class fields. A declaration without
+        // an initializer stores undefined first, so V8 never unboxes the field as a double and
+        // every fractional write allocates a heap number.
+
+        /**
+         * The first component of the vector.
+         *
+         * @type {number}
+         */
+        this.x = x;
+
+        /**
+         * The second component of the vector.
+         *
+         * @type {number}
+         */
+        this.y = y;
+
+        /**
+         * The third component of the vector.
+         *
+         * @type {number}
+         */
+        this.z = z;
     }
 
     /**
@@ -53,8 +96,8 @@ class Vec3 {
      * @param {Vec3} rhs - The vector to add to the specified vector.
      * @returns {Vec3} Self for chaining.
      * @example
-     * const a = new pc.Vec3(10, 10, 10);
-     * const b = new pc.Vec3(20, 20, 20);
+     * const a = new Vec3(10, 10, 10);
+     * const b = new Vec3(20, 20, 20);
      *
      * a.add(b);
      *
@@ -76,9 +119,9 @@ class Vec3 {
      * @param {Vec3} rhs - The second vector operand for the addition.
      * @returns {Vec3} Self for chaining.
      * @example
-     * const a = new pc.Vec3(10, 10, 10);
-     * const b = new pc.Vec3(20, 20, 20);
-     * const r = new pc.Vec3();
+     * const a = new Vec3(10, 10, 10);
+     * const b = new Vec3(20, 20, 20);
+     * const r = new Vec3();
      *
      * r.add2(a, b);
      * // Outputs [30, 30, 30]
@@ -99,7 +142,7 @@ class Vec3 {
      * @param {number} scalar - The number to add.
      * @returns {Vec3} Self for chaining.
      * @example
-     * const vec = new pc.Vec3(3, 4, 5);
+     * const vec = new Vec3(3, 4, 5);
      *
      * vec.addScalar(2);
      *
@@ -121,9 +164,9 @@ class Vec3 {
      * @param {number} scalar - The number to multiply the added vector with.
      * @returns {Vec3} Self for chaining.
      * @example
-     * const vec = new pc.Vec3(1, 2, 3);
+     * const vec = new Vec3(1, 2, 3);
      *
-     * vec.addScaled(pc.Vec3.UP, 2);
+     * vec.addScaled(Vec3.UP, 2);
      *
      * // Outputs [1, 4, 3]
      * console.log("The result of the addition is: " + vec.toString());
@@ -141,7 +184,7 @@ class Vec3 {
      *
      * @returns {this} A 3-dimensional vector containing the result of the cloning.
      * @example
-     * const v = new pc.Vec3(10, 20, 30);
+     * const v = new Vec3(10, 20, 30);
      * const vclone = v.clone();
      * console.log("The result of the cloning is: " + vclone.toString());
      */
@@ -157,8 +200,8 @@ class Vec3 {
      * @param {Vec3} rhs - A vector to copy to the specified vector.
      * @returns {Vec3} Self for chaining.
      * @example
-     * const src = new pc.Vec3(10, 20, 30);
-     * const dst = new pc.Vec3();
+     * const src = new Vec3(10, 20, 30);
+     * const dst = new Vec3();
      *
      * dst.copy(src);
      *
@@ -180,7 +223,7 @@ class Vec3 {
      * @param {Vec3} rhs - The second 3-dimensional vector operand of the cross product.
      * @returns {Vec3} Self for chaining.
      * @example
-     * const back = new pc.Vec3().cross(pc.Vec3.RIGHT, pc.Vec3.UP);
+     * const back = new Vec3().cross(Vec3.RIGHT, Vec3.UP);
      *
      * // Prints the Z axis (i.e. [0, 0, 1])
      * console.log("The result of the cross product is: " + back.toString());
@@ -207,8 +250,8 @@ class Vec3 {
      * @param {Vec3} rhs - The second 3-dimensional vector to test.
      * @returns {number} The distance between the two vectors.
      * @example
-     * const v1 = new pc.Vec3(5, 10, 20);
-     * const v2 = new pc.Vec3(10, 20, 40);
+     * const v1 = new Vec3(5, 10, 20);
+     * const v2 = new Vec3(10, 20, 40);
      * const d = v1.distance(v2);
      * console.log("The distance between v1 and v2 is: " + d);
      */
@@ -220,13 +263,31 @@ class Vec3 {
     }
 
     /**
+     * Returns the squared distance between the two specified 3-dimensional vectors.
+     *
+     * @param {Vec3} rhs - The second 3-dimensional vector to test.
+     * @returns {number} The squared distance between the two vectors.
+     * @example
+     * const v1 = new Vec3(5, 10, 20);
+     * const v2 = new Vec3(10, 20, 40);
+     * const d = v1.distanceSq(v2);
+     * console.log("The squared distance between v1 and v2 is: " + d);
+     */
+    distanceSq(rhs) {
+        const x = this.x - rhs.x;
+        const y = this.y - rhs.y;
+        const z = this.z - rhs.z;
+        return x * x + y * y + z * z;
+    }
+
+    /**
      * Divides a 3-dimensional vector by another in place.
      *
      * @param {Vec3} rhs - The vector to divide the specified vector by.
      * @returns {Vec3} Self for chaining.
      * @example
-     * const a = new pc.Vec3(4, 9, 16);
-     * const b = new pc.Vec3(2, 3, 4);
+     * const a = new Vec3(4, 9, 16);
+     * const b = new Vec3(2, 3, 4);
      *
      * a.div(b);
      *
@@ -248,13 +309,13 @@ class Vec3 {
      * @param {Vec3} rhs - The divisor vector (the vector dividing the dividend).
      * @returns {Vec3} Self for chaining.
      * @example
-     * const a = new pc.Vec3(4, 9, 16);
-     * const b = new pc.Vec3(2, 3, 4);
-     * const r = new pc.Vec3();
+     * const a = new Vec3(4, 9, 16);
+     * const b = new Vec3(2, 3, 4);
+     * const r = new Vec3();
      *
      * r.div2(a, b);
-     * // Outputs [2, 3, 4]
      *
+     * // Outputs [2, 3, 4]
      * console.log("The result of the division is: " + r.toString());
      */
     div2(lhs, rhs) {
@@ -271,7 +332,7 @@ class Vec3 {
      * @param {number} scalar - The number to divide by.
      * @returns {Vec3} Self for chaining.
      * @example
-     * const vec = new pc.Vec3(3, 6, 9);
+     * const vec = new Vec3(3, 6, 9);
      *
      * vec.divScalar(3);
      *
@@ -293,8 +354,8 @@ class Vec3 {
      * @param {Vec3} rhs - The second 3-dimensional vector operand of the dot product.
      * @returns {number} The result of the dot product operation.
      * @example
-     * const v1 = new pc.Vec3(5, 10, 20);
-     * const v2 = new pc.Vec3(10, 20, 40);
+     * const v1 = new Vec3(5, 10, 20);
+     * const v2 = new Vec3(10, 20, 40);
      * const v1dotv2 = v1.dot(v2);
      * console.log("The result of the dot product is: " + v1dotv2);
      */
@@ -308,8 +369,8 @@ class Vec3 {
      * @param {Vec3} rhs - The vector to compare to the specified vector.
      * @returns {boolean} True if the vectors are equal and false otherwise.
      * @example
-     * const a = new pc.Vec3(1, 2, 3);
-     * const b = new pc.Vec3(4, 5, 6);
+     * const a = new Vec3(1, 2, 3);
+     * const b = new Vec3(4, 5, 6);
      * console.log("The two vectors are " + (a.equals(b) ? "equal" : "different"));
      */
     equals(rhs) {
@@ -324,8 +385,8 @@ class Vec3 {
      * vectors. Defaults to 1e-6.
      * @returns {boolean} True if the vectors are equal and false otherwise.
      * @example
-     * const a = new pc.Vec3();
-     * const b = new pc.Vec3();
+     * const a = new Vec3();
+     * const b = new Vec3();
      * console.log("The two vectors are approximately " + (a.equalsApprox(b, 1e-9) ? "equal" : "different"));
      */
     equalsApprox(rhs, epsilon = 1e-6) {
@@ -339,7 +400,7 @@ class Vec3 {
      *
      * @returns {number} The magnitude of the specified 3-dimensional vector.
      * @example
-     * const vec = new pc.Vec3(3, 4, 0);
+     * const vec = new Vec3(3, 4, 0);
      * const len = vec.length();
      * // Outputs 5
      * console.log("The length of the vector is: " + len);
@@ -351,9 +412,9 @@ class Vec3 {
     /**
      * Returns the magnitude squared of the specified 3-dimensional vector.
      *
-     * @returns {number} The magnitude of the specified 3-dimensional vector.
+     * @returns {number} The magnitude squared of the specified 3-dimensional vector.
      * @example
-     * const vec = new pc.Vec3(3, 4, 0);
+     * const vec = new Vec3(3, 4, 0);
      * const len = vec.lengthSq();
      * // Outputs 25
      * console.log("The length squared of the vector is: " + len);
@@ -365,16 +426,16 @@ class Vec3 {
     /**
      * Returns the result of a linear interpolation between two specified 3-dimensional vectors.
      *
-     * @param {Vec3} lhs - The 3-dimensional to interpolate from.
-     * @param {Vec3} rhs - The 3-dimensional to interpolate to.
+     * @param {Vec3} lhs - The 3-dimensional vector to interpolate from.
+     * @param {Vec3} rhs - The 3-dimensional vector to interpolate to.
      * @param {number} alpha - The value controlling the point of interpolation. Between 0 and 1,
      * the linear interpolant will occur on a straight line between lhs and rhs. Outside of this
      * range, the linear interpolant will occur on a ray extrapolated from this line.
      * @returns {Vec3} Self for chaining.
      * @example
-     * const a = new pc.Vec3(0, 0, 0);
-     * const b = new pc.Vec3(10, 10, 10);
-     * const r = new pc.Vec3();
+     * const a = new Vec3(0, 0, 0);
+     * const b = new Vec3(10, 10, 10);
+     * const r = new Vec3();
      *
      * r.lerp(a, b, 0);   // r is equal to a
      * r.lerp(a, b, 0.5); // r is 5, 5, 5
@@ -394,8 +455,8 @@ class Vec3 {
      * @param {Vec3} rhs - The 3-dimensional vector used as the second multiplicand of the operation.
      * @returns {Vec3} Self for chaining.
      * @example
-     * const a = new pc.Vec3(2, 3, 4);
-     * const b = new pc.Vec3(4, 5, 6);
+     * const a = new Vec3(2, 3, 4);
+     * const b = new Vec3(4, 5, 6);
      *
      * a.mul(b);
      *
@@ -417,9 +478,9 @@ class Vec3 {
      * @param {Vec3} rhs - The 3-dimensional vector used as the second multiplicand of the operation.
      * @returns {Vec3} Self for chaining.
      * @example
-     * const a = new pc.Vec3(2, 3, 4);
-     * const b = new pc.Vec3(4, 5, 6);
-     * const r = new pc.Vec3();
+     * const a = new Vec3(2, 3, 4);
+     * const b = new Vec3(4, 5, 6);
+     * const r = new Vec3();
      *
      * r.mul2(a, b);
      *
@@ -440,7 +501,7 @@ class Vec3 {
      * @param {number} scalar - The number to multiply by.
      * @returns {Vec3} Self for chaining.
      * @example
-     * const vec = new pc.Vec3(3, 6, 9);
+     * const vec = new Vec3(3, 6, 9);
      *
      * vec.mulScalar(3);
      *
@@ -456,13 +517,24 @@ class Vec3 {
     }
 
     /**
+     * @deprecated Use Vec3#mulScalar instead.
+     * @param {number} scalar - The number to multiply by.
+     * @returns {Vec3} Self for chaining.
+     * @ignore
+     */
+    scale(scalar) {
+        Debug.deprecated('Vec3#scale is deprecated. Use Vec3#mulScalar instead.');
+        return this.mulScalar(scalar);
+    }
+
+    /**
      * Returns this 3-dimensional vector converted to a unit vector in place. If the vector has a
      * length of zero, the vector's elements will be set to zero.
      *
      * @param {Vec3} [src] - The vector to normalize. If not set, the operation is done in place.
      * @returns {Vec3} Self for chaining.
      * @example
-     * const v = new pc.Vec3(25, 0, 0);
+     * const v = new Vec3(25, 0, 0);
      *
      * v.normalize();
      *
@@ -486,6 +558,10 @@ class Vec3 {
      *
      * @param {Vec3} [src] - The vector to floor. If not set, the operation is done in place.
      * @returns {Vec3} Self for chaining.
+     * @example
+     * const v = new Vec3(1.2, 3.9, 5.5);
+     * v.floor();
+     * // v is now [1, 3, 5]
      */
     floor(src = this) {
         this.x = Math.floor(src.x);
@@ -499,6 +575,10 @@ class Vec3 {
      *
      * @param {Vec3} [src] - The vector to ceil. If not set, the operation is done in place.
      * @returns {Vec3} Self for chaining.
+     * @example
+     * const v = new Vec3(1.2, 3.1, 5.9);
+     * v.ceil();
+     * // v is now [2, 4, 6]
      */
     ceil(src = this) {
         this.x = Math.ceil(src.x);
@@ -512,6 +592,10 @@ class Vec3 {
      *
      * @param {Vec3} [src] - The vector to round. If not set, the operation is done in place.
      * @returns {Vec3} Self for chaining.
+     * @example
+     * const v = new Vec3(1.4, 3.6, 5.5);
+     * v.round();
+     * // v is now [1, 4, 6]
      */
     round(src = this) {
         this.x = Math.round(src.x);
@@ -525,6 +609,11 @@ class Vec3 {
      *
      * @param {Vec3} rhs - The 3-dimensional vector used as the source of elements to compare to.
      * @returns {Vec3} Self for chaining.
+     * @example
+     * const a = new Vec3(5, 1, 7);
+     * const b = new Vec3(2, 8, 3);
+     * a.min(b);
+     * // a is now [2, 1, 3]
      */
     min(rhs) {
         if (rhs.x < this.x) this.x = rhs.x;
@@ -538,6 +627,11 @@ class Vec3 {
      *
      * @param {Vec3} rhs - The 3-dimensional vector used as the source of elements to compare to.
      * @returns {Vec3} Self for chaining.
+     * @example
+     * const a = new Vec3(5, 1, 7);
+     * const b = new Vec3(2, 8, 3);
+     * a.max(b);
+     * // a is now [5, 8, 7]
      */
     max(rhs) {
         if (rhs.x > this.x) this.x = rhs.x;
@@ -552,8 +646,8 @@ class Vec3 {
      * @param {Vec3} rhs - The vector onto which the original vector will be projected on.
      * @returns {Vec3} Self for chaining.
      * @example
-     * const v = new pc.Vec3(5, 5, 5);
-     * const normal = new pc.Vec3(1, 0, 0);
+     * const v = new Vec3(5, 5, 5);
+     * const normal = new Vec3(1, 0, 0);
      *
      * v.project(normal);
      *
@@ -578,7 +672,7 @@ class Vec3 {
      * @param {number} z - The value to set on the third component of the vector.
      * @returns {Vec3} Self for chaining.
      * @example
-     * const v = new pc.Vec3();
+     * const v = new Vec3();
      * v.set(5, 10, 20);
      *
      * // Outputs [5, 10, 20]
@@ -598,8 +692,8 @@ class Vec3 {
      * @param {Vec3} rhs - The vector to subtract from the specified vector.
      * @returns {Vec3} Self for chaining.
      * @example
-     * const a = new pc.Vec3(10, 10, 10);
-     * const b = new pc.Vec3(20, 20, 20);
+     * const a = new Vec3(10, 10, 10);
+     * const b = new Vec3(20, 20, 20);
      *
      * a.sub(b);
      *
@@ -621,9 +715,9 @@ class Vec3 {
      * @param {Vec3} rhs - The second vector operand for the subtraction.
      * @returns {Vec3} Self for chaining.
      * @example
-     * const a = new pc.Vec3(10, 10, 10);
-     * const b = new pc.Vec3(20, 20, 20);
-     * const r = new pc.Vec3();
+     * const a = new Vec3(10, 10, 10);
+     * const b = new Vec3(20, 20, 20);
+     * const r = new Vec3();
      *
      * r.sub2(a, b);
      *
@@ -644,7 +738,7 @@ class Vec3 {
      * @param {number} scalar - The number to subtract.
      * @returns {Vec3} Self for chaining.
      * @example
-     * const vec = new pc.Vec3(3, 4, 5);
+     * const vec = new Vec3(3, 4, 5);
      *
      * vec.subScalar(2);
      *
@@ -660,16 +754,73 @@ class Vec3 {
     }
 
     /**
+     * Set the values of the vector from an array.
+     *
+     * @param {number[]|ArrayBufferView} arr - The array to set the vector values from.
+     * @param {number} [offset] - The zero-based index at which to start copying elements from the
+     * array. Default is 0.
+     * @returns {Vec3} Self for chaining.
+     * @example
+     * const v = new Vec3();
+     * v.fromArray([20, 10, 5]);
+     * // v is set to [20, 10, 5]
+     */
+    fromArray(arr, offset = 0) {
+        this.x = arr[offset] ?? this.x;
+        this.y = arr[offset + 1] ?? this.y;
+        this.z = arr[offset + 2] ?? this.z;
+
+        return this;
+    }
+
+    /**
      * Converts the vector to string form.
      *
      * @returns {string} The vector in string form.
      * @example
-     * const v = new pc.Vec3(20, 10, 5);
+     * const v = new Vec3(20, 10, 5);
      * // Outputs [20, 10, 5]
      * console.log(v.toString());
      */
     toString() {
         return `[${this.x}, ${this.y}, ${this.z}]`;
+    }
+
+    /**
+     * @overload
+     * @param {number[]} [arr] - The array to populate with the vector's number
+     * components. If not specified, a new array is created.
+     * @param {number} [offset] - The zero-based index at which to start copying elements to the
+     * array. Default is 0.
+     * @returns {number[]} The vector as an array.
+     */
+    /**
+     * @overload
+     * @param {ArrayBufferView} arr - The array to populate with the vector's number
+     * components. If not specified, a new array is created.
+     * @param {number} [offset] - The zero-based index at which to start copying elements to the
+     * array. Default is 0.
+     * @returns {ArrayBufferView} The vector as an array.
+     */
+    /**
+     * Converts the vector to an array.
+     *
+     * @param {number[]|ArrayBufferView} [arr] - The array to populate with the vector's number
+     * components. If not specified, a new array is created.
+     * @param {number} [offset] - The zero-based index at which to start copying elements to the
+     * array. Default is 0.
+     * @returns {number[]|ArrayBufferView} The vector as an array.
+     * @example
+     * const v = new Vec3(20, 10, 5);
+     * // Outputs [20, 10, 5]
+     * console.log(v.toArray());
+     */
+    toArray(arr = [], offset = 0) {
+        arr[offset] = this.x;
+        arr[offset + 1] = this.y;
+        arr[offset + 2] = this.z;
+
+        return arr;
     }
 
     /**
@@ -679,6 +830,14 @@ class Vec3 {
      * @readonly
      */
     static ZERO = Object.freeze(new Vec3(0, 0, 0));
+
+    /**
+     * A constant vector set to [0.5, 0.5, 0.5].
+     *
+     * @type {Vec3}
+     * @readonly
+     */
+    static HALF = Object.freeze(new Vec3(0.5, 0.5, 0.5));
 
     /**
      * A constant vector set to [1, 1, 1].

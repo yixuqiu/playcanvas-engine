@@ -1,134 +1,68 @@
-import { http } from '../../platform/net/http.js';
-
-import { PIXELFORMAT_RGBA8 } from '../../platform/graphics/constants.js';
-import { Texture } from '../../platform/graphics/texture.js';
-
-import { SPECULAR_PHONG } from '../../scene/constants.js';
 import { standardMaterialCubemapParameters, standardMaterialTextureParameters } from '../../scene/materials/standard-material-parameters.js';
-
+import { StandardMaterial } from '../../scene/materials/standard-material.js';
 import { AssetReference } from '../asset/asset-reference.js';
 import { JsonStandardMaterialParser } from '../parsers/material/json-standard-material.js';
-
 import { ResourceHandler } from './handler.js';
-
-const PLACEHOLDER_MAP = {
-    aoMap: 'white',
-    diffuseMap: 'gray',
-    specularMap: 'gray',
-    specularityFactorMap: 'white',
-    metalnessMap: 'black',
-    glossMap: 'gray',
-    sheenMap: 'black',
-    sheenGlossinessMap: 'gray',
-    clearCoatMap: 'black',
-    clearCoatGlossMap: 'gray',
-    clearCoatNormalMap: 'normal',
-    refractionMap: 'white',
-    emissiveMap: 'gray',
-    normalMap: 'normal',
-    heightMap: 'gray',
-    opacityMap: 'gray',
-    sphereMap: 'gray',
-    lightMap: 'white'
-};
+import { PlaceholderTextures } from './placeholder-textures.js';
+import { getTextureAssetEncoding } from './texture.js';
 
 /**
- * Resource handler used for loading {@link Material} resources.
+ * @import { AppBase } from '../app-base.js'
+ * @import { Asset } from '../asset/asset.js'
+ * @import { Texture } from '../../platform/graphics/texture.js'
+ */
+
+// whether a reference of a material is to a texture asset - to the asset itself, or by the id or
+// url it keeps when the asset is removed from the registry, as the references of a material learn
+// of the removal one after another
+const referencesAsset = (reference, asset) => reference.asset === asset ||
+    (reference.id !== null && reference.id === asset.id) ||
+    (reference.url !== null && reference.url === asset.file?.url);
+
+/**
+ * Resource handler for the `material` asset type. Loads material JSON into a
+ * {@link StandardMaterial} and binds the texture assets it references. A custom parser may
+ * produce another kind of {@link Material}.
  *
- * @category Graphics
+ * @category Asset
  */
 class MaterialHandler extends ResourceHandler {
     /**
      * Create a new MaterialHandler instance.
      *
-     * @param {import('../app-base.js').AppBase} app - The running {@link AppBase}.
+     * @param {AppBase} app - The running {@link AppBase}.
      * @ignore
      */
     constructor(app) {
         super(app, 'material');
 
         this._assets = app.assets;
-        this._device = app.graphicsDevice;
 
-        this._placeholderTextures = null;
+        // the textures assigned to the texture parameters of materials while their textures load
+        this._placeholders = new PlaceholderTextures(app.graphicsDevice);
 
+        // the texture parameters of each material which hold a placeholder until their texture is
+        // assigned; the material waits for its textures while any remain
+        this._pendingMaps = new WeakMap();
+
+        // the env atlas each material generated from the prefiltered cubemaps of a cubemap asset,
+        // to tell it from an env atlas assigned to the material since
+        this._generatedAtlases = new WeakMap();
+
+        // the json parser is the catch-all for material assets; the handler keeps a reference to
+        // it as patch uses its migrate/initialize when binding standard material assets
         this._parser = new JsonStandardMaterialParser();
-    }
-
-    load(url, callback) {
-        if (typeof url === 'string') {
-            url = {
-                load: url,
-                original: url
-            };
-        }
-
-        // Loading from URL (engine-only)
-        http.get(url.load, {
-            retry: this.maxRetries > 0,
-            maxRetries: this.maxRetries
-        }, function (err, response) {
-            if (!err) {
-                if (callback) {
-                    response._engine = true;
-                    callback(null, response);
-                }
-            } else {
-                if (callback) {
-                    callback(`Error loading material: ${url.original} [${err}]`);
-                }
-            }
-        });
-    }
-
-    open(url, data) {
-        const material = this._parser.parse(data);
-
-        // temp storage for engine-only as we need this during patching
-        if (data._engine) {
-            material._data = data;
-            delete data._engine;
-        }
-
-        return material;
-    }
-
-    // creates placeholders for textures
-    // that are used while texture is loading
-    _createPlaceholders() {
-        this._placeholderTextures = {};
-
-        const textures = {
-            white: [255, 255, 255, 255],
-            gray: [128, 128, 128, 255],
-            black: [0, 0, 0, 255],
-            normal: [128, 128, 255, 255]
-        };
-
-        for (const key in textures) {
-            if (!textures.hasOwnProperty(key))
-                continue;
-
-            // create texture
-            this._placeholderTextures[key] = new Texture(this._device, {
-                width: 2,
-                height: 2,
-                format: PIXELFORMAT_RGBA8,
-                name: 'material_placeholder'
-            });
-
-            // fill pixels with color
-            const pixels = this._placeholderTextures[key].lock();
-            for (let i = 0; i < 4; i++) {
-                for (let c = 0; c < 4; c++) {
-                    pixels[i * 4 + c] = textures[key][c];
-                }
-            }
-            this._placeholderTextures[key].unlock();
-        }
+        this.addParser(this._parser);
     }
 
     patch(asset, assets) {
+        // patching (the engine-only _data handoff, the name sync and the asset binding below) is
+        // specific to StandardMaterial, the built-in json parser's output; materials produced by
+        // user-registered parsers manage their own data and asset references
+        if (!(asset.resource instanceof StandardMaterial)) {
+            return;
+        }
+
         // in an engine-only environment we manually copy the source data into the asset
         if (asset.resource._data) {
             asset._data = asset.resource._data; // use _data to avoid firing events
@@ -155,30 +89,96 @@ class MaterialHandler extends ResourceHandler {
     _assignTexture(parameterName, materialAsset, texture) {
         // NB removed swapping out asset id for resource here
         materialAsset.resource[parameterName] = texture;
+        this._pendingMaps.get(materialAsset.resource)?.delete(parameterName);
     }
 
-    // returns the correct placeholder texture for the texture parameter
-    _getPlaceholderTexture(parameterName) {
-        // create placeholder textures on-demand
-        if (!this._placeholderTextures) {
-            this._createPlaceholders();
+    /**
+     * Returns the placeholder texture for a texture parameter of a material while its texture
+     * asset loads. The placeholder decodes like the texture of the asset, and the parameters of
+     * the material which reference the same texture asset get the same placeholder, as they get
+     * the same texture, so the material is drawn with the same shader before and after the texture
+     * loads.
+     *
+     * @param {string} parameterName - The name of the texture parameter.
+     * @param {Asset} materialAsset - The material asset.
+     * @param {Asset} textureAsset - The texture asset the parameter references.
+     * @returns {Texture} The placeholder texture.
+     * @private
+     */
+    _getPlaceholderTexture(parameterName, materialAsset, textureAsset) {
+        const material = materialAsset.resource;
+        const references = material._assetReferences;
+
+        // the parameters referencing the texture asset, each with the channels of it they sample
+        const maps = [];
+        for (const name of standardMaterialTextureParameters) {
+            const reference = references[name];
+            if (name === parameterName || (reference && referencesAsset(reference, textureAsset))) {
+                maps.push({ name, channel: material[`${name}Channel`] });
+            }
         }
 
-        const placeholder = PLACEHOLDER_MAP[parameterName];
-        const texture = this._placeholderTextures[placeholder];
-
-        return texture;
+        const { srgb, type } = getTextureAssetEncoding(textureAsset);
+        return this._placeholders.get(maps, srgb, type);
     }
 
     // assign a placeholder texture while waiting for one to load
-    _assignPlaceholderTexture(parameterName, materialAsset) {
+    _assignPlaceholderTexture(parameterName, materialAsset, textureAsset) {
+        const material = materialAsset.resource;
+        material[parameterName] = this._getPlaceholderTexture(parameterName, materialAsset, textureAsset);
 
-        materialAsset.resource[parameterName] = this._getPlaceholderTexture(parameterName);
+        let pendingMaps = this._pendingMaps.get(material);
+        if (!pendingMaps) {
+            pendingMaps = new Set();
+            this._pendingMaps.set(material, pendingMaps);
+        }
+        pendingMaps.add(parameterName);
+
+        // track the copies made of the material while it waits, see StandardMaterial#copy
+        material._pendingCopies ??= new Set();
+    }
+
+    // stop tracking the copies of a material once it waits for no more textures
+    _releasePendingCopies(material) {
+        const copies = material._pendingCopies;
+        if (copies && !this._pendingMaps.get(material)?.size) {
+            for (const ref of copies) {
+                const copy = ref.deref();
+                if (copy?._pendingSource === material) {
+                    copy._pendingSource = null;
+                }
+            }
+            material._pendingCopies = null;
+        }
     }
 
     _onTextureLoad(parameterName, materialAsset, textureAsset) {
-        this._assignTexture(parameterName, materialAsset, textureAsset.resource);
-        materialAsset.resource.update();
+        const material = materialAsset.resource;
+        const texture = textureAsset.resource;
+        this._assignTexture(parameterName, materialAsset, texture);
+        material.update();
+
+        // the copies made of the material while it waited receive the texture in the map, unless a
+        // texture was assigned to the map of the copy since
+        const copies = material._pendingCopies;
+        if (copies) {
+            for (const ref of copies) {
+                const copy = ref.deref();
+
+                // the copy is collected, destroyed, or copied from another material since
+                if (copy?._pendingSource !== material) {
+                    copies.delete(ref);
+                    continue;
+                }
+
+                if (this._placeholders.has(copy[parameterName])) {
+                    copy[parameterName] = texture;
+                    copy.update();
+                }
+            }
+
+            this._releasePendingCopies(material);
+        }
     }
 
     _onTextureAdd(parameterName, materialAsset, textureAsset) {
@@ -189,23 +189,30 @@ class MaterialHandler extends ResourceHandler {
         const material = materialAsset.resource;
         if (material) {
             if (materialAsset.resource[parameterName] === textureAsset.resource) {
-                this._assignPlaceholderTexture(parameterName, materialAsset);
+                this._assignPlaceholderTexture(parameterName, materialAsset, textureAsset);
                 material.update();
             }
         }
     }
 
     _assignCubemap(parameterName, materialAsset, textures) {
+        const material = materialAsset.resource;
+
         // the primary cubemap texture
-        materialAsset.resource[parameterName] = textures[0];
+        material[parameterName] = textures[0];
 
         // set prefiltered textures
         if (parameterName === 'cubeMap') {
             const prefiltered = textures.slice(1);
             if (prefiltered.every(t => t)) {
-                materialAsset.resource.prefilteredCubemaps = prefiltered;
+                // assigning the same set again generates no env atlas
+                const current = material.prefilteredCubemaps;
+                if (!prefiltered.every((t, i) => current[i] === t)) {
+                    material.prefilteredCubemaps = prefiltered;
+                    this._generatedAtlases.set(material, material.envAtlas);
+                }
             } else if (prefiltered[0]) {
-                materialAsset.resource.envAtlas = prefiltered[0];
+                material.envAtlas = prefiltered[0];
             }
         }
     }
@@ -216,19 +223,52 @@ class MaterialHandler extends ResourceHandler {
     }
 
     _onCubemapAdd(parameterName, materialAsset, cubemapAsset) {
-        // phong based - so ensure we load individual faces
-        if (materialAsset.data.shadingModel === SPECULAR_PHONG) {
-            materialAsset.loadFaces = true;
-        }
-
         this._assets.load(cubemapAsset);
     }
 
     _onCubemapRemoveOrUnload(parameterName, materialAsset, cubemapAsset) {
         const material = materialAsset.resource;
+        if (!material) {
+            return;
+        }
 
-        if (materialAsset.data.prefilteredCubeMap128 === cubemapAsset.resources[1]) {
-            this._assignCubemap(parameterName, materialAsset, [null, null, null, null, null, null, null]);
+        // release each texture the material still holds from this asset, as any of them may
+        // have been replaced since the asset assigned them
+        const [cubemap, ...prefiltered] = cubemapAsset.resources;
+        let released = false;
+
+        if (cubemap && material[parameterName] === cubemap) {
+            material[parameterName] = null;
+            released = true;
+        }
+
+        if (parameterName === 'cubeMap') {
+            if (prefiltered.length && prefiltered.every(t => t)) {
+                const current = material.prefilteredCubemaps;
+                if (prefiltered.every((t, i) => current[i] === t)) {
+                    // clearing them destroys the current env atlas of the material, so when it is
+                    // not the one generated from them, but one assigned to the material since, it
+                    // is kept and the generated one is destroyed instead
+                    const atlas = material.envAtlas;
+                    const generated = this._generatedAtlases.get(material);
+                    if (atlas !== generated) {
+                        material.envAtlas = null;
+                        material.prefilteredCubemaps = null;
+                        material.envAtlas = atlas;
+                        generated?.destroy();
+                    } else {
+                        material.prefilteredCubemaps = null;
+                    }
+                    this._generatedAtlases.delete(material);
+                    released = true;
+                }
+            } else if (prefiltered[0] && material.envAtlas === prefiltered[0]) {
+                material.envAtlas = null;
+                released = true;
+            }
+        }
+
+        if (released) {
             material.update();
         }
     }
@@ -244,6 +284,8 @@ class MaterialHandler extends ResourceHandler {
         const TEXTURES = standardMaterialTextureParameters;
 
         let i, name, assetReference;
+        const boundTextures = [];
+
         // iterate through all texture parameters
         for (i = 0; i < TEXTURES.length; i++) {
             name = TEXTURES[i];
@@ -256,7 +298,7 @@ class MaterialHandler extends ResourceHandler {
             const dataAssetId = data[name];
 
             const materialTexture = material[name];
-            const isPlaceHolderTexture = materialTexture === this._getPlaceholderTexture(name);
+            const isPlaceHolderTexture = this._placeholders.has(materialTexture);
             const dataValidated = data.validated;
 
             if (dataAssetId && (!materialTexture || !dataValidated || isPlaceHolderTexture)) {
@@ -279,14 +321,7 @@ class MaterialHandler extends ResourceHandler {
                 }
 
                 if (assetReference.asset) {
-                    if (assetReference.asset.resource) {
-                        // asset is already loaded
-                        this._assignTexture(name, materialAsset, assetReference.asset.resource);
-                    } else {
-                        this._assignPlaceholderTexture(name, materialAsset);
-                    }
-
-                    assets.load(assetReference.asset);
+                    boundTextures.push(name);
                 }
             } else {
                 if (assetReference) {
@@ -296,11 +331,29 @@ class MaterialHandler extends ResourceHandler {
                     } else {
                         assetReference.id = null;
                     }
+
+                    // so its load is no longer waited for
+                    this._pendingMaps.get(material)?.delete(name);
                 } else {
                     // no asset reference and no data field
                     // do nothing
                 }
             }
+        }
+
+        // the textures are assigned once all the parameters reference their assets, as the
+        // placeholder of a texture asset is shared by all the parameters referencing it
+        for (i = 0; i < boundTextures.length; i++) {
+            name = boundTextures[i];
+            const textureAsset = material._assetReferences[name].asset;
+            if (textureAsset.resource) {
+                // asset is already loaded
+                this._assignTexture(name, materialAsset, textureAsset.resource);
+            } else {
+                this._assignPlaceholderTexture(name, materialAsset, textureAsset);
+            }
+
+            assets.load(textureAsset);
         }
 
         const CUBEMAPS = standardMaterialCubemapParameters;
@@ -312,7 +365,7 @@ class MaterialHandler extends ResourceHandler {
             assetReference = material._assetReferences[name];
 
             // data[name] contains an asset id for a cubemap
-            // if we have a asset id and the prefiltered cubemap data is not set
+            // if we have an asset id and the prefiltered cubemap data is not set
             if (data[name] && !materialAsset.data.prefilteredCubeMap128) {
                 if (!assetReference) {
                     assetReference = new AssetReference(name, materialAsset, assets, {
@@ -346,6 +399,10 @@ class MaterialHandler extends ResourceHandler {
 
         // call to re-initialize material after all textures assigned
         this._parser.initialize(material, data);
+
+        // binding again can leave the material waiting for no more textures, by no longer
+        // referencing those it waited for, or referencing loaded ones instead, without a load
+        this._releasePendingCopies(material);
     }
 }
 

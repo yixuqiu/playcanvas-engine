@@ -1,12 +1,10 @@
 import { Vec3 } from '../../../core/math/vec3.js';
-
-import { Component } from '../component.js';
 import { ComponentSystem } from '../system.js';
-
 import { ZoneComponent } from './component.js';
-import { ZoneComponentData } from './data.js';
 
-const _schema = ['enabled'];
+/**
+ * @import { AppBase } from '../../app-base.js'
+ */
 
 /**
  * Creates and manages {@link ZoneComponent} instances.
@@ -17,7 +15,7 @@ class ZoneComponentSystem extends ComponentSystem {
     /**
      * Create a new ZoneComponentSystem.
      *
-     * @param {import('../../app-base.js').AppBase} app - The application.
+     * @param {AppBase} app - The application.
      * @ignore
      */
     constructor(app) {
@@ -26,11 +24,8 @@ class ZoneComponentSystem extends ComponentSystem {
         this.id = 'zone';
 
         this.ComponentType = ZoneComponent;
-        this.DataType = ZoneComponentData;
 
-        this.schema = _schema;
-
-        this.on('beforeremove', this._onBeforeRemove, this);
+        this.on('beforeremove', this.onBeforeRemove, this);
     }
 
     initializeComponentData(component, data, properties) {
@@ -47,17 +42,16 @@ class ZoneComponentSystem extends ComponentSystem {
 
     cloneComponent(entity, clone) {
         const data = {
+            enabled: entity.zone.enabled,
             size: entity.zone.size
         };
 
         return this.addComponent(clone, data);
     }
 
-    _onBeforeRemove(entity, component) {
-        component._onBeforeRemove();
+    onBeforeRemove(entity, component) {
+        component.onBeforeRemove();
     }
 }
-
-Component._buildAccessors(ZoneComponent.prototype, _schema);
 
 export { ZoneComponentSystem };

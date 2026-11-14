@@ -23,40 +23,12 @@ const particleFinalPos = new Vec3();
 const moveDirVec = new Vec3();
 const tmpVec3 = new Vec3();
 
-function frac(f) {
-    return f - Math.floor(f);
-}
-
 function saturate(x) {
     return Math.max(Math.min(x, 1), 0);
 }
 
 function glMod(x, y) {
     return x - y * Math.floor(x / y);
-}
-
-function encodeFloatRGBA(v) {
-    let encX = frac(v);
-    let encY = frac(255.0 * v);
-    let encZ = frac(65025.0 * v);
-    let encW = frac(160581375.0 * v);
-
-    encX -= encY / 255.0;
-    encY -= encZ / 255.0;
-    encZ -= encW / 255.0;
-    encW -= encW / 255.0;
-
-    return [encX, encY, encZ, encW];
-}
-
-function encodeFloatRG(v) {
-    let encX = frac(v);
-    let encY = frac(255.0 * v);
-
-    encX -= encY / 255.0;
-    encY -= encY / 255.0;
-
-    return [encX, encY];
 }
 
 // Wraps CPU update computations from ParticleEmitter
@@ -96,66 +68,30 @@ class ParticleCPUUpdater {
             randomPos.y = edgeY * (max === Math.abs(randomPos.y) ? Math.sign(randomPos.y) : 2 * randomPos.y);
             randomPos.z = edgeZ * (max === Math.abs(randomPos.z) ? Math.sign(randomPos.z) : 2 * randomPos.z);
 
-            if (!emitter.localSpace)
+            if (!emitter.localSpace) {
                 randomPosTformed.copy(emitterPos).add(spawnMatrix.transformPoint(randomPos));
-            else
+            } else {
                 randomPosTformed.copy(spawnMatrix.transformPoint(randomPos));
+            }
         } else {
             randomPos.normalize();
             const spawnBoundsSphereInnerRatio = (emitter.emitterRadius === 0) ? 0 : emitter.emitterRadiusInner / emitter.emitterRadius;
             const r = rW * (1.0 - spawnBoundsSphereInnerRatio) + spawnBoundsSphereInnerRatio;
-            if (!emitter.localSpace)
+            if (!emitter.localSpace) {
                 randomPosTformed.copy(emitterPos).add(randomPos.mulScalar(r * emitter.emitterRadius));
-            else
+            } else {
                 randomPosTformed.copy(randomPos.mulScalar(r * emitter.emitterRadius));
+            }
         }
 
         const particleRate = math.lerp(emitter.rate, emitter.rate2, rX);
-        let startSpawnTime = -particleRate * i;
-        if (emitter.pack8) {
-            const packX = (randomPosTformed.x - emitter.worldBounds.center.x) / emitter.worldBoundsSize.x + 0.5;
-            const packY = (randomPosTformed.y - emitter.worldBounds.center.y) / emitter.worldBoundsSize.y + 0.5;
-            const packZ = (randomPosTformed.z - emitter.worldBounds.center.z) / emitter.worldBoundsSize.z + 0.5;
+        const startSpawnTime = -particleRate * i;
+        particleTex[i * particleTexChannels] =     randomPosTformed.x;
+        particleTex[i * particleTexChannels + 1] = randomPosTformed.y;
+        particleTex[i * particleTexChannels + 2] = randomPosTformed.z;
+        particleTex[i * particleTexChannels + 3] = math.lerp(emitter.startAngle * math.DEG_TO_RAD, emitter.startAngle2 * math.DEG_TO_RAD, rX);
 
-            let packA = math.lerp(emitter.startAngle * math.DEG_TO_RAD, emitter.startAngle2 * math.DEG_TO_RAD, rX);
-            packA = (packA % (Math.PI * 2)) / (Math.PI * 2);
-
-            const rg0 = encodeFloatRG(packX);
-            particleTex[i * particleTexChannels] = rg0[0];
-            particleTex[i * particleTexChannels + 1] = rg0[1];
-
-            const ba0 = encodeFloatRG(packY);
-            particleTex[i * particleTexChannels + 2] = ba0[0];
-            particleTex[i * particleTexChannels + 3] = ba0[1];
-
-            const rg1 = encodeFloatRG(packZ);
-            particleTex[i * particleTexChannels + 0 + emitter.numParticlesPot * particleTexChannels] = rg1[0];
-            particleTex[i * particleTexChannels + 1 + emitter.numParticlesPot * particleTexChannels] = rg1[1];
-
-            const ba1 = encodeFloatRG(packA);
-            particleTex[i * particleTexChannels + 2 + emitter.numParticlesPot * particleTexChannels] = ba1[0];
-            particleTex[i * particleTexChannels + 3 + emitter.numParticlesPot * particleTexChannels] = ba1[1];
-
-            const a2 = 1.0;
-            particleTex[i * particleTexChannels + 3 + emitter.numParticlesPot * particleTexChannels * 2] = a2;
-
-            const maxNegLife = Math.max(emitter.lifetime, (emitter.numParticles - 1.0) * (Math.max(emitter.rate, emitter.rate2)));
-            const maxPosLife = emitter.lifetime + 1.0;
-            startSpawnTime = (startSpawnTime + maxNegLife) / (maxNegLife + maxPosLife);
-            const rgba3 = encodeFloatRGBA(startSpawnTime);
-            particleTex[i * particleTexChannels + 0 + emitter.numParticlesPot * particleTexChannels * 3] = rgba3[0];
-            particleTex[i * particleTexChannels + 1 + emitter.numParticlesPot * particleTexChannels * 3] = rgba3[1];
-            particleTex[i * particleTexChannels + 2 + emitter.numParticlesPot * particleTexChannels * 3] = rgba3[2];
-            particleTex[i * particleTexChannels + 3 + emitter.numParticlesPot * particleTexChannels * 3] = rgba3[3];
-
-        } else {
-            particleTex[i * particleTexChannels] =     randomPosTformed.x;
-            particleTex[i * particleTexChannels + 1] = randomPosTformed.y;
-            particleTex[i * particleTexChannels + 2] = randomPosTformed.z;
-            particleTex[i * particleTexChannels + 3] = math.lerp(emitter.startAngle * math.DEG_TO_RAD, emitter.startAngle2 * math.DEG_TO_RAD, rX);
-
-            particleTex[i * particleTexChannels + 3 + emitter.numParticlesPot * particleTexChannels] = startSpawnTime;
-        }
+        particleTex[i * particleTexChannels + 3 + emitter.numParticlesPot * particleTexChannels] = startSpawnTime;
     }
 
     // This should only change emitter state via in-params like data, vbToSort, etc.
@@ -191,7 +127,7 @@ class ParticleCPUUpdater {
             rndFactor3Vec.y = particleTex[id * particleTexChannels + 1 + emitter.numParticlesPot * 2 * particleTexChannels];
             rndFactor3Vec.z = particleTex[id * particleTexChannels + 2 + emitter.numParticlesPot * 2 * particleTexChannels];
 
-            const particleRate = emitter.rate + (emitter.rate2 - emitter.rate) * rndFactor;// pc.math.lerp(emitter.rate, emitter.rate2, rndFactor);
+            const particleRate = emitter.rate + (emitter.rate2 - emitter.rate) * rndFactor;// math.lerp(emitter.rate, emitter.rate2, rndFactor);
 
             const particleLifetime = emitter.lifetime;
 
@@ -258,10 +194,11 @@ class ParticleCPUUpdater {
                 particlePosPrev.y = particleTex[id * particleTexChannels + 1];
                 particlePosPrev.z = particleTex[id * particleTexChannels + 2];
 
-                if (!emitter.localSpace)
+                if (!emitter.localSpace) {
                     radialVelocityVec.copy(particlePosPrev).sub(emitterPos);
-                else
+                } else {
                     radialVelocityVec.copy(particlePosPrev);
+                }
                 radialVelocityVec.normalize().mulScalar(radialSpeed);
 
                 cf *= 3;
@@ -361,13 +298,15 @@ class ParticleCPUUpdater {
                 particleTex[id * particleTexChannels + 3] += rotSpeed * delta;
 
                 if (emitter.wrap && emitter.wrapBounds) {
-                    if (!emitter.localSpace)
+                    if (!emitter.localSpace) {
                         particleFinalPos.sub(emitterPos);
+                    }
                     particleFinalPos.x = glMod(particleFinalPos.x, emitter.wrapBounds.x) - emitter.wrapBounds.x * 0.5;
                     particleFinalPos.y = glMod(particleFinalPos.y, emitter.wrapBounds.y) - emitter.wrapBounds.y * 0.5;
                     particleFinalPos.z = glMod(particleFinalPos.z, emitter.wrapBounds.z) - emitter.wrapBounds.z * 0.5;
-                    if (!emitter.localSpace)
+                    if (!emitter.localSpace) {
                         particleFinalPos.add(emitterPos);
+                    }
                 }
 
                 if (emitter.sort > 0) {
@@ -391,7 +330,7 @@ class ParticleCPUUpdater {
                     // respawn particle by moving it's life back to zero.
                     // OR below zero, if there are still unspawned particles to be emitted before this one.
                     // such thing happens when you have an enormous amount of particles with short lifetime.
-                    life -= Math.max(particleLifetime, (emitter.numParticles - 1) * particleRate);
+                    life -= Math.max(particleLifetime, emitter.numParticles * particleRate);
 
                     // dead particles in a single-shot system continue their paths, but marked as invisible.
                     // it is necessary for keeping correct separation between particles, based on emission rate.
@@ -402,8 +341,9 @@ class ParticleCPUUpdater {
                     particleTex[id * particleTexChannels + 3 + emitter.numParticlesPot * 2 * particleTexChannels] = 1;
                 }
             }
-            if (particleTex[id * particleTexChannels + 3 + emitter.numParticlesPot * 2 * particleTexChannels] < 0)
+            if (particleTex[id * particleTexChannels + 3 + emitter.numParticlesPot * 2 * particleTexChannels] < 0) {
                 particleEnabled = false;
+            }
             particleTex[id * particleTexChannels + 3 + emitter.numParticlesPot * particleTexChannels] = life;
 
             for (let v = 0; v < emitter.numParticleVerts; v++) {
@@ -449,7 +389,7 @@ class ParticleCPUUpdater {
 
             emitter.vbOld.set(emitter.vbCPU);
 
-            vbToSort.sort(function (p1, p2) {
+            vbToSort.sort((p1, p2) => {
                 return p1[1] - p2[1];
             });
 

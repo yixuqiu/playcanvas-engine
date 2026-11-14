@@ -1,9 +1,7 @@
-import { GpuProfiler } from "../gpu-profiler.js";
+import { GpuProfiler } from '../gpu-profiler.js';
 
 /**
  * Class holding information about the queries for a single frame.
- *
- * @ignore
  */
 class FrameQueriesInfo {
     /**
@@ -26,9 +24,6 @@ class FrameQueriesInfo {
     }
 }
 
-/**
- * @ignore
- */
 class WebglGpuProfiler extends GpuProfiler {
     device;
 
@@ -67,6 +62,7 @@ class WebglGpuProfiler extends GpuProfiler {
     }
 
     destroy() {
+        this.invalidateTimings();
         this.freeQueries.forEach(query => this.device.gl.deleteQuery(query));
         this.frameQueries.forEach(query => this.device.gl.deleteQuery(query));
         this.previousFrameQueries.forEach(frameQueriesInfo => frameQueriesInfo.destroy(this.device.gl));
@@ -78,8 +74,6 @@ class WebglGpuProfiler extends GpuProfiler {
 
     /**
      * Called when the WebGL context was lost. It releases all context related resources.
-     *
-     * @ignore
      */
     loseContext() {
         super.loseContext();
@@ -190,6 +184,9 @@ class WebglGpuProfiler extends GpuProfiler {
                         frameQueriesInfo.destroy(gl);
                     });
                     this.previousFrameQueries.length = 0;
+                    this.invalidateTimings();
+                    this.frameAllocations.length = 0;
+                    return;
                 }
             }
 

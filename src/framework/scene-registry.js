@@ -1,47 +1,50 @@
 import { path } from '../core/path.js';
 import { Debug } from '../core/debug.js';
-
 import { ABSOLUTE_URL } from './asset/constants.js';
-
 import { SceneRegistryItem } from './scene-registry-item.js';
 
 /**
- * Callback used by {@link SceneRegistry#loadSceneHierarchy}.
- *
+ * @import { AppBase } from './app-base.js'
+ * @import { Entity } from './entity.js'
+ */
+
+/**
  * @callback LoadHierarchyCallback
+ * Callback used by {@link SceneRegistry#loadSceneHierarchy}.
  * @param {string|null} err - The error message in the case where the loading or parsing fails.
- * @param {import('./entity.js').Entity} [entity] - The loaded root entity if no errors were encountered.
+ * @param {Entity} [entity] - The loaded root entity if no errors were encountered.
+ * @returns {void}
  */
 
 /**
- * Callback used by {@link SceneRegistry#loadSceneSettings}.
- *
  * @callback LoadSettingsCallback
+ * Callback used by {@link SceneRegistry#loadSceneSettings}.
  * @param {string|null} err - The error message in the case where the loading or parsing fails.
+ * @returns {void}
  */
 
 /**
- * Callback used by {@link SceneRegistry#changeScene}.
- *
  * @callback ChangeSceneCallback
+ * Callback used by {@link SceneRegistry#changeScene}.
  * @param {string|null} err - The error message in the case where the loading or parsing fails.
- * @param {import('./entity.js').Entity} [entity] - The loaded root entity if no errors were encountered.
+ * @param {Entity} [entity] - The loaded root entity if no errors were encountered.
+ * @returns {void}
  */
 
 /**
- * Callback used by {@link SceneRegistry#loadScene}.
- *
  * @callback LoadSceneCallback
+ * Callback used by {@link SceneRegistry#loadScene}.
  * @param {string|null} err - The error message in the case where the loading or parsing fails.
- * @param {import('./entity.js').Entity} [entity] - The loaded root entity if no errors were encountered.
+ * @param {Entity} [entity] - The loaded root entity if no errors were encountered.
+ * @returns {void}
  */
 
 /**
- * Callback used by {@link SceneRegistry#loadSceneData}.
- *
  * @callback LoadSceneDataCallback
+ * Callback used by {@link SceneRegistry#loadSceneData}.
  * @param {string|null} err - The error message in the case where the loading or parsing fails.
  * @param {SceneRegistryItem} [sceneItem] - The scene registry item if no errors were encountered.
+ * @returns {void}
  */
 
 /**
@@ -52,7 +55,7 @@ import { SceneRegistryItem } from './scene-registry-item.js';
  */
 class SceneRegistry {
     /**
-     * @type {import('./app-base.js').AppBase}
+     * @type {AppBase}
      * @private
      */
     _app;
@@ -72,7 +75,7 @@ class SceneRegistry {
     /**
      * Create a new SceneRegistry instance.
      *
-     * @param {import('./app-base.js').AppBase} app - The application.
+     * @param {AppBase} app - The application.
      */
     constructor(app) {
         this._app = app;
@@ -101,7 +104,7 @@ class SceneRegistry {
      */
     add(name, url) {
         if (this._index.hasOwnProperty(name)) {
-            Debug.warn('pc.SceneRegistry: trying to add more than one scene called: ' + name);
+            Debug.warn(`SceneRegistry: trying to add more than one scene called: ${name}`);
             return false;
         }
 
@@ -176,7 +179,7 @@ class SceneRegistry {
      * data which may be undesired behavior with projects that have many scenes.
      *
      * @param {SceneRegistryItem | string} sceneItem - The scene item (which can be found with
-     * {@link SceneRegistry#find}, URL of the scene file (e.g."scene_id.json") or name of the scene.
+     * {@link find}, URL of the scene file (e.g."scene_id.json") or name of the scene.
      * @param {boolean} storeInCache - Whether to store the loaded data in the scene item.
      * @param {LoadSceneDataCallback} callback - The function to call after loading,
      * passed (err, sceneItem) where err is null if no errors occurred.
@@ -198,7 +201,7 @@ class SceneRegistry {
         url = sceneItem.url;
 
         if (!url) {
-            callback("Cannot find scene to load");
+            callback('Cannot find scene to load');
             return;
         }
 
@@ -218,7 +221,7 @@ class SceneRegistry {
         if (!sceneItem._loading) {
             // Because we need to load scripts before we instance the hierarchy (i.e. before we
             // create script components), split loading into load and open
-            const handler = app.loader.getHandler("hierarchy");
+            const handler = app.loader.getHandler('hierarchy');
 
             handler.load(url, (err, data) => {
                 sceneItem.data = data;
@@ -243,16 +246,16 @@ class SceneRegistry {
     /**
      * Loads and stores the scene data to reduce the number of the network requests when the same
      * scenes are loaded multiple times. Can also be used to load data before calling
-     * {@link SceneRegistry#loadSceneHierarchy} and {@link SceneRegistry#loadSceneSettings} to make
-     * scene loading quicker for the user.
+     * {@link loadSceneHierarchy} and {@link loadSceneSettings} to make scene loading quicker for
+     * the user.
      *
      * @param {SceneRegistryItem | string} sceneItem - The scene item (which can be found with
-     * {@link SceneRegistry#find}, URL of the scene file (e.g."scene_id.json") or name of the scene.
+     * {@link find}, URL of the scene file (e.g."scene_id.json") or name of the scene.
      * @param {LoadSceneDataCallback} callback - The function to call after loading,
      * passed (err, sceneItem) where err is null if no errors occurred.
      * @example
      * const sceneItem = app.scenes.find("Scene Name");
-     * app.scenes.loadSceneData(sceneItem, function (err, sceneItem) {
+     * app.scenes.loadSceneData(sceneItem, (err, sceneItem) => {
      *     if (err) {
      *         // error
      *     }
@@ -263,10 +266,10 @@ class SceneRegistry {
     }
 
     /**
-     * Unloads scene data that has been loaded previously using {@link SceneRegistry#loadSceneData}.
+     * Unloads scene data that has been loaded previously using {@link loadSceneData}.
      *
      * @param {SceneRegistryItem | string} sceneItem - The scene item (which can be found with
-     * {@link SceneRegistry#find} or URL of the scene file. Usually this will be "scene_id.json".
+     * {@link find} or URL of the scene file. Usually this will be "scene_id.json".
      * @example
      * const sceneItem = app.scenes.find("Scene Name");
      * app.scenes.unloadSceneData(sceneItem);
@@ -300,7 +303,7 @@ class SceneRegistry {
             const _loaded = () => {
                 // Because we need to load scripts before we instance the hierarchy (i.e. before we create script components)
                 // Split loading into load and open
-                const handler = app.loader.getHandler("hierarchy");
+                const handler = app.loader.getHandler('hierarchy');
 
                 app.systems.script.preloading = true;
                 const entity = handler.open(sceneItem.url, sceneItem.data);
@@ -308,7 +311,7 @@ class SceneRegistry {
                 app.systems.script.preloading = false;
 
                 // clear from cache because this data is modified by entity operations (e.g. destroy)
-                app.loader.clearCache(sceneItem.url, "hierarchy");
+                app.loader.clearCache(sceneItem.url, 'hierarchy');
 
                 // add to hierarchy
                 app.root.addChild(entity);
@@ -331,12 +334,12 @@ class SceneRegistry {
      * application root Entity.
      *
      * @param {SceneRegistryItem | string} sceneItem - The scene item (which can be found with
-     * {@link SceneRegistry#find}, URL of the scene file (e.g."scene_id.json") or name of the scene.
+     * {@link find}, URL of the scene file (e.g."scene_id.json") or name of the scene.
      * @param {LoadHierarchyCallback} callback - The function to call after loading,
      * passed (err, entity) where err is null if no errors occurred.
      * @example
      * const sceneItem = app.scenes.find("Scene Name");
-     * app.scenes.loadSceneHierarchy(sceneItem, function (err, entity) {
+     * app.scenes.loadSceneHierarchy(sceneItem, (err, entity) => {
      *     if (!err) {
      *         const e = app.root.find("My New Entity");
      *     } else {
@@ -352,12 +355,12 @@ class SceneRegistry {
      * Load a scene file and apply the scene settings to the current scene.
      *
      * @param {SceneRegistryItem | string} sceneItem - The scene item (which can be found with
-     * {@link SceneRegistry#find}, URL of the scene file (e.g."scene_id.json") or name of the scene.
+     * {@link find}, URL of the scene file (e.g."scene_id.json") or name of the scene.
      * @param {LoadSettingsCallback} callback - The function called after the settings
      * are applied. Passed (err) where err is null if no error occurred.
      * @example
      * const sceneItem = app.scenes.find("Scene Name");
-     * app.scenes.loadSceneSettings(sceneItem, function (err) {
+     * app.scenes.loadSceneSettings(sceneItem, (err) => {
      *     if (!err) {
      *         // success
      *     } else {
@@ -385,11 +388,11 @@ class SceneRegistry {
      * entities and graph nodes under `app.root` and load the scene settings and hierarchy.
      *
      * @param {SceneRegistryItem | string} sceneItem - The scene item (which can be found with
-     * {@link SceneRegistry#find}, URL of the scene file (e.g."scene_id.json") or name of the scene.
+     * {@link find}, URL of the scene file (e.g."scene_id.json") or name of the scene.
      * @param {ChangeSceneCallback} [callback] - The function to call after loading,
      * passed (err, entity) where err is null if no errors occurred.
      * @example
-     * app.scenes.changeScene("Scene Name", function (err, entity) {
+     * app.scenes.changeScene("Scene Name", (err, entity) => {
      *     if (!err) {
      *         // success
      *     } else {
@@ -424,7 +427,7 @@ class SceneRegistry {
     loadScene(url, callback) {
         const app = this._app;
 
-        const handler = app.loader.getHandler("scene");
+        const handler = app.loader.getHandler('scene');
 
         // include asset prefix if present
         if (app.assets && app.assets.prefix && !ABSOLUTE_URL.test(url)) {
@@ -448,17 +451,18 @@ class SceneRegistry {
 
                     // clear scene from cache because we'll destroy it when we load another one
                     // so data will be invalid
-                    app.loader.clearCache(url, "scene");
+                    app.loader.clearCache(url, 'scene');
 
-                    app.loader.patch({
+                    app.loader.patch(/** @type {any} */ ({
                         resource: scene,
-                        type: "scene"
-                    }, app.assets);
+                        type: 'scene'
+                    }), app.assets);
 
                     app.root.addChild(scene.root);
 
-                    // Initialize pack settings
-                    if (app.systems.rigidbody && typeof Ammo !== 'undefined') {
+                    // Initialize pack settings - gravity is engine state, applied by the
+                    // physics backend when present
+                    if (app.systems.rigidbody) {
                         app.systems.rigidbody.gravity.set(scene._gravity.x, scene._gravity.y, scene._gravity.z);
                     }
 

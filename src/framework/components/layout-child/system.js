@@ -1,13 +1,14 @@
-import { Component } from '../component.js';
 import { ComponentSystem } from '../system.js';
-
 import { LayoutChildComponent } from './component.js';
-import { LayoutChildComponentData } from './data.js';
-
-const _schema = ['enabled'];
 
 /**
- * Manages creation of {@link LayoutChildComponent}s.
+ * @import { AppBase } from '../../app-base.js'
+ */
+
+/**
+ * Manages the {@link LayoutChildComponent}s of an application. Reach it through
+ * `app.systems.layoutchild`; components are created with {@link Entity#addComponent}, never by
+ * calling the system directly.
  *
  * @category User Interface
  */
@@ -15,7 +16,7 @@ class LayoutChildComponentSystem extends ComponentSystem {
     /**
      * Create a new LayoutChildComponentSystem instance.
      *
-     * @param {import('../../app-base.js').AppBase} app - The application.
+     * @param {AppBase} app - The application.
      * @ignore
      */
     constructor(app) {
@@ -24,9 +25,6 @@ class LayoutChildComponentSystem extends ComponentSystem {
         this.id = 'layoutchild';
 
         this.ComponentType = LayoutChildComponent;
-        this.DataType = LayoutChildComponentData;
-
-        this.schema = _schema;
     }
 
     initializeComponentData(component, data, properties) {
@@ -39,7 +37,8 @@ class LayoutChildComponentSystem extends ComponentSystem {
         if (data.fitHeightProportion !== undefined) component.fitHeightProportion = data.fitHeightProportion;
         if (data.excludeFromLayout !== undefined) component.excludeFromLayout = data.excludeFromLayout;
 
-        super.initializeComponentData(component, data, properties);
+        // pass an empty properties list as the enabled state is initialized above
+        super.initializeComponentData(component, data, []);
     }
 
     cloneComponent(entity, clone) {
@@ -57,7 +56,5 @@ class LayoutChildComponentSystem extends ComponentSystem {
         });
     }
 }
-
-Component._buildAccessors(LayoutChildComponent.prototype, _schema);
 
 export { LayoutChildComponentSystem };

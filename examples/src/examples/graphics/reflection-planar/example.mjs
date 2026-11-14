@@ -1,202 +1,375 @@
-import * as pc from 'playcanvas';
-import files from '@examples/files';
-import { deviceType, rootPath } from '@examples/utils';
+// @config
+//
+// The polished floor reflects the room with a planar reflection. A camera mirrored by the floor
+// renders the room into a texture each frame, and the planarReflectionMap of the floor material uses
+// it in place of its environment reflection. Unlike the cubemap baked from the empty room, it reflects the statue,
+// the drone and the spinning torus exactly, also where they touch the floor. Rougher floors blur
+// the reflection, using the mipmaps of the texture.
 
-const canvas = document.getElementById('application-canvas');
-if (!(canvas instanceof HTMLCanvasElement)) {
-    throw new Error('No canvas found');
-}
+import {
+    AppBase,
+    AppOptions,
+    Asset,
+    AssetListLoader,
+    BoundingBox,
+    CUBEPROJ_BOX,
+    CameraComponentSystem,
+    CameraFrame,
+    Color,
+    ContainerHandler,
+    Entity,
+    FILLMODE_FILL_WINDOW,
+    Layer,
+    LightComponentSystem,
+    Mouse,
+    RESOLUTION_AUTO,
+    RenderComponentSystem,
+    ScriptComponentSystem,
+    StandardMaterial,
+    TEXTURETYPE_RGBP,
+    TONEMAP_ACES,
+    TextureHandler,
+    TextureRenderer,
+    TouchDevice,
+    Vec2,
+    Vec3,
+    createGraphicsDevice
+} from 'playcanvas';
+import { CameraControls } from 'playcanvas/scripts/esm/camera-controls.mjs';
+import { PlanarRenderer } from 'playcanvas/scripts/esm/planar-renderer.mjs';
+
+import { data, deviceType } from 'examples/context';
+
+/**
+ * @import { RenderComponent } from 'playcanvas'
+ */
+
+const canvas = /** @type {HTMLCanvasElement} */ (document.getElementById('application-canvas'));
+window.focus();
 
 const assets = {
-    envatlas: new pc.Asset(
+    room: new Asset('room', 'container', { url: './assets/models/area-lights-room.glb' }),
+    statue: new Asset('statue', 'container', { url: './assets/models/statue.glb' }),
+    drone: new Asset('drone', 'container', { url: './assets/models/drone.glb' }),
+    helipad: new Asset(
         'helipad-env-atlas',
         'texture',
-        { url: rootPath + '/static/assets/cubemaps/helipad-env-atlas.png' },
-        { type: pc.TEXTURETYPE_RGBP, mipmaps: false }
+        { url: './assets/cubemaps/helipad-env-atlas.png' },
+        { type: TEXTURETYPE_RGBP, mipmaps: false }
     ),
-    statue: new pc.Asset('statue', 'container', { url: rootPath + '/static/assets/models/statue.glb' }),
-    script: new pc.Asset('script', 'script', { url: rootPath + '/static/scripts/utils/planar-renderer.js' })
+
+    // the empty room rendered into a cubemap from the center of the room, prefiltered into an
+    // environment atlas, holding the reflection for each level of roughness
+    roomEnvAtlas: new Asset(
+        'room-env-atlas',
+        'texture',
+        { url: './assets/cubemaps/area-lights-room-env-atlas.png' },
+        { type: TEXTURETYPE_RGBP, mipmaps: false }
+    )
 };
 
-const gfxOptions = {
-    deviceTypes: [deviceType],
-    glslangUrl: rootPath + '/static/lib/glslang/glslang.js',
-    twgslUrl: rootPath + '/static/lib/twgsl/twgsl.js'
-};
-
-const device = await pc.createGraphicsDevice(canvas, gfxOptions);
+const device = await createGraphicsDevice(canvas, {
+    deviceTypes: [deviceType]
+});
 device.maxPixelRatio = Math.min(window.devicePixelRatio, 2);
-const createOptions = new pc.AppOptions();
+
+const createOptions = new AppOptions();
 createOptions.graphicsDevice = device;
+createOptions.mouse = new Mouse(document.body);
+createOptions.touch = new TouchDevice(document.body);
+createOptions.componentSystems = [
+    RenderComponentSystem,
+    CameraComponentSystem,
+    LightComponentSystem,
+    ScriptComponentSystem
+];
+createOptions.resourceHandlers = [TextureHandler, ContainerHandler];
 
-createOptions.componentSystems = [pc.RenderComponentSystem, pc.CameraComponentSystem, pc.ScriptComponentSystem];
-createOptions.resourceHandlers = [pc.TextureHandler, pc.ScriptHandler, pc.ContainerHandler];
-
-const app = new pc.AppBase(canvas);
+const app = new AppBase(canvas);
 app.init(createOptions);
+app.setCanvasFillMode(FILLMODE_FILL_WINDOW);
+app.setCanvasResolution(RESOLUTION_AUTO);
 
-// Set the canvas to fill the window and automatically change resolution to be the same as the canvas size
-app.setCanvasFillMode(pc.FILLMODE_FILL_WINDOW);
-app.setCanvasResolution(pc.RESOLUTION_AUTO);
-
-// Ensure canvas is resized when window changes size
 const resize = () => app.resizeCanvas();
 window.addEventListener('resize', resize);
-app.on('destroy', () => {
-    window.removeEventListener('resize', resize);
+app.on('destroy', () => window.removeEventListener('resize', resize));
+
+await new Promise((resolve) => {
+    new AssetListLoader(Object.values(assets), app.assets).load(resolve);
 });
 
-const assetListLoader = new pc.AssetListLoader(Object.values(assets), app.assets);
-assetListLoader.load(() => {
-    app.start();
+app.start();
 
-    // set up some general scene rendering properties
-    app.scene.toneMapping = pc.TONEMAP_ACES;
+data.set('settings', {
+    reflection: 'planar',
+    resolution: 0.5,
+    roughness: 0.1,
+    showTexture: false,
+    speed: 1
+});
 
-    // setup skydome
-    app.scene.envAtlas = assets.envatlas.resource;
-    app.scene.skyboxMip = 1;
-    app.scene.skyboxIntensity = 1.7; // make it brighter
+// The layers:
+// - World: the room and everything in it, rendered by both cameras
+// - Skybox: the sky, rendered by both cameras
+// - Floor: the floor, rendered only by the main camera. A surface cannot be in the reflection it
+//   displays.
+const worldLayer = app.scene.layers.getLayerByName('World');
+const skyboxLayer = app.scene.layers.getLayerByName('Skybox');
+const uiLayer = app.scene.layers.getLayerByName('UI');
+const floorLayer = new Layer({ name: 'Floor' });
+app.scene.layers.insert(floorLayer, 1);
+const LIGHT_LAYERS = [worldLayer.id, floorLayer.id];
 
-    /**
-     * Helper function to create a primitive with shape type, position, scale, color and layer.
-     *
-     * @param {string} primitiveType - Type of the primitive to create.
-     * @param {pc.Vec3} position - The position of the primitive.
-     * @param {pc.Vec3} scale - The scale of the primitive.
-     * @param {pc.Color} color - The color of the primitive.
-     * @param {number[]} layer - The layer to render the primitive into.
-     * @param {pc.Material | pc.StandardMaterial | null} [material] - The material to use for the primitive.
-     * @returns {pc.Entity} The created entity.
-     */
-    function createPrimitive(primitiveType, position, scale, color, layer, material = null) {
-        // create material of specified color
-        if (!material) {
-            const standardMaterial = new pc.StandardMaterial();
-            standardMaterial.diffuse = color;
-            standardMaterial.gloss = 0.6;
-            standardMaterial.metalness = 0.7;
-            standardMaterial.useMetalness = true;
-            standardMaterial.update();
-            material = standardMaterial;
-        }
+// The sky, at the full resolution of its environment atlas, shows through the windows and the
+// skylight of the room
+app.scene.envAtlas = assets.helipad.resource;
+app.scene.skyboxMip = 0;
+app.scene.exposure = 0.6;
 
-        // create primitive
-        const primitive = new pc.Entity();
-        primitive.addComponent('render', {
-            type: primitiveType,
-            layers: layer,
-            material: material
-        });
+// The box projection uses the inside of the room, the cubemap was rendered from its center
+const roomBox = new BoundingBox(new Vec3(0, 3.25, 0), new Vec3(8, 3.25, 9));
 
-        // set position and scale and add it to scene
-        primitive.setLocalPosition(position);
-        primitive.setLocalScale(scale);
-        app.root.addChild(primitive);
+/**
+ * Makes a material reflect the room, and be lit by it.
+ *
+ * @param {StandardMaterial} material - The material.
+ */
+const addReflections = (material) => {
+    material.envAtlas = assets.roomEnvAtlas.resource;
+    material.cubeMapProjection = CUBEPROJ_BOX;
+    material.cubeMapProjectionBox = roomBox;
+    material.update();
+};
 
-        return primitive;
-    }
+/**
+ * Creates a primitive on the World layer.
+ *
+ * @param {RenderComponent['type']} type - The primitive type.
+ * @param {StandardMaterial} material - The material.
+ * @param {Vec3} position - The position.
+ * @param {Vec3} scale - The scale.
+ * @param {Entity} [parent] - The parent entity.
+ * @returns {Entity} The primitive.
+ */
+const createPrimitive = (type, material, position, scale, parent = app.root) => {
+    const entity = new Entity();
+    entity.addComponent('render', { type, material, layers: [worldLayer.id] });
+    entity.setLocalPosition(position);
+    entity.setLocalScale(scale);
+    parent.addChild(entity);
+    return entity;
+};
 
-    // get existing layers
-    const worldLayer = app.scene.layers.getLayerByName('World');
-    const skyboxLayer = app.scene.layers.getLayerByName('Skybox');
-    const uiLayer = app.scene.layers.getLayerByName('UI');
+// The room, with the statue on the pedestal in the middle
+const room = assets.room.resource.instantiateRenderEntity({
+    castShadows: true,
+    receiveShadows: true
+});
+app.root.addChild(room);
 
-    // create a layer for objects that do not render into texture
-    const excludedLayer = new pc.Layer({ name: 'Excluded' });
-    app.scene.layers.insert(excludedLayer, app.scene.layers.getTransparentIndex(worldLayer) + 1);
+const statue = assets.statue.resource.instantiateRenderEntity({
+    castShadows: true,
+    receiveShadows: true
+});
+statue.setLocalScale(0.15, 0.15, 0.15);
+statue.setLocalPosition(0, 0.36, 0);
+statue.setLocalEulerAngles(0, 30, 0);
+app.root.addChild(statue);
 
-    // Create the shader from the vertex and fragment shaders
-    const shader = pc.createShaderFromCode(app.graphicsDevice, files['shader.vert'], files['shader.frag'], 'myShader', {
-        aPosition: pc.SEMANTIC_POSITION,
-        aUv0: pc.SEMANTIC_TEXCOORD0
+// The drone, flying around the statue
+const drone = assets.drone.resource.instantiateRenderEntity({
+    castShadows: true
+});
+app.root.addChild(drone);
+
+// the rotors spin, the ones on opposite corners in the same direction, and the LED blinks
+const rotors = drone
+    .find((node) => node.name.startsWith('Rotor'))
+    .map((rotor) => {
+        const position = rotor.getLocalPosition();
+        return { rotor, direction: Math.sign(position.x * position.z) };
     });
+const led = drone.findByName('LED');
 
-    // reflective ground
-    // This is in the excluded layer so it does not render into reflection texture
-    const groundMaterial = new pc.Material();
-    groundMaterial.shader = shader;
-    createPrimitive(
-        'plane',
-        new pc.Vec3(0, 0, 0),
-        new pc.Vec3(40, 1, 40),
-        new pc.Color(0.5, 0.5, 0.5),
-        [excludedLayer.id],
-        groundMaterial
-    );
+// the glTF materials are standard materials
+[assets.room, assets.statue, assets.drone].forEach((asset) => {
+    asset.resource.materials.forEach((material) => addReflections(/** @type {StandardMaterial} */ (material.resource)));
+});
 
-    // get the instance of the statue and set up with render component
-    const statueEntity = assets.statue.resource.instantiateRenderEntity();
-    app.root.addChild(statueEntity);
+// A chrome sphere on the left pedestal, and a gold torus spinning on the right one
+const chromeMaterial = new StandardMaterial();
+chromeMaterial.diffuse = new Color(0.95, 0.95, 0.95);
+chromeMaterial.useMetalness = true;
+chromeMaterial.metalness = 1;
+chromeMaterial.gloss = 0.95;
+addReflections(chromeMaterial);
+createPrimitive('sphere', chromeMaterial, new Vec3(-4, 1.15, 0.8), new Vec3(1.2, 1.2, 1.2));
 
-    /**
-     * create few random primitives in the world layer
-     * @type {pc.Entity[]}
-     */
-    const entities = [];
-    const shapes = ['box', 'cone', 'cylinder', 'sphere', 'capsule'];
-    for (let i = 0; i < 6; i++) {
-        const shapeName = shapes[Math.floor(Math.random() * shapes.length)];
-        const color = new pc.Color(Math.random(), Math.random(), Math.random());
-        entities.push(createPrimitive(shapeName, pc.Vec3.ZERO, new pc.Vec3(3, 3, 3), color, [worldLayer.id]));
-    }
+const goldMaterial = new StandardMaterial();
+goldMaterial.diffuse = new Color(1, 0.77, 0.34);
+goldMaterial.useMetalness = true;
+goldMaterial.metalness = 1;
+goldMaterial.gloss = 0.75;
+addReflections(goldMaterial);
+const torusPivot = new Entity('Torus');
+torusPivot.setLocalPosition(4, 1.29, 0.8);
+app.root.addChild(torusPivot);
+const torus = createPrimitive('torus', goldMaterial, Vec3.ZERO, new Vec3(1.5, 1.5, 1.5), torusPivot);
+torus.setLocalEulerAngles(90, 0, 0);
 
-    // Create main camera, which renders entities in world, excluded and skybox layers
-    const camera = new pc.Entity('MainCamera');
-    camera.addComponent('camera', {
-        fov: 60,
-        layers: [worldLayer.id, excludedLayer.id, skyboxLayer.id, uiLayer.id]
+// The glowing doors in the back wall, each with a spot light shining into the room
+[
+    { x: -4.5, color: new Color(1, 0.42, 0.12) },
+    { x: 0, color: new Color(0.25, 0.8, 1) },
+    { x: 4.5, color: new Color(1, 0.8, 0.35) }
+].forEach(({ x, color }) => {
+    const material = new StandardMaterial();
+    material.diffuse = Color.BLACK;
+    material.emissive = color;
+    material.emissiveIntensity = 4;
+    material.useLighting = false;
+    material.update();
+    createPrimitive('box', material, new Vec3(x, 1.7, -9.45), new Vec3(1.7, 3.3, 0.02));
+
+    // the spot light shines down its -Y axis, so it is turned to face the room
+    const light = new Entity();
+    light.addComponent('light', {
+        type: 'spot',
+        layers: LIGHT_LAYERS,
+        color,
+        intensity: 1.5,
+        range: 20,
+        innerConeAngle: 50,
+        outerConeAngle: 80
     });
-    app.root.addChild(camera);
+    light.setLocalPosition(x, 1.7, -9.2);
+    light.setLocalEulerAngles(-90, 0, 0);
+    app.root.addChild(light);
+});
 
-    // create reflection camera, which renders entities in world and skybox layers only
-    const reflectionCamera = new pc.Entity('ReflectionCamera');
-    reflectionCamera.addComponent('camera', {
-        fov: 60,
-        layers: [worldLayer.id, skyboxLayer.id],
-        priority: -1 // render reflections before the main camera
-    });
+// The light of the room, shining on the statue from the front
+const light = new Entity('Light');
+light.addComponent('light', {
+    type: 'omni',
+    layers: LIGHT_LAYERS,
+    color: new Color(1, 0.95, 0.9),
+    intensity: 2,
+    range: 20,
+    castShadows: true,
+    shadowBias: 0.2,
+    normalOffsetBias: 0.05
+});
+light.setLocalPosition(1, 5.5, 4);
+app.root.addChild(light);
 
-    // add planarRenderer script which renders the reflection texture
-    reflectionCamera.addComponent('script');
-    reflectionCamera.script.create('planarRenderer', {
-        attributes: {
+// The floor, on its own layer
+const floor = /** @type {Entity} */ (room.findByName('RoomFloor'));
+floor.render.layers = [floorLayer.id];
+const floorMaterial = /** @type {StandardMaterial} */ (
+    assets.room.resource.materials.find((asset) => asset.resource.name === 'Floor').resource
+);
+
+// The main camera, low in the room, where the floor reflects the most
+const camera = new Entity('MainCamera');
+camera.addComponent('camera', {
+    fov: 60,
+    nearClip: 0.1,
+    farClip: 100,
+    layers: [worldLayer.id, floorLayer.id, skyboxLayer.id, uiLayer.id]
+});
+camera.addComponent('script');
+camera.setLocalPosition(1.5, 1.8, 6.8);
+app.root.addChild(camera);
+
+// The camera orbits all the way around, and the pitch and zoom ranges keep it inside the room
+const cameraControls = /** @type {CameraControls} */ (camera.script.create(CameraControls));
+cameraControls.focusPoint = new Vec3(0, 1.2, 0);
+cameraControls.enableFly = false;
+cameraControls.pitchRange = new Vec2(-45, 5);
+cameraControls.zoomRange = new Vec2(3.5, 7);
+
+// Bloom makes the doors glow, and their reflections
+const cameraFrame = new CameraFrame(app, camera.camera);
+cameraFrame.rendering.samples = 4;
+cameraFrame.rendering.toneMapping = TONEMAP_ACES;
+cameraFrame.bloom.intensity = 0.03;
+cameraFrame.bloom.blurLevel = 6;
+cameraFrame.vignette.intensity = 0.35;
+cameraFrame.update();
+
+// The reflection camera, rendering the World and Skybox layers into the reflection texture. Its
+// priority is lower than the main camera's, so it renders first each frame. The planarRenderer
+// script mirrors the main camera by the plane of the floor, and creates the texture: with mipmaps
+// for the blurred reflections of rough floors, and with a high dynamic range, so the reflections of
+// the doors are as bright as the doors.
+const reflectionCamera = new Entity('ReflectionCamera');
+reflectionCamera.addComponent('camera', {
+    layers: [worldLayer.id, skyboxLayer.id],
+    priority: -1
+});
+reflectionCamera.addComponent('script');
+const planarRenderer = /** @type {PlanarRenderer} */ (
+    reflectionCamera.script.create(PlanarRenderer, {
+        properties: {
             sceneCameraEntity: camera,
-            scale: 1,
-            mipmaps: false,
-            depth: true,
-            planePoint: pc.Vec3.ZERO,
-            planeNormal: pc.Vec3.UP
+            mipmaps: true,
+            hdr: true,
+            planePoint: new Vec3(0, 0, 0),
+            planeNormal: new Vec3(0, 1, 0)
         }
-    });
-    app.root.addChild(reflectionCamera);
+    })
+);
+app.root.addChild(reflectionCamera);
 
-    // update things each frame
-    let time = 0;
-    app.on('update', function (dt) {
-        time += dt;
+// The floor material is mostly metallic, so the reflection shows over its diffuse lighting
+floorMaterial.metalness = 0.7;
 
-        // rotate primitives around their center and also orbit them around the shiny sphere
-        for (let e = 0; e < entities.length; e++) {
-            const scale = (e + 1) / entities.length;
-            const offset = time + e * 200;
-            entities[e].setLocalPosition(7 * Math.sin(offset), e + 5, 7 * Math.cos(offset));
-            entities[e].rotate(1 * scale, 2 * scale, 3 * scale);
-        }
+// The reflection texture in the corner of the screen, for debugging
+const textures = new TextureRenderer(app);
+textures.layer = uiLayer;
 
-        // slowly orbit camera around
-        camera.setLocalPosition(30 * Math.cos(time * 0.2), 10, 30 * Math.sin(time * 0.2));
-        camera.lookAt(pc.Vec3.ZERO);
+const applySettings = () => {
+    const settings = data.get('settings');
+    const planar = settings.reflection === 'planar';
 
-        // animate FOV
-        camera.camera.fov = 60 + 20 * Math.sin(time * 0.5);
+    // with the cubemap, the reflection camera does not need to render
+    reflectionCamera.camera.enabled = planar;
 
-        // trigger reflection camera update (must be called after all parameters of the main camera are updated)
-        // @ts-ignore engine-tsd
-        const reflectionTexture = reflectionCamera.script.planarRenderer.frameUpdate();
-        groundMaterial.setParameter('uDiffuseMap', reflectionTexture);
-        groundMaterial.update();
-    });
+    planarRenderer.scale = settings.resolution;
+    floorMaterial.gloss = settings.roughness;
+    floorMaterial.update();
+};
+applySettings();
+data.on('*:set', applySettings);
+
+let time = 0;
+app.on('update', (/** @type {number} */ dt) => {
+    const settings = data.get('settings');
+    time += dt * settings.speed;
+
+    // the drone circles the statue, dipping down to the floor and back up, facing where it flies,
+    // with its nose down and banking into the turn
+    const angle = time * 0.5;
+    const radius = 2.6;
+    const height = 1.1 + Math.sin(time * 0.7) * 0.5;
+    drone.setLocalPosition(Math.sin(angle) * radius, height, Math.cos(angle) * radius);
+    drone.lookAt(Math.sin(angle + 0.1) * radius, height, Math.cos(angle + 0.1) * radius);
+    drone.rotateLocal(-8, 0, 15);
+    rotors.forEach(({ rotor, direction }) => rotor.setLocalEulerAngles(0, direction * time * 2000, 0));
+    led.enabled = Math.floor(time * 2) % 2 === 0;
+
+    // the torus spins on its pedestal
+    torusPivot.setLocalEulerAngles(0, time * 40, 0);
+
+    // Update the reflection camera, after the main camera has moved this frame. The floor reflects
+    // the texture it renders to, projected by its view projection matrix. With the camera disabled
+    // there is no texture, and the floor falls back to the reflections of its environment atlas.
+    const texture = planarRenderer.frameUpdate();
+    floorMaterial.planarReflectionMap = texture;
+    floorMaterial.planarReflectionMatrix = planarRenderer.viewProjectionMatrix;
+    floorMaterial.update();
+
+    if (texture && settings.showTexture) {
+        textures.draw(texture, 0.7, 0.7, 0.28, 0.28);
+    }
 });
-
-export { app };

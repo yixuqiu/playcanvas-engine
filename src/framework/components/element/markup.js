@@ -11,7 +11,7 @@ const STRING_TOKEN = 6;
 const IDENTIFIER_TOKEN = 7;
 const WHITESPACE_TOKEN = 8;
 const WHITESPACE_CHARS = ' \t\n\r\v\f';
-const IDENTIFIER_REGEX = /[A-Z|a-z|0-9|_|-|/]/;
+const IDENTIFIER_REGEX = /[\w|/]/;
 
 class Scanner {
     constructor(symbols) {
@@ -57,9 +57,9 @@ class Scanner {
         let token = this.read();
         let result = '';
         while (true) {
-            result += (result.length > 0 ? '\n' : '') +
-                        tokenStrings[token] +
-                        ' \'' + this.buf().join('') + '\'';
+            result += `${(result.length > 0 ? '\n' : '') +
+                        tokenStrings[token]
+            } '${this.buf().join('')}'`;
             if (token === EOF_TOKEN || token === ERROR_TOKEN) {
                 break;
             }
@@ -247,8 +247,8 @@ class Parser {
 
     // access an error message if the parser failed
     error() {
-        return 'Error evaluating markup at #' + this._scanner.last().toString() +
-                ' (' + (this._scanner.error() || this._error) + ')';
+        return `Error evaluating markup at #${this._scanner.last().toString()
+        } (${this._scanner.error() || this._error})`;
     }
 
     _parseTag(symbols, tags) {
@@ -264,7 +264,7 @@ class Parser {
         // handle close tags
         if (name[0] === '/') {
             for (let index = tags.length - 1; index >= 0; --index) {
-                if (name === '/' + tags[index].name && tags[index].end === null) {
+                if (name === `/${tags[index].name}` && tags[index].end === null) {
                     tags[index].end = symbols.length;
                     token = this._scanner.read();
                     if (token !== CLOSE_BRACKET_TOKEN) {
@@ -330,16 +330,18 @@ class Parser {
     }
 }
 
+const hasOwn = Object.prototype.hasOwnProperty;
+
 // copy the contents of source object into target object (like a deep version
 // of assign)
 function merge(target, source) {
     for (const key in source) {
-        if (!source.hasOwnProperty(key)) {
+        if (!hasOwn.call(source, key)) {
             continue;
         }
         const value = source[key];
         if (value instanceof Object) {
-            if (!target.hasOwnProperty(key)) {
+            if (!hasOwn.call(target, key)) {
                 target[key] = { };
             }
             merge(target[key], source[key]);
@@ -380,7 +382,7 @@ function resolveMarkupTags(tags, numSymbols) {
     const edges = { };
     for (let index = 0; index < tags.length; ++index) {
         const tag = tags[index];
-        if (!edges.hasOwnProperty(tag.start)) {
+        if (!hasOwn.call(edges, tag.start)) {
             edges[tag.start] = { open: [tag], close: null };
         } else {
             if (edges[tag.start].open === null) {
@@ -390,7 +392,7 @@ function resolveMarkupTags(tags, numSymbols) {
             }
         }
 
-        if (!edges.hasOwnProperty(tag.end)) {
+        if (!hasOwn.call(edges, tag.end)) {
             edges[tag.end] = { open: null, close: [tag] };
         } else {
             if (edges[tag.end].close === null) {
@@ -405,8 +407,8 @@ function resolveMarkupTags(tags, numSymbols) {
     let tagStack = [];
 
     function removeTags(tags) {
-        tagStack = tagStack.filter(function (tag) {
-            return tags.find(function (t) {
+        tagStack = tagStack.filter((tag) => {
+            return tags.find((t) => {
                 return t === tag;
             }) === undefined;
         });
@@ -418,7 +420,7 @@ function resolveMarkupTags(tags, numSymbols) {
         }
     }
 
-    const edgeKeys = Object.keys(edges).sort(function (a, b) {
+    const edgeKeys = Object.keys(edges).sort((a, b) => {
         return a - b;
     });
 
@@ -479,7 +481,7 @@ function evaluateMarkup(symbols) {
     }
 
     // if any tags were not correctly closed, return failure
-    const invalidTag = tags.find(function (t) {
+    const invalidTag = tags.find((t) => {
         return t.end === null;
     });
 

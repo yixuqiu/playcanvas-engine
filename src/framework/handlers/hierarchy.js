@@ -1,11 +1,21 @@
 import { SceneParser } from '../parsers/scene.js';
 import { SceneUtils } from './scene-utils.js';
-
 import { ResourceHandler } from './handler.js';
 
+/**
+ * @import { AppBase } from '../app-base.js'
+ */
+
+/**
+ * Resource handler for the `hierarchy` asset type. Loads a PlayCanvas scene JSON file and
+ * instantiates its entity hierarchy, returning the root {@link Entity} without making it the
+ * active scene.
+ *
+ * @ignore
+ */
 class HierarchyHandler extends ResourceHandler {
     /**
-     * @param {import('../app-base').AppBase} app - The running {@link AppBase}.
+     * @param {AppBase} app - The running {@link AppBase}.
      */
     constructor(app) {
         super(app, 'hierarchy');

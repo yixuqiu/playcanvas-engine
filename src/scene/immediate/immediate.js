@@ -1,15 +1,13 @@
-import { PRIMITIVE_TRISTRIP } from '../../platform/graphics/constants.js';
+import { Debug } from '../../core/debug.js';
+import { SEMANTIC_COLOR, SEMANTIC_POSITION, SHADERLANGUAGE_GLSL, SHADERLANGUAGE_WGSL } from '../../platform/graphics/constants.js';
 
 import { BLEND_NORMAL } from '../constants.js';
-import { GraphNode } from '../graph-node.js';
-import { Mesh } from '../mesh.js';
-import { MeshInstance } from '../mesh-instance.js';
-import { BasicMaterial } from '../materials/basic-material.js';
-import { createShaderFromCode } from '../shader-lib/utils.js';
-import { shaderChunks } from '../shader-lib/chunks/chunks.js';
+import { ShaderMaterial } from '../materials/shader-material.js';
 import { ImmediateBatches } from './immediate-batches.js';
+import { LineWriter } from './line-writer.js';
 
 import { Vec3 } from '../../core/math/vec3.js';
+import { ShaderChunks } from '../shader-lib/shader-chunks.js';
 
 const tempPoints = [];
 const vec = new Vec3();
@@ -17,9 +15,6 @@ const vec = new Vec3();
 class Immediate {
     constructor(device) {
         this.device = device;
-        this.quadMesh = null;
-        this.textureShader = null;
-        this.depthTextureShader = null;
         this.cubeLocalPos = null;
         this.cubeWorldPos = null;
 
@@ -29,21 +24,27 @@ class Immediate {
         // set of all batches that were used in the frame
         this.allBatches = new Set();
 
-        // set of all layers updated during this frame
-        this.updatedLayers = new Set();
+        // single cursor handed out by allocateLines, so allocating costs no garbage
+        this.lineWriter = new LineWriter();
 
         // line materials
         this._materialDepth = null;
         this._materialNoDepth = null;
-
-        // map of meshes instances added to a layer. The key is layer, the value is an array of mesh instances
-        this.layerMeshInstances = new Map();
     }
 
     // creates material for line rendering
     createMaterial(depthTest) {
-        const material = new BasicMaterial();
-        material.vertexColors = true;
+        const material = new ShaderMaterial({
+            uniqueName: 'ImmediateLine',
+            vertexGLSL: ShaderChunks.get(this.device, SHADERLANGUAGE_GLSL).get('immediateLineVS'),
+            fragmentGLSL: ShaderChunks.get(this.device, SHADERLANGUAGE_GLSL).get('immediateLinePS'),
+            vertexWGSL: ShaderChunks.get(this.device, SHADERLANGUAGE_WGSL).get('immediateLineVS'),
+            fragmentWGSL: ShaderChunks.get(this.device, SHADERLANGUAGE_WGSL).get('immediateLinePS'),
+            attributes: {
+                vertex_position: SEMANTIC_POSITION,
+                vertex_color: SEMANTIC_COLOR
+            }
+        });
         material.blendType = BLEND_NORMAL;
         material.depthTest = depthTest;
         material.update();
@@ -84,90 +85,33 @@ class Immediate {
         return batches.getBatch(material, layer);
     }
 
-    getShader(id, fragment) {
-        if (!this[id]) {
-            // shared vertex shader for textured quad rendering
-            const vertex = /* glsl */ `
-                attribute vec2 vertex_position;
-                uniform mat4 matrix_model;
-                varying vec2 uv0;
-                void main(void) {
-                    gl_Position = matrix_model * vec4(vertex_position, 0, 1);
-                    uv0 = vertex_position.xy + 0.5;
-                }
-            `;
+    /**
+     * Allocates space for exactly `vertexCount` line vertices and returns a cursor positioned at
+     * the start of it, letting a caller generate lines straight into the batch instead of building
+     * an array to be copied in.
+     *
+     * The space is accounted for immediately, so the caller must fill all of it. The cursor is a
+     * single reused instance and is only valid until the next allocation - use it inside the
+     * function that writes the data, and do not keep hold of it. For the same reason an allocation
+     * must not straddle rendering, as the batch may be submitted while it is still being written.
+     *
+     * @param {number} vertexCount - The number of vertices to allocate. Two vertices per segment.
+     * @param {import('../../core/math/color.js').Color} color - The color used by
+     * {@link LineWriter#segment}.
+     * @param {boolean} depthTest - Whether the lines are depth tested.
+     * @param {import('../layer.js').Layer} layer - The layer to render the lines into.
+     * @returns {LineWriter} The cursor to write the vertices with.
+     * @ignore
+     */
+    allocateLines(vertexCount, color, depthTest, layer) {
+        const writer = this.lineWriter;
+        Debug.assert(writer.filled,
+            'Immediate#allocateLines was called while a previous allocation was still unfilled. A cursor must be filled by the function that allocated it.');
 
-            this[id] = createShaderFromCode(this.device, vertex, fragment, `DebugShader:${id}`);
-        }
-        return this[id];
-    }
-
-    // shader used to display texture
-    getTextureShader() {
-        return this.getShader('textureShader', /* glsl */ `
-            varying vec2 uv0;
-            uniform sampler2D colorMap;
-            void main (void) {
-                gl_FragColor = vec4(texture2D(colorMap, uv0).xyz, 1);
-            }
-        `);
-    }
-
-    // shader used to display infilterable texture sampled using texelFetch
-    getUnfilterableTextureShader() {
-        return this.getShader('textureShaderUnfilterable', /* glsl */ `
-            varying vec2 uv0;
-            uniform highp sampler2D colorMap;
-            void main (void) {
-                ivec2 uv = ivec2(uv0 * textureSize(colorMap, 0));
-                gl_FragColor = vec4(texelFetch(colorMap, uv, 0).xyz, 1);
-            }
-        `);
-    }
-
-    // shader used to display depth texture
-    getDepthTextureShader() {
-        return this.getShader('depthTextureShader', /* glsl */ `
-            ${shaderChunks.screenDepthPS}
-            varying vec2 uv0;
-            void main() {
-                float depth = getLinearScreenDepth(getImageEffectUV(uv0)) * camera_params.x;
-                gl_FragColor = vec4(vec3(depth), 1.0);
-            }
-        `);
-    }
-
-    // creates mesh used to render a quad
-    getQuadMesh() {
-        if (!this.quadMesh) {
-            this.quadMesh = new Mesh(this.device);
-            this.quadMesh.setPositions([
-                -0.5, -0.5, 0,
-                0.5, -0.5, 0,
-                -0.5, 0.5, 0,
-                0.5, 0.5, 0
-            ]);
-            this.quadMesh.update(PRIMITIVE_TRISTRIP);
-        }
-        return this.quadMesh;
-    }
-
-    // Draw mesh at this frame
-    drawMesh(material, matrix, mesh, meshInstance, layer) {
-
-        // create a mesh instance for the mesh if needed
-        if (!meshInstance) {
-            const graphNode = this.getGraphNode(matrix);
-            meshInstance = new MeshInstance(mesh, material, graphNode);
-        }
-
-        // add the mesh instance to an array per layer, they get added to layers before rendering
-        let layerMeshInstances = this.layerMeshInstances.get(layer);
-        if (!layerMeshInstances) {
-            layerMeshInstances = [];
-            this.layerMeshInstances.set(layer, layerMeshInstances);
-        }
-        layerMeshInstances.push(meshInstance);
+        const batch = this.getBatch(layer, depthTest);
+        const first = batch.allocate(vertexCount);
+        writer.reset(batch._positions, batch._colors, first, vertexCount, color);
+        return writer;
     }
 
     drawWireAlignedBox(min, max, color, depthTest, layer, mat) {
@@ -237,14 +181,6 @@ class Immediate {
         tempPoints.length = 0;
     }
 
-    getGraphNode(matrix) {
-        const graphNode = new GraphNode('ImmediateDebug');
-        graphNode.worldTransform = matrix;
-        graphNode._dirtyWorld = graphNode._dirtyNormal = false;
-
-        return graphNode;
-    }
-
     // This is called just before the layer is rendered to allow lines for the layer to be added from inside
     // the frame getting rendered
     onPreRenderLayer(layer, visibleList, transparent) {
@@ -255,30 +191,14 @@ class Immediate {
                 batches.onPreRender(visibleList, transparent);
             }
         });
-
-        // only update meshes once for each layer (they're not per sub-layer at the moment)
-        if (!this.updatedLayers.has(layer)) {
-            this.updatedLayers.add(layer);
-
-            // add mesh instances for specified layer to visible list
-            const meshInstances = this.layerMeshInstances.get(layer);
-            if (meshInstances) {
-                for (let i = 0; i < meshInstances.length; i++) {
-                    visibleList.push(meshInstances[i]);
-                }
-                meshInstances.length = 0;
-            }
-        }
     }
 
     // called after the frame was rendered, clears data
     onPostRender() {
 
         // clean up line batches
+        this.allBatches.forEach(batch => batch.clear());
         this.allBatches.clear();
-
-        // all batches need updating next frame
-        this.updatedLayers.clear();
     }
 }
 

@@ -1,4 +1,8 @@
-function DracoWorker(jsUrl, wasmUrl) {
+// `myself` is the worker's message port: `self` in a web worker, or the parentPort of a Node
+// worker_threads worker. The creator passes it in as source text, so that bundlers never see the
+// Node-only require.
+function DracoWorker(myself) {
+
     let draco;
 
     // https://github.com/google/draco/blob/master/src/draco/attributes/geometry_attribute.h#L43
@@ -29,6 +33,24 @@ function DracoWorker(jsUrl, wasmUrl) {
             case draco.DT_FLOAT32: return 4;
         }
         return 1;
+    };
+
+    // Convert Draco data type to PlayCanvas TYPE_* constant
+    // TYPE_INT8=0, TYPE_UINT8=1, TYPE_INT16=2, TYPE_UINT16=3, TYPE_INT32=4, TYPE_UINT32=5, TYPE_FLOAT32=6
+    const toEngineDataType = (dataType) => {
+        switch (dataType) {
+            case draco.DT_INT8: return 0;
+            case draco.DT_UINT8: return 1;
+            case draco.DT_INT16: return 2;
+            case draco.DT_UINT16: return 3;
+            case draco.DT_INT32: return 4;
+            case draco.DT_UINT32: return 5;
+            case draco.DT_FLOAT32: return 6;
+            default:
+                // Unsupported or unhandled Draco data type (e.g. DT_BOOL, DT_COMPLEX64);
+                // default to TYPE_FLOAT32 for compatibility.
+                return 6;
+        }
     };
 
     const attributeSizeInBytes = (attribute) => {
@@ -128,7 +150,7 @@ function DracoWorker(jsUrl, wasmUrl) {
         const mesh = new draco.Mesh();
         const status = decoder.DecodeBufferToMesh(buffer, mesh);
 
-        if (!status || !status.ok() || mesh.ptr === 0) {
+        if (!status || !status.ok() || draco.getPointer(mesh) === 0) {
             result.error = 'Failed to decode draco asset';
             return result;
         }
@@ -158,9 +180,6 @@ function DracoWorker(jsUrl, wasmUrl) {
             return (attributeOrder[a.attribute_type()] ?? attributeOrder.length) - (attributeOrder[b.attribute_type()] ?? attributeOrder.length);
         });
 
-        // store attribute order by unique_id
-        result.attributes = attributes.map(a => a.unique_id());
-
         // calculate total vertex size and attribute offsets
         let totalVertexSize = 0;
         const offsets = attributes.map((a) => {
@@ -171,13 +190,36 @@ function DracoWorker(jsUrl, wasmUrl) {
 
         // we will generate normals if they're missing
         const hasNormals = attributes.some(a => a.attribute_type() === NORMAL_ATTRIBUTE);
-        const normalOffset = offsets[1];
+        let normalOffset = offsets[1] ?? 0;
         if (!hasNormals) {
+            // normals will be inserted after position, adjust offsets
+            normalOffset = offsets[0] + Math.ceil(attributeSizeInBytes(attributes[0]) / 4) * 4;
             for (let i = 1; i < offsets.length; ++i) {
                 offsets[i] += 12;
             }
             totalVertexSize += 12;
         }
+
+        // store attribute metadata including unique_id, data type, components, and offset
+        result.attributes = attributes.map((a, i) => ({
+            id: a.unique_id(),
+            dataType: toEngineDataType(a.data_type()),
+            numComponents: a.num_components(),
+            offset: offsets[i]
+        }));
+
+        // if normals are generated, insert normal attribute metadata after position
+        if (!hasNormals) {
+            result.attributes.splice(1, 0, {
+                id: -1,  // special id to indicate generated normals
+                dataType: 6, // TYPE_FLOAT32
+                numComponents: 3,
+                offset: normalOffset
+            });
+        }
+
+        // store the stride for the consumer
+        result.stride = totalVertexSize;
 
         // create vertex buffer
         result.vertices = new ArrayBuffer(mesh.num_points() * totalVertexSize);
@@ -202,7 +244,7 @@ function DracoWorker(jsUrl, wasmUrl) {
             if (!hasNormals && attribute.attribute_type() === POSITION_ATTRIBUTE) {
                 // generate normals just after position
                 const normals = generateNormals(wrap(src, attribute.data_type()),
-                                                shortIndices ? new Uint16Array(result.indices) : new Uint32Array(result.indices));
+                    shortIndices ? new Uint16Array(result.indices) : new Uint32Array(result.indices));
 
                 // pack normals
                 for (let j = 0; j < mesh.num_points(); ++j) {
@@ -225,36 +267,44 @@ function DracoWorker(jsUrl, wasmUrl) {
 
     const decode = (data) => {
         const result = decodeMesh(new Uint8Array(data.buffer));
-        self.postMessage({
+        myself.postMessage({
             jobId: data.jobId,
             error: result.error,
             indices: result.indices,
             vertices: result.vertices,
-            attributes: result.attributes
+            attributes: result.attributes,
+            stride: result.stride
         }, [result.indices, result.vertices].filter(t => t != null));
     };
 
     const workQueue = [];
 
     // handle incoming message
-    self.onmessage = (message) => {
+    myself.addEventListener('message', (message) => {
         const data = message.data;
         switch (data.type) {
-            case 'init':
+            case 'init': {
+                // The glue script concatenated ahead of this worker exposes the module factory
+                // differently per environment: as a global in a browser worker, and via
+                // `module.exports` (CommonJS) in a Node worker_threads worker.
+                const DracoDecoderModule = myself.DracoDecoderModule ||
+                    (typeof module !== 'undefined' && module.exports);
+
                 // initialize draco module
-                self.DracoDecoderModule({
+                DracoDecoderModule({
                     instantiateWasm: (imports, successCallback) => {
                         WebAssembly.instantiate(data.module, imports)
-                            .then(result => successCallback(result))
-                            .catch(reason => console.error('instantiate failed + ' + reason));
+                        .then(result => successCallback(result))
+                        .catch(reason => console.error(`instantiate failed + ${reason}`));
                         return {};
                     }
                 })
-                    .then((instance) => {
-                        draco = instance;
-                        workQueue.forEach(data => decode(data));
-                    });
+                .then((instance) => {
+                    draco = instance;
+                    workQueue.forEach(data => decode(data));
+                });
                 break;
+            }
             case 'decodeMesh':
                 if (draco) {
                     decode(data);
@@ -263,7 +313,7 @@ function DracoWorker(jsUrl, wasmUrl) {
                 }
                 break;
         }
-    };
+    });
 }
 
 export {

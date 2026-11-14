@@ -1,13 +1,39 @@
-import config from '@examples/config';
-import { fetchFile, fire } from '@examples/utils';
-import { data, refresh } from '@examples/observer';
-import files from '@examples/files';
-
+import files from './files.mjs';
+import Inspector from './inspector.mjs';
 import MiniStats from './ministats.mjs';
+import { fetchFile, importModule, clearImports, parseConfig, fire, win } from './runtime.mjs';
+import { data, deviceType as selectedDeviceType, refreshContext, updateDeviceType } from './state.mjs';
+import { blockZoom } from './zoom.mjs';
+
+/** @import { AppBase } from 'playcanvas' */
 
 class ExampleLoader {
     /**
-     * @type {import('playcanvas').AppBase}
+     * @type {Record<string, any>}
+     * @private
+     */
+    _config;
+
+    /**
+     * @type {Record<string, any>}
+     * @private
+     */
+    _baseConfig = {};
+
+    /**
+     * @type {string[]}
+     * @private
+     */
+    _fileNames = [];
+
+    /**
+     * @type {string}
+     * @private
+     */
+    _name = '';
+
+    /**
+     * @type {AppBase}
      * @private
      */
     _app;
@@ -25,16 +51,25 @@ class ExampleLoader {
     _allowRestart = true;
 
     /**
-     * @type {string}
+     * The last requested MiniStats enabled state, re-applied on hot reload.
+     *
+     * @type {boolean}
      * @private
      */
-    _scriptUrl = '';
+    _miniStatsEnabled = false;
 
     /**
-     * @type {Function | null}
+     * The last requested Inspector visibility, re-applied on hot reload.
+     *
+     * @type {boolean}
+     */
+    _inspectorEnabled = false;
+
+    /**
+     * @type {Function[]}
      * @private
      */
-    _scriptDestroy = null;
+    destroyHandlers = [];
 
     /**
      * @type {boolean}
@@ -42,38 +77,72 @@ class ExampleLoader {
     ready = false;
 
     _appStart() {
+        // set ready state
+        this.ready = true;
+
         if (this._app) {
             if (!this._app?.graphicsDevice?.canvas) {
                 console.warn('No canvas found.');
                 return;
             }
-            MiniStats.enable(this._app, true);
         }
 
-        if (!this._started) {
+        const firstStart = !this._started;
+        if (firstStart) {
             // Sets code editor component files
             // Sets example component files (for controls + description)
             // Sets mini stats enabled state based on UI
-            fire('exampleLoad', { observer: data, files, description: config.DESCRIPTION || '' });
+            fire('exampleLoad', {
+                observer: data,
+                files,
+                description: this._config.DESCRIPTION || '',
+                credits: this._config.CREDITS || []
+            });
         }
         this._started = true;
 
+        // 'exampleLoad' re-applies the MiniStats toggle but only fires on first start, so re-apply it
+        // here after a hot reload - otherwise the panel stays hidden until the button is toggled twice.
+        if (!firstStart) {
+            this.setMiniStats(this._miniStatsEnabled);
+            this.setInspector(this._inspectorEnabled);
+        }
+
         // Updates controls UI
-        fire('updateFiles', { observer: data, files });
+        fire('updateFiles', {
+            observer: data,
+            files,
+            description: this._config.DESCRIPTION || '',
+            credits: this._config.CREDITS || []
+        });
 
         if (this._app) {
-            // Updates device UI
-            fire('updateActiveDevice', { deviceType: this._app?.graphicsDevice?.deviceType });
+            // Report the selected variant (e.g. 'webgpu:bare') back to the UI when the
+            // engine device type matches the expected family, otherwise report the actual
+            // engine device type to surface fallbacks.
+            const engineType = this._app?.graphicsDevice?.deviceType;
+            const reportedType = selectedDeviceType.split(':')[0] === engineType ?
+                selectedDeviceType :
+                engineType;
+            win.activeGraphicsDevice = reportedType;
+            fire('updateActiveDevice', { deviceType: reportedType });
         }
 
         this._allowRestart = true;
     }
 
+    /**
+     * @param {string} stack - The stack trace.
+     * @returns {{ file: string, line: number, column: number }[]} - The error locations.
+     */
     _parseErrorLocations(stack) {
         const lines = stack.split('\n');
+        /**
+         * @type {{ file: string, line: number, column: number }[]}
+         */
         const locations = [];
         lines.forEach((line) => {
-            const match = /^\s*at\s(.+):(\d+):(\d+)$/g.exec(line);
+            const match = /^\s*at\s(.+):(\d+):(\d+)$/.exec(line);
             if (!match) {
                 return;
             }
@@ -86,17 +155,55 @@ class ExampleLoader {
         return locations;
     }
 
+    _clearFiles() {
+        for (const name of Object.keys(files)) {
+            delete files[name];
+        }
+    }
+
     /**
-     * @param {{ engineUrl: string, exampleUrl: string, controlsUrl: string }} options - Options to start the loader
+     * @param {string} [stamp] - The cache-busting stamp.
      */
-    async start({ engineUrl, exampleUrl, controlsUrl }) {
+    async _fetchFiles(stamp = '') {
+        const suffix = stamp ? `?t=${stamp}` : '';
+        // extracts example category and name from the URL
+        const match = /([^/]+)\.html$/.exec(new URL(location.href).pathname);
+        if (!match) {
+            return;
+        }
+        this._name = match[1];
+
+        // loads each files
+        /**
+         * @type {Record<string, string>}
+         */
+        const unorderedFiles = {};
+        await Promise.all(this._fileNames.map(async (name) => {
+            unorderedFiles[name] = await fetchFile(`../iframe/${this._name}.${name}${suffix}`);
+        }));
+        this._clearFiles();
+        for (const name of Object.keys(unorderedFiles).sort()) {
+            files[name] = unorderedFiles[name];
+        }
+    }
+
+    /**
+     * @param {{ engineUrl: string, fileNames: string[], config?: Record<string, any> }} options - Options to start the loader
+     */
+    async start({ engineUrl, fileNames, config = {} }) {
+        blockZoom();
+
+        this._baseConfig = config;
+        this._fileNames = fileNames;
+
         window.pc = await import(engineUrl);
 
         // @ts-ignore
-        window.top.pc = window.pc;
+        win.pc = window.pc;
 
-        files['example.mjs'] = await fetchFile(exampleUrl);
-        files['controls.mjs'] = await fetchFile(controlsUrl);
+        await Inspector.load();
+
+        await this._fetchFiles();
 
         await this.load();
     }
@@ -105,45 +212,61 @@ class ExampleLoader {
         this._allowRestart = false;
 
         // refresh observer instance
-        refresh();
+        refreshContext();
+
+        // parse config
+        this._config = {
+            ...this._baseConfig,
+            ...parseConfig(files['example.mjs'])
+        };
+
+        // update device type
+        updateDeviceType(this._config);
 
         if (!this._started) {
             // just notify to clean UI, but not during hot-reload
-            fire('exampleLoading', { showDeviceSelector: !config.NO_DEVICE_SELECTOR });
+            fire('exampleLoading', {
+                showDeviceSelector: !this._config.NO_DEVICE_SELECTOR,
+                showMiniStats: !this._config.NO_MINISTATS,
+                showInspector: !this._config.NO_INSPECTOR,
+                hideCredits: !!this._config.CREDITS_HIDDEN
+            });
         }
 
-        if (this._scriptUrl) {
-            URL.revokeObjectURL(this._scriptUrl);
-        }
-        const blob = new Blob([files['example.mjs']], { type: 'text/javascript' });
-        this._scriptUrl = URL.createObjectURL(blob);
+        clearImports();
 
         try {
-            const module = await import(this._scriptUrl);
-            this._app = module.app;
+            // import local file
+            const module = await importModule('example.mjs');
+            this._app = module.app ?? window.pc?.AppBase.getApplication('application-canvas');
 
-            // additional destroy handler in case no app provided
-            this._scriptDestroy = module.destroy;
+            // an example creating its own MiniStats (to pass custom options) hands it over here,
+            // so that the UI toggle drives that instance
+            MiniStats.adopt(module.miniStats);
+
+            // likewise for an example that creates its own Inspector
+            Inspector.adopt(module.inspector);
+
+            // additional destroy handler for non-app resources
+            if (typeof module.destroy === 'function') {
+                this.destroyHandlers.push(module.destroy);
+            }
         } catch (e) {
             console.error(e);
             const locations = this._parseErrorLocations(e.stack);
-            window.top.dispatchEvent(new CustomEvent('exampleError', {
-                detail: {
-                    name: e.constructor.name,
-                    message: e.message,
-                    locations
-                }
-            }));
+            fire('exampleError', {
+                name: e.constructor.name,
+                message: e.message,
+                locations
+            });
 
             this._allowRestart = true;
             return;
         }
 
-        // set ready state
-        this.ready = true;
-
         if (this._app) {
-            if (this._app.frame) {
+            // Check if app has already started (frame is a number, including 0)
+            if (this._app.frame !== undefined) {
                 this._appStart();
             } else {
                 this._app.once('start', () => this._appStart());
@@ -158,10 +281,47 @@ class ExampleLoader {
     }
 
     /**
+     * @param {{ stamp?: string, config?: Record<string, any>, files?: string[] }} [options] - Reload options.
+     */
+    async reloadFiles({ stamp = '', config = null, files: names = null } = {}) {
+        if (!this._allowRestart) {
+            console.warn('Dropping restart while still restarting');
+            return;
+        }
+        if (config) {
+            this._baseConfig = config;
+        }
+        if (names) {
+            this._fileNames = names;
+        }
+        await this._fetchFiles(stamp);
+        this.sendRequestedFiles();
+        this.hotReload();
+    }
+
+    /**
      * @param {boolean} enabled - The enabled state of ministats
      */
     setMiniStats(enabled = false) {
-        MiniStats.enable(this._app, enabled);
+        this._miniStatsEnabled = enabled;
+        if (this._config.NO_MINISTATS) {
+            fire('miniStats', { state: false });
+            return;
+        }
+        fire('miniStats', { state: MiniStats.enable(this._app, enabled) });
+    }
+
+    /**
+     * @param {boolean} enabled - The requested visibility of the inspector panel
+     */
+    setInspector(enabled = false) {
+        this._inspectorEnabled = enabled;
+        if (this._config.NO_INSPECTOR) {
+            // no button, but the example may own a panel whose state the UI still wants to know
+            fire('inspector', { state: Inspector.instance?.visible ?? false });
+            return;
+        }
+        fire('inspector', { state: Inspector.enable(this._app, enabled) });
     }
 
     hotReload() {
@@ -169,27 +329,36 @@ class ExampleLoader {
             console.warn('Dropping restart while still restarting');
             return;
         }
-        window.top.dispatchEvent(new CustomEvent('exampleHotReload'));
+        fire('exampleHotReload');
         this.destroy();
         this.load();
     }
 
+    _destroyApps() {
+        const canvases = document.querySelectorAll('#appInner canvas[id]');
+        for (const canvas of canvases) {
+            const app = window.pc?.AppBase.getApplication(canvas.id);
+            if (app?.graphicsDevice) {
+                app.destroy();
+            }
+            if (canvas.id !== 'application-canvas') {
+                canvas.remove();
+            }
+        }
+    }
+
     destroy() {
         MiniStats.destroy();
-        if (this._app && this._app.graphicsDevice) {
-            this._app.destroy();
-        }
-        if (this._scriptDestroy) {
-            this._scriptDestroy();
-            this._scriptDestroy = null;
-        }
+        Inspector.destroy();
+        this._destroyApps();
+        const handlers = this.destroyHandlers;
+        this.destroyHandlers = [];
+        handlers.forEach(destroy => destroy());
         this.ready = false;
     }
 
     exit() {
-        if (this._scriptUrl) {
-            URL.revokeObjectURL(this._scriptUrl);
-        }
+        clearImports();
         this.destroy();
     }
 }

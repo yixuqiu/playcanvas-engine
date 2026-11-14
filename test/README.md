@@ -1,17 +1,28 @@
 # Unit Tests
 
-PlayCanvas uses [Mocha](https://mochajs.org/) and [Chai](https://www.chaijs.com/) for unit testing. All tests run in Node and load the engine's source modules directly. This means that building the engine is not a requirement for running the tests. Node is missing some features required by the engine so a couple of mocks are used:
+PlayCanvas uses [Mocha](https://mochajs.org/) and [Chai](https://www.chaijs.com/) for unit testing. All tests run in Node and load the engine's source modules directly. This means that building the engine is not a requirement for running the tests.
 
-* [`canvas-mock`](https://github.com/playcanvas/canvas-mock) - implements `HTMLCanvasElement` (and `WebGL 1.0`).
-* [`xhr2`](https://github.com/pwnall/node-xhr2) - implements `XMLHttpRequest`.
+PlayCanvas depends on a browser environment for the full set of tests to run successfully. This is achieved via [jsdom](https://github.com/jsdom/jsdom).
 
 ## Running the Unit Tests
 
 To run the tests, simply do:
 
 ```
-npm run test
+npm test
 ```
+
+## Running the Unit Tests on WebGPU
+
+The tests can also run on a real WebGPU implementation, Google Dawn, through the [`webgpu`](https://www.npmjs.com/package/webgpu) package:
+
+```
+npm run test:webgpu
+```
+
+This runs the same tests with the engine's WebGPU device instead of the null device, so the engine's use of the WebGPU API is validated and its WGSL shaders are compiled. By default Dawn's `null` backend is used: it performs the full validation but executes no GPU work, so it runs anywhere, including CI machines without a GPU. Set `PC_WEBGPU_BACKEND` to `metal`, `vulkan` or `d3d12` to run on the GPU instead. Any error WebGPU reports during a test fails that test.
+
+Tests obtain their device from `createGraphicsDevice()` in `test/device.mjs`, which returns whichever device the run uses. A test that checks the behavior of one specific device constructs that device directly. Tests that need the GLSL transpilers, which are not available in Node, are excluded from this run.
 
 ## Code Coverage
 
@@ -43,9 +54,9 @@ In short, for any given engine source module:
 Test module code should adhere to the following style:
 
 ```javascript
-import { SomeClass } from '../../src/path/to/some-class.js';
-
 import { expect } from 'chai';
+
+import { SomeClass } from '../../src/path/to/some-class.js';
 
 describe('SomeClass', function () {
 
@@ -79,7 +90,7 @@ describe('SomeClass', function () {
 Some tips:
 
 * Group properties, then the constructor and then member functions in the test module.
-* Alphabetize the API described in the test module (as it appears in the [API reference manual](https://developer.playcanvas.com/api/)).
+* Alphabetize the API described in the test module (as it appears in the [API reference manual](https://api.playcanvas.com/modules/Engine.html)).
 * [Avoid using arrow functions](https://mochajs.org/#arrow-functions) for `describe` and `it` calls.
 * Try to make the call to `it` read as a proper sentence:
   * Good: `it('returns null on failure', ...`
@@ -92,7 +103,8 @@ Debugging tests is easy, convenient and fun! VS Code is the recommended IDE for 
 1. Open the root folder of your clone of the PlayCanvas Engine repo.
 2. Select the Explorer panel (top icon in the left-hand vertical toolbar).
 3. Navigate to the test you want to debug and set a breakpoint.
-4. At the bottom of the Explorer panel, you'll find a sub-panel called NPM SCRIPTS. Locate script `test` and click the Debug button.
+4. At the bottom of the Explorer panel, you'll find a sub-panel called NPM Scripts. Locate script `test` and click the Debug button.
+   * If you don't see NPM Scripts sub-panel, right click any visible sub-panels and select NPM Scripts from the drop-down menu.
 
 ## Help Us Reach 100% Coverage
 

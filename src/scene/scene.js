@@ -6,19 +6,52 @@ import { Quat } from '../core/math/quat.js';
 import { math } from '../core/math/math.js';
 import { Mat3 } from '../core/math/mat3.js';
 import { Mat4 } from '../core/math/mat4.js';
-
 import { PIXELFORMAT_RGBA8, ADDRESS_CLAMP_TO_EDGE, FILTER_LINEAR } from '../platform/graphics/constants.js';
-
-import { BAKE_COLORDIR, FOG_NONE, GAMMA_SRGB, LAYERID_IMMEDIATE } from './constants.js';
+import { BAKE_COLORDIR, LAYERID_IMMEDIATE } from './constants.js';
 import { LightingParams } from './lighting/lighting-params.js';
 import { Sky } from './skybox/sky.js';
 import { Immediate } from './immediate/immediate.js';
 import { EnvLighting } from './graphics/env-lighting.js';
+import { FogParams } from './fog-params.js';
+import { getDefaultMaterial } from './materials/default-material.js';
 
 /**
- * A scene is graphical representation of an environment. It manages the scene hierarchy, all
+ * @import { Entity } from '../framework/entity.js'
+ * @import { GraphicsDevice } from '../platform/graphics/graphics-device.js'
+ * @import { LayerComposition } from './composition/layer-composition.js'
+ * @import { Layer } from './layer.js'
+ * @import { Renderer } from './renderer/renderer.js'
+ * @import { Texture } from '../platform/graphics/texture.js'
+ * @import { GSplatParams } from './gsplat-unified/gsplat-params.js'
+ */
+
+/**
+ * A scene is a graphical representation of an environment. It manages the scene hierarchy, all
  * graphical objects, lights, and scene-wide properties.
  *
+ * Each application has one at {@link AppBase#scene}. The scene owns the rendering setup that is
+ * not tied to a single entity: the {@link layers} composition that decides render order; the
+ * lighting environment through {@link ambientLight}, {@link skybox}, {@link envAtlas} and the
+ * {@link sky} and {@link lighting} parameter objects; {@link exposure}, or {@link physicalUnits}
+ * in its place, for overall brightness; the lightmapping settings; and the fog described below.
+ *
+ * The scene fires `prerender` and `postrender` for each camera that renders it, and `precull`
+ * and `postcull` around visibility culling. Per-frame work that needs to know the camera belongs
+ * in those handlers.
+ *
+ * Fog is scene-wide: {@link fog} is a read-only {@link FogParams} whose `type`, `color`, `start`
+ * and `end` you set, and {@link CameraComponent#fog} can override it for a single camera.
+ *
+ * @example
+ * // Light the scene from a prefiltered environment and brighten it slightly
+ * app.scene.envAtlas = envAtlasAsset.resource;
+ * app.scene.skybox = skyboxAsset.resource;
+ * app.scene.exposure = 1.2;
+ * @example
+ * // Run code for each camera just before it renders the scene
+ * app.scene.on('prerender', (camera) => {
+ *     // camera is the CameraComponent about to render
+ * });
  * @category Graphics
  */
 class Scene extends EventHandler {
@@ -39,7 +72,7 @@ class Scene extends EventHandler {
      *                 layer.onDisable = myOnDisableFunction;
      *                 break;
      *             case 'MyOtherLayer':
-     *                 layer.shaderPass = myShaderPass;
+     *                 layer.clearColorBuffer = true;
      *                 break;
      *         }
      *     }
@@ -50,7 +83,7 @@ class Scene extends EventHandler {
     /**
      * Fired when the skybox is set. The handler is passed the {@link Texture} that is the
      * previously used skybox cubemap texture. The new skybox cubemap texture is in the
-     * {@link Scene#skybox} property.
+     * {@link skybox} property.
      *
      * @event
      * @example
@@ -61,92 +94,131 @@ class Scene extends EventHandler {
     static EVENT_SETSKYBOX = 'set:skybox';
 
     /**
-     * If enabled, the ambient lighting will be baked into lightmaps. This will be either the
-     * {@link Scene#skybox} if set up, otherwise {@link Scene#ambientLight}. Defaults to false.
+     * Fired before the camera renders the scene. The handler is passed the {@link CameraComponent}
+     * that will render the scene.
      *
-     * @type {boolean}
+     * @event
+     * @example
+     * app.scene.on('prerender', (camera) => {
+     *    console.log(`Camera ${camera.entity.name} will render the scene`);
+     * });
+     */
+    static EVENT_PRERENDER = 'prerender';
+
+    /**
+     * Fired when the camera renders the scene. The handler is passed the {@link CameraComponent}
+     * that rendered the scene.
+     *
+     * @event
+     * @example
+     * app.scene.on('postrender', (camera) => {
+     *    console.log(`Camera ${camera.entity.name} rendered the scene`);
+     * });
+     */
+    static EVENT_POSTRENDER = 'postrender';
+
+    /**
+     * Fired before the camera renders a layer. The handler is passed the {@link CameraComponent},
+     * the {@link Layer} that will be rendered, and a boolean parameter set to true if the layer is
+     * transparent. This is called during rendering to a render target or a default framebuffer, and
+     * additional rendering can be performed here, for example using {@link QuadRender#render}.
+     *
+     * @event
+     * @example
+     * app.scene.on('prerender:layer', (camera, layer, transparent) => {
+     *    console.log(`Camera ${camera.entity.name} will render the layer ${layer.name} (transparent: ${transparent})`);
+     * });
+     */
+    static EVENT_PRERENDER_LAYER = 'prerender:layer';
+
+    /**
+     * Fired when the camera renders a layer. The handler is passed the {@link CameraComponent},
+     * the {@link Layer} that will be rendered, and a boolean parameter set to true if the layer is
+     * transparent. This is called during rendering to a render target or a default framebuffer, and
+     * additional rendering can be performed here, for example using {@link QuadRender#render}.
+     *
+     * @event
+     * @example
+     * app.scene.on('postrender:layer', (camera, layer, transparent) => {
+     *    console.log(`Camera ${camera.entity.name} rendered the layer ${layer.name} (transparent: ${transparent})`);
+     * });
+     */
+    static EVENT_POSTRENDER_LAYER = 'postrender:layer';
+
+    /**
+     * Fired before mesh instance visibility culling is performed for a camera, just before the
+     * camera's culling frustum is refreshed (so a handler may still adjust the camera). The handler
+     * is passed the {@link CameraComponent} being culled, or null when the culling is internal (for
+     * example when culling shadow casters for a light's shadow map). Note that light visibility
+     * culling happens earlier in the frame and is not bracketed by this event.
+     *
+     * @event
+     * @example
+     * app.scene.on('precull', (camera) => {
+     *    if (camera) {
+     *        console.log(`Visibility culling will be performed for camera ${camera.entity.name}`);
+     *    }
+     * });
+     */
+    static EVENT_PRECULL = 'precull';
+
+    /**
+     * Fired after mesh instance visibility culling is performed for a camera; mesh instance
+     * visibility (such as {@link MeshInstance#visibleThisFrame}) is up to date when this fires. The
+     * handler is passed the {@link CameraComponent} that was culled, or null when the culling is
+     * internal (for example when culling shadow casters for a light's shadow map).
+     *
+     * @event
+     * @example
+     * app.scene.on('postcull', (camera) => {
+     *    if (camera) {
+     *        console.log(`Visibility culling was performed for camera ${camera.entity.name}`);
+     *    }
+     * });
+     */
+    static EVENT_POSTCULL = 'postcull';
+
+    /**
+     * If enabled, the ambient lighting will be baked into lightmaps. This will be either the
+     * {@link skybox} if set up, otherwise {@link ambientLight}. Defaults to false.
      */
     ambientBake = false;
 
     /**
-     * If {@link Scene#ambientBake} is true, this specifies the brightness of ambient occlusion.
-     * Typical range is -1 to 1. Defaults to 0, representing no change to brightness.
-     *
-     * @type {number}
+     * If {@link ambientBake} is true, this specifies the brightness of ambient occlusion. Typical
+     * range is -1 to 1. Defaults to 0, representing no change to brightness.
      */
     ambientBakeOcclusionBrightness = 0;
 
-     /**
-      * If {@link Scene#ambientBake} is true, this specifies the contrast of ambient occlusion.
-      * Typical range is -1 to 1. Defaults to 0, representing no change to contrast.
-      *
-      * @type {number}
-      */
+    /**
+     * If {@link ambientBake} is true, this specifies the contrast of ambient occlusion. Typical
+     * range is -1 to 1. Defaults to 0, representing no change to contrast.
+     */
     ambientBakeOcclusionContrast = 0;
 
     /**
-     * The color of the scene's ambient light. Defaults to black (0, 0, 0).
-     *
-     * @type {Color}
+     * The color of the scene's ambient light, specified in sRGB color space. Defaults to black
+     * (0, 0, 0).
      */
     ambientLight = new Color(0, 0, 0);
 
     /**
      * The luminosity of the scene's ambient light in lux (lm/m^2). Used if physicalUnits is true. Defaults to 0.
-     *
-     * @type {number}
      */
     ambientLuminance = 0;
 
     /**
      * The exposure value tweaks the overall brightness of the scene. Ignored if physicalUnits is true. Defaults to 1.
-     *
-     * @type {number}
      */
     exposure = 1;
 
     /**
-     * The color of the fog (if enabled). Defaults to black (0, 0, 0).
-     *
-     * @type {Color}
-     */
-    fogColor = new Color(0, 0, 0);
-
-    /**
-     * The density of the fog (if enabled). This property is only valid if the fog property is set
-     * to {@link FOG_EXP} or {@link FOG_EXP2}. Defaults to 0.
-     *
-     * @type {number}
-     */
-    fogDensity = 0;
-
-    /**
-     * The distance from the viewpoint where linear fog reaches its maximum. This property is only
-     * valid if the fog property is set to {@link FOG_LINEAR}. Defaults to 1000.
-     *
-     * @type {number}
-     */
-    fogEnd = 1000;
-
-    /**
-     * The distance from the viewpoint where linear fog begins. This property is only valid if the
-     * fog property is set to {@link FOG_LINEAR}. Defaults to 1.
-     *
-     * @type {number}
-     */
-    fogStart = 1;
-
-    /**
      * The lightmap resolution multiplier. Defaults to 1.
-     *
-     * @type {number}
      */
     lightmapSizeMultiplier = 1;
 
     /**
      * The maximum lightmap resolution. Defaults to 2048.
-     *
-     * @type {number}
      */
     lightmapMaxResolution = 2048;
 
@@ -170,16 +242,12 @@ class Scene extends EventHandler {
      * in the image space of the lightmap, and it does not filter across lightmap UV space seams,
      * often making the seams more visible. It's important to balance the strength of the filter
      * with number of samples used for lightmap baking to limit the visible artifacts.
-     *
-     * @type {boolean}
      */
     lightmapFilterEnabled = false;
 
     /**
      * Enables HDR lightmaps. This can result in smoother lightmaps especially when many samples
      * are used. Defaults to false.
-     *
-     * @type {boolean}
      */
     lightmapHDR = false;
 
@@ -187,21 +255,19 @@ class Scene extends EventHandler {
      * The root entity of the scene, which is usually the only child to the {@link Application}
      * root entity.
      *
-     * @type {import('../framework/entity.js').Entity}
+     * @type {Entity}
      */
     root = null;
 
     /**
      * Use physically based units for cameras and lights. When used, the exposure value is ignored.
-     *
-     * @type {boolean}
      */
     physicalUnits = false;
 
     /**
      * Environment lighting atlas
      *
-     * @type {import('../platform/graphics/texture.js').Texture|null}
+     * @type {Texture|null}
      * @private
      */
     _envAtlas = null;
@@ -209,41 +275,50 @@ class Scene extends EventHandler {
     /**
      * The skybox cubemap as set by user (gets used when skyboxMip === 0)
      *
-     * @type {import('../platform/graphics/texture.js').Texture|null}
+     * @type {Texture|null}
      * @private
      */
     _skyboxCubeMap = null;
 
     /**
+     * The fog parameters.
+     *
+     * @private
+     */
+    _fogParams = new FogParams();
+
+    /**
+     * The renderer rendering this scene, set when the renderer is created.
+     *
+     * @type {Renderer|null}
+     * @ignore
+     */
+    renderer = null;
+
+    /**
      * Create a new Scene instance.
      *
-     * @param {import('../platform/graphics/graphics-device.js').GraphicsDevice} graphicsDevice -
-     * The graphics device used to manage this scene.
+     * @param {GraphicsDevice} graphicsDevice - The graphics device used to manage this scene.
      * @ignore
      */
     constructor(graphicsDevice) {
         super();
 
-        Debug.assert(graphicsDevice, "Scene constructor takes a GraphicsDevice as a parameter, and it was not provided.");
+        Debug.assert(graphicsDevice, 'Scene constructor takes a GraphicsDevice as a parameter, and it was not provided.');
         this.device = graphicsDevice;
 
         this._gravity = new Vec3(0, -9.8, 0);
 
         /**
-         * @type {import('./composition/layer-composition.js').LayerComposition}
+         * @type {LayerComposition}
          * @private
          */
         this._layers = null;
 
-        this._fog = FOG_NONE;
-
-        this._gammaCorrection = GAMMA_SRGB;
-        this._toneMapping = 0;
-
         /**
          * Array of 6 prefiltered lighting data cubemaps.
          *
-         * @type {import('../platform/graphics/texture.js').Texture[]}
+         * @type {Texture[]}
          * @private
          */
         this._prefilteredCubemaps = [];
@@ -254,6 +329,7 @@ class Scene extends EventHandler {
         this._skyboxIntensity = 1;
         this._skyboxLuminance = 0;
         this._skyboxMip = 0;
+        this._skyboxHighlightMultiplier = 1;
 
         this._skyboxRotationShaderInclude = false;
         this._skyboxRotation = new Quat();
@@ -273,6 +349,25 @@ class Scene extends EventHandler {
             this.updateShaders = true;
         });
 
+        /**
+         * When true (default), loaded gsplat assets include the extra data needed for
+         * {@link GSPLAT_RENDERER_RASTER_CPU_SORT} and non-unified gsplat rendering. Set to false
+         * **before** you start loading a gsplat asset (e.g. before {@link AppBase#assets}.load) to
+         * use less memory if you only need unified rendering with GPU sorting. Each load uses the
+         * value in effect when that load begins.
+         *
+         * @type {boolean}
+         * @ignore
+         */
+        this.gsplatCentersEnabled = true;
+
+        // gsplat params are initialized by GSplatComponentSystem when it is included in the app
+        /**
+         * @type {GSplatParams|null}
+         * @ignore
+         */
+        this._gsplatParams = null;
+
         // skybox
         this._sky = new Sky(this);
 
@@ -288,7 +383,6 @@ class Scene extends EventHandler {
          * This flag indicates changes were made to the scene which may require recompilation of
          * shaders that reference global settings.
          *
-         * @type {boolean}
          * @ignore
          */
         this.updateShaders = true;
@@ -300,18 +394,19 @@ class Scene extends EventHandler {
     }
 
     /**
-     * Returns the default layer used by the immediate drawing functions.
+     * Gets the default layer used by the immediate drawing functions.
      *
-     * @type {import('./layer.js').Layer}
-     * @private
+     * @type {Layer}
+     * @ignore
      */
     get defaultDrawLayer() {
         return this.layers.getLayerById(LAYERID_IMMEDIATE);
     }
 
     /**
-     * If {@link Scene#ambientBake} is true, this specifies the number of samples used to bake the
-     * ambient light into the lightmap. Defaults to 1. Maximum value is 255.
+     * Sets the number of samples used to bake the ambient light into the lightmap. Note that
+     * {@link ambientBake} must be true for this to have an effect. Defaults to 1. Maximum value
+     * is 255.
      *
      * @type {number}
      */
@@ -319,16 +414,21 @@ class Scene extends EventHandler {
         this._ambientBakeNumSamples = math.clamp(Math.floor(value), 1, 255);
     }
 
+    /**
+     * Gets the number of samples used to bake the ambient light into the lightmap.
+     *
+     * @type {number}
+     */
     get ambientBakeNumSamples() {
         return this._ambientBakeNumSamples;
     }
 
     /**
-     * If {@link Scene#ambientBake} is true, this specifies a part of the sphere which represents
-     * the source of ambient light. The valid range is 0..1, representing a part of the sphere from
-     * top to the bottom. A value of 0.5 represents the upper hemisphere. A value of 1 represents a
-     * full sphere. Defaults to 0.4, which is a smaller upper hemisphere as this requires fewer
-     * samples to bake.
+     * Sets the part of the sphere which represents the source of ambient light. Note that
+     * {@link ambientBake} must be true for this to have an effect. The valid range is 0..1,
+     * representing a part of the sphere from top to the bottom. A value of 0.5 represents the
+     * upper hemisphere. A value of 1 represents a full sphere. Defaults to 0.4, which is a smaller
+     * upper hemisphere as this requires fewer samples to bake.
      *
      * @type {number}
      */
@@ -336,12 +436,17 @@ class Scene extends EventHandler {
         this._ambientBakeSpherePart = math.clamp(value, 0.001, 1);
     }
 
+    /**
+     * Gets the part of the sphere which represents the source of ambient light.
+     *
+     * @type {number}
+     */
     get ambientBakeSpherePart() {
         return this._ambientBakeSpherePart;
     }
 
     /**
-     * True if the clustered lighting is enabled. Set to false before the first frame is rendered
+     * Sets whether clustered lighting is enabled. Set to false before the first frame is rendered
      * to use non-clustered lighting. Defaults to true.
      *
      * @type {boolean}
@@ -361,14 +466,22 @@ class Scene extends EventHandler {
         this._clusteredLightingEnabled = value;
     }
 
+    /**
+     * Gets whether clustered lighting is enabled.
+     *
+     * @type {boolean}
+     */
     get clusteredLightingEnabled() {
         return this._clusteredLightingEnabled;
     }
 
     /**
-     * The environment lighting atlas.
+     * Sets the environment lighting atlas: prefiltered mip levels of the environment packed into a
+     * single equirectangular texture. To build one from an equirectangular or cubemap source, use
+     * `EnvLighting.generateLightingSource` followed by `EnvLighting.generateAtlas`; a raw HDR
+     * texture assigned here will not light the scene correctly.
      *
-     * @type {import('../platform/graphics/texture.js').Texture}
+     * @type {Texture|null}
      */
     set envAtlas(value) {
         if (value !== this._envAtlas) {
@@ -393,58 +506,19 @@ class Scene extends EventHandler {
         }
     }
 
+    /**
+     * Gets the environment lighting atlas.
+     *
+     * @type {Texture|null}
+     */
     get envAtlas() {
         return this._envAtlas;
     }
 
     /**
-     * The type of fog used by the scene. Can be:
+     * Sets the {@link LayerComposition} that defines rendering order of this scene.
      *
-     * - {@link FOG_NONE}
-     * - {@link FOG_LINEAR}
-     * - {@link FOG_EXP}
-     * - {@link FOG_EXP2}
-     *
-     * Defaults to {@link FOG_NONE}.
-     *
-     * @type {string}
-     */
-    set fog(type) {
-        if (type !== this._fog) {
-            this._fog = type;
-            this.updateShaders = true;
-        }
-    }
-
-    get fog() {
-        return this._fog;
-    }
-
-    /**
-     * The gamma correction to apply when rendering the scene. Can be:
-     *
-     * - {@link GAMMA_NONE}
-     * - {@link GAMMA_SRGB}
-     *
-     * Defaults to {@link GAMMA_SRGB}.
-     *
-     * @type {number}
-     */
-    set gammaCorrection(value) {
-        if (value !== this._gammaCorrection) {
-            this._gammaCorrection = value;
-            this.updateShaders = true;
-        }
-    }
-
-    get gammaCorrection() {
-        return this._gammaCorrection;
-    }
-
-    /**
-     * A {@link LayerComposition} that defines rendering order of this scene.
-     *
-     * @type {import('./composition/layer-composition.js').LayerComposition}
+     * @type {LayerComposition}
      */
     set layers(layers) {
         const prev = this._layers;
@@ -452,16 +526,26 @@ class Scene extends EventHandler {
         this.fire('set:layers', prev, layers);
     }
 
+    /**
+     * Gets the {@link LayerComposition} that defines rendering order of this scene.
+     *
+     * @type {LayerComposition}
+     */
     get layers() {
         return this._layers;
     }
 
+    /**
+     * Gets the {@link Sky} that defines sky properties.
+     *
+     * @type {Sky}
+     */
     get sky() {
         return this._sky;
     }
 
     /**
-     * A {@link LightingParams} that defines lighting parameters.
+     * Gets the {@link LightingParams} that define lighting parameters.
      *
      * @type {LightingParams}
      */
@@ -470,9 +554,48 @@ class Scene extends EventHandler {
     }
 
     /**
-     * A range parameter of the bilateral filter. It's used when {@link Scene#lightmapFilterEnabled}
-     * is enabled. Larger value applies more widespread blur. This needs to be a positive non-zero
-     * value. Defaults to 10.
+     * Gets the GSplat parameters.
+     *
+     * @type {GSplatParams}
+     */
+    get gsplat() {
+        Debug.assert(this._gsplatParams, 'Scene#gsplat requires GSplatComponentSystem to be included in the app.');
+        return /** @type {GSplatParams} */ (this._gsplatParams);
+    }
+
+    /**
+     * Gets the GSplat parameters, or null when GSplatComponentSystem is not included in the app.
+     *
+     * @returns {GSplatParams|null} The GSplat parameters.
+     * @ignore
+     */
+    getGsplatParams() {
+        return this._gsplatParams;
+    }
+
+    /**
+     * Sets the GSplat parameters owned by GSplatComponentSystem.
+     *
+     * @param {GSplatParams|null} value - The GSplat parameters.
+     * @ignore
+     */
+    setGsplatParams(value) {
+        this._gsplatParams = value;
+    }
+
+    /**
+     * Gets the {@link FogParams} that define fog parameters.
+     *
+     * @type {FogParams}
+     */
+    get fog() {
+        return this._fogParams;
+    }
+
+    /**
+     * Sets the range parameter of the bilateral filter. It's used when
+     * {@link lightmapFilterEnabled} is enabled. Larger value applies more widespread blur. This
+     * needs to be a positive non-zero value. Defaults to 10.
      *
      * @type {number}
      */
@@ -480,14 +603,19 @@ class Scene extends EventHandler {
         this._lightmapFilterRange = Math.max(value, 0.001);
     }
 
+    /**
+     * Gets the range parameter of the bilateral filter.
+     *
+     * @type {number}
+     */
     get lightmapFilterRange() {
         return this._lightmapFilterRange;
     }
 
     /**
-     * A spatial parameter of the bilateral filter. It's used when {@link Scene#lightmapFilterEnabled}
-     * is enabled. Larger value blurs less similar colors. This needs to be a positive non-zero
-     * value. Defaults to 0.2.
+     * Sets the spatial parameter of the bilateral filter. It's used when
+     * {@link lightmapFilterEnabled} is enabled. Larger value blurs less similar colors. This
+     * needs to be a positive non-zero value. Defaults to 0.2.
      *
      * @type {number}
      */
@@ -495,14 +623,19 @@ class Scene extends EventHandler {
         this._lightmapFilterSmoothness = Math.max(value, 0.001);
     }
 
+    /**
+     * Gets the spatial parameter of the bilateral filter.
+     *
+     * @type {number}
+     */
     get lightmapFilterSmoothness() {
         return this._lightmapFilterSmoothness;
     }
 
     /**
-     * Set of 6 prefiltered cubemaps.
+     * Sets the 6 prefiltered cubemaps acting as the source of image-based lighting.
      *
-     * @type {import('../platform/graphics/texture.js').Texture[]}
+     * @type {Texture[]}
      */
     set prefilteredCubemaps(value) {
         value = value || [];
@@ -532,14 +665,24 @@ class Scene extends EventHandler {
         }
     }
 
+    /**
+     * Gets the 6 prefiltered cubemaps acting as the source of image-based lighting.
+     *
+     * @type {Texture[]}
+     */
     get prefilteredCubemaps() {
         return this._prefilteredCubemaps;
     }
 
     /**
-     * The base cubemap texture used as the scene's skybox, if mip level is 0. Defaults to null.
+     * Sets the base cubemap texture used as the scene's skybox when skyboxMip is 0. Defaults to null.
      *
-     * @type {import('../platform/graphics/texture.js').Texture}
+     * For a sky that needs no cubemap asset, `playcanvas/scripts/esm/sky/procedural-sky.mjs`
+     * renders an analytic daylight sky and keeps a directional light aligned with the sun so
+     * direct lighting and shadows match. Related scene-dressing scripts ship alongside it:
+     * `water.mjs`, `grid.mjs` and `shadow-catcher.mjs`.
+     *
+     * @type {Texture|null}
      */
     set skybox(value) {
         if (value !== this._skyboxCubeMap) {
@@ -548,12 +691,17 @@ class Scene extends EventHandler {
         }
     }
 
+    /**
+     * Gets the base cubemap texture used as the scene's skybox when skyboxMip is 0.
+     *
+     * @type {Texture|null}
+     */
     get skybox() {
         return this._skyboxCubeMap;
     }
 
     /**
-     * Multiplier for skybox intensity. Defaults to 1. Unused if physical units are used.
+     * Sets the multiplier for skybox intensity. Defaults to 1. Unused if physical units are used.
      *
      * @type {number}
      */
@@ -564,12 +712,17 @@ class Scene extends EventHandler {
         }
     }
 
+    /**
+     * Gets the multiplier for skybox intensity.
+     *
+     * @type {number}
+     */
     get skyboxIntensity() {
         return this._skyboxIntensity;
     }
 
     /**
-     * Luminance (in lm/m^2) of skybox. Defaults to 0. Only used if physical units are used.
+     * Sets the luminance (in lm/m^2) of the skybox. Defaults to 0. Only used if physical units are used.
      *
      * @type {number}
      */
@@ -580,12 +733,17 @@ class Scene extends EventHandler {
         }
     }
 
+    /**
+     * Gets the luminance (in lm/m^2) of the skybox.
+     *
+     * @type {number}
+     */
     get skyboxLuminance() {
         return this._skyboxLuminance;
     }
 
     /**
-     * The mip level of the skybox to be displayed. Only valid for prefiltered cubemap skyboxes.
+     * Sets the mip level of the skybox to be displayed. Only valid for prefiltered cubemap skyboxes.
      * Defaults to 0 (base level).
      *
      * @type {number}
@@ -597,12 +755,42 @@ class Scene extends EventHandler {
         }
     }
 
+    /**
+     * Gets the mip level of the skybox to be displayed.
+     *
+     * @type {number}
+     */
     get skyboxMip() {
         return this._skyboxMip;
     }
 
     /**
-     * The rotation of the skybox to be displayed. Defaults to {@link Quat.IDENTITY}.
+     * Sets the highlight multiplier for the skybox. The HDR skybox can represent brightness levels
+     * up to a maximum of 64, with any values beyond this being clipped. This limitation prevents
+     * the accurate representation of extremely bright sources, such as the Sun, which can affect
+     * HDR bloom rendering by not producing enough bloom. The multiplier adjusts the brightness
+     * after clipping, enhancing the bloom effect for bright sources. Defaults to 1.
+     *
+     * @type {number}
+     */
+    set skyboxHighlightMultiplier(value) {
+        if (value !== this._skyboxHighlightMultiplier) {
+            this._skyboxHighlightMultiplier = value;
+            this._resetSkyMesh();
+        }
+    }
+
+    /**
+     * Gets the highlight multiplied for the skybox.
+     *
+     * @type {number}
+     */
+    get skyboxHighlightMultiplier() {
+        return this._skyboxHighlightMultiplier;
+    }
+
+    /**
+     * Sets the rotation of the skybox to be displayed. Defaults to {@link Quat.IDENTITY}.
      *
      * @type {Quat}
      */
@@ -627,37 +815,17 @@ class Scene extends EventHandler {
         }
     }
 
+    /**
+     * Gets the rotation of the skybox to be displayed. Use the setter to update skybox state.
+     *
+     * @type {Readonly<Quat>}
+     */
     get skyboxRotation() {
         return this._skyboxRotation;
     }
 
-    /**
-     * The tonemapping transform to apply when writing fragments to the frame buffer. Can be:
-     *
-     * - {@link TONEMAP_LINEAR}
-     * - {@link TONEMAP_FILMIC}
-     * - {@link TONEMAP_HEJL}
-     * - {@link TONEMAP_ACES}
-     * - {@link TONEMAP_ACES2}
-     * - {@link TONEMAP_NEUTRAL}
-     *
-     * Defaults to {@link TONEMAP_LINEAR}.
-     *
-     * @type {number}
-     */
-    set toneMapping(value) {
-        if (value !== this._toneMapping) {
-            this._toneMapping = value;
-            this.updateShaders = true;
-        }
-    }
-
-    get toneMapping() {
-        return this._toneMapping;
-    }
-
     destroy() {
-        this._resetSkyMesh();
+        this._sky.destroy();
         this.root = null;
         this.off();
     }
@@ -685,13 +853,11 @@ class Scene extends EventHandler {
         this._gravity.set(physics.gravity[0], physics.gravity[1], physics.gravity[2]);
         this.ambientLight.set(render.global_ambient[0], render.global_ambient[1], render.global_ambient[2]);
         this.ambientLuminance = render.ambientLuminance;
-        this._fog = render.fog;
-        this.fogColor.set(render.fog_color[0], render.fog_color[1], render.fog_color[2]);
-        this.fogStart = render.fog_start;
-        this.fogEnd = render.fog_end;
-        this.fogDensity = render.fog_density;
-        this._gammaCorrection = render.gamma_correction;
-        this._toneMapping = render.tonemapping;
+        this.fog.type = render.fog;
+        this.fog.color.set(render.fog_color[0], render.fog_color[1], render.fog_color[2]);
+        this.fog.start = render.fog_start;
+        this.fog.end = render.fog_end;
+        this.fog.density = render.fog_density;
         this.lightmapSizeMultiplier = render.lightmapSizeMultiplier;
         this.lightmapMaxResolution = render.lightmapMaxResolution;
         this.lightmapMode = render.lightmapMode;
@@ -708,6 +874,8 @@ class Scene extends EventHandler {
 
         this.clusteredLightingEnabled = render.clusteredLightingEnabled ?? false;
         this.lighting.applySettings(render);
+
+        this.getGsplatParams()?.applySettings(render);
 
         // bake settings
         [
@@ -761,12 +929,11 @@ class Scene extends EventHandler {
     /**
      * Sets the cubemap for the scene skybox.
      *
-     * @param {import('../platform/graphics/texture.js').Texture[]} [cubemaps] - An array of
-     * cubemaps corresponding to the skybox at different mip levels. If undefined, scene will
-     * remove skybox. Cubemap array should be of size 7, with the first element (index 0)
-     * corresponding to the base cubemap (mip level 0) with original resolution. Each remaining
-     * element (index 1-6) corresponds to a fixed prefiltered resolution (128x128, 64x64, 32x32,
-     * 16x16, 8x8, 4x4).
+     * @param {Texture[]} [cubemaps] - An array of cubemaps corresponding to the skybox at
+     * different mip levels. If undefined, scene will remove skybox. Cubemap array should be of
+     * size 7, with the first element (index 0) corresponding to the base cubemap (mip level 0)
+     * with original resolution. Each remaining element (index 1-6) corresponds to a fixed
+     * prefiltered resolution (128x128, 64x64, 32x32, 16x16, 8x8, 4x4).
      */
     setSkybox(cubemaps) {
         if (!cubemaps) {
@@ -785,13 +952,217 @@ class Scene extends EventHandler {
     }
 
     /**
-     * The lightmap pixel format.
+     * Gets the lightmap pixel format.
      *
      * @type {number}
      */
     get lightmapPixelFormat() {
         return this.lightmapHDR && this.device.getRenderableHdrFormat() || PIXELFORMAT_RGBA8;
     }
+
+    // ---- deprecated block start ----
+
+    /**
+     * @deprecated No replacement is available.
+     * @ignore
+     */
+    get defaultMaterial() {
+        Debug.deprecated('Scene#defaultMaterial is deprecated.');
+        return getDefaultMaterial(this.device);
+    }
+
+    /**
+     * @deprecated Use Scene#fog.color instead.
+     * @ignore
+     */
+    set fogColor(value) {
+        Debug.deprecated('Scene#fogColor is deprecated. Use Scene#fog.color instead.');
+        this.fog.color = value;
+    }
+
+    /**
+     * @deprecated Use Scene#fog.color instead.
+     * @ignore
+     */
+    get fogColor() {
+        Debug.deprecated('Scene#fogColor is deprecated. Use Scene#fog.color instead.');
+        return this.fog.color;
+    }
+
+    /**
+     * @deprecated Use Scene#fog.end instead.
+     * @ignore
+     */
+    set fogEnd(value) {
+        Debug.deprecated('Scene#fogEnd is deprecated. Use Scene#fog.end instead.');
+        this.fog.end = value;
+    }
+
+    /**
+     * @deprecated Use Scene#fog.end instead.
+     * @ignore
+     */
+    get fogEnd() {
+        Debug.deprecated('Scene#fogEnd is deprecated. Use Scene#fog.end instead.');
+        return this.fog.end;
+    }
+
+    /**
+     * @deprecated Use Scene#fog.start instead.
+     * @ignore
+     */
+    set fogStart(value) {
+        Debug.deprecated('Scene#fogStart is deprecated. Use Scene#fog.start instead.');
+        this.fog.start = value;
+    }
+
+    /**
+     * @deprecated Use Scene#fog.start instead.
+     * @ignore
+     */
+    get fogStart() {
+        Debug.deprecated('Scene#fogStart is deprecated. Use Scene#fog.start instead.');
+        return this.fog.start;
+    }
+
+    /**
+     * @deprecated Use Scene#fog.density instead.
+     * @ignore
+     */
+    set fogDensity(value) {
+        Debug.deprecated('Scene#fogDensity is deprecated. Use Scene#fog.density instead.');
+        this.fog.density = value;
+    }
+
+    /**
+     * @deprecated Use Scene#fog.density instead.
+     * @ignore
+     */
+    get fogDensity() {
+        Debug.deprecated('Scene#fogDensity is deprecated. Use Scene#fog.density instead.');
+        return this.fog.density;
+    }
+
+    /**
+     * @deprecated Use Scene#prefilteredCubemaps instead.
+     * @ignore
+     */
+    set skyboxPrefiltered128(value) {
+        Debug.deprecated('Scene#skyboxPrefiltered128 is deprecated. Use Scene#prefilteredCubemaps instead.');
+        this._prefilteredCubemaps[0] = value;
+        this.updateShaders = true;
+    }
+
+    /**
+     * @deprecated Use Scene#prefilteredCubemaps instead.
+     * @ignore
+     */
+    get skyboxPrefiltered128() {
+        Debug.deprecated('Scene#skyboxPrefiltered128 is deprecated. Use Scene#prefilteredCubemaps instead.');
+        return this._prefilteredCubemaps[0];
+    }
+
+    /**
+     * @deprecated Use Scene#prefilteredCubemaps instead.
+     * @ignore
+     */
+    set skyboxPrefiltered64(value) {
+        Debug.deprecated('Scene#skyboxPrefiltered64 is deprecated. Use Scene#prefilteredCubemaps instead.');
+        this._prefilteredCubemaps[1] = value;
+        this.updateShaders = true;
+    }
+
+    /**
+     * @deprecated Use Scene#prefilteredCubemaps instead.
+     * @ignore
+     */
+    get skyboxPrefiltered64() {
+        Debug.deprecated('Scene#skyboxPrefiltered64 is deprecated. Use Scene#prefilteredCubemaps instead.');
+        return this._prefilteredCubemaps[1];
+    }
+
+    /**
+     * @deprecated Use Scene#prefilteredCubemaps instead.
+     * @ignore
+     */
+    set skyboxPrefiltered32(value) {
+        Debug.deprecated('Scene#skyboxPrefiltered32 is deprecated. Use Scene#prefilteredCubemaps instead.');
+        this._prefilteredCubemaps[2] = value;
+        this.updateShaders = true;
+    }
+
+    /**
+     * @deprecated Use Scene#prefilteredCubemaps instead.
+     * @ignore
+     */
+    get skyboxPrefiltered32() {
+        Debug.deprecated('Scene#skyboxPrefiltered32 is deprecated. Use Scene#prefilteredCubemaps instead.');
+        return this._prefilteredCubemaps[2];
+    }
+
+    /**
+     * @deprecated Use Scene#prefilteredCubemaps instead.
+     * @ignore
+     */
+    set skyboxPrefiltered16(value) {
+        Debug.deprecated('Scene#skyboxPrefiltered16 is deprecated. Use Scene#prefilteredCubemaps instead.');
+        this._prefilteredCubemaps[3] = value;
+        this.updateShaders = true;
+    }
+
+    /**
+     * @deprecated Use Scene#prefilteredCubemaps instead.
+     * @ignore
+     */
+    get skyboxPrefiltered16() {
+        Debug.deprecated('Scene#skyboxPrefiltered16 is deprecated. Use Scene#prefilteredCubemaps instead.');
+        return this._prefilteredCubemaps[3];
+    }
+
+    /**
+     * @deprecated Use Scene#prefilteredCubemaps instead.
+     * @ignore
+     */
+    set skyboxPrefiltered8(value) {
+        Debug.deprecated('Scene#skyboxPrefiltered8 is deprecated. Use Scene#prefilteredCubemaps instead.');
+        this._prefilteredCubemaps[4] = value;
+        this.updateShaders = true;
+    }
+
+    /**
+     * @deprecated Use Scene#prefilteredCubemaps instead.
+     * @ignore
+     */
+    get skyboxPrefiltered8() {
+        Debug.deprecated('Scene#skyboxPrefiltered8 is deprecated. Use Scene#prefilteredCubemaps instead.');
+        return this._prefilteredCubemaps[4];
+    }
+
+    /**
+     * @deprecated Use Scene#prefilteredCubemaps instead.
+     * @ignore
+     */
+    set skyboxPrefiltered4(value) {
+        Debug.deprecated('Scene#skyboxPrefiltered4 is deprecated. Use Scene#prefilteredCubemaps instead.');
+        this._prefilteredCubemaps[5] = value;
+        this.updateShaders = true;
+    }
+
+    /**
+     * @deprecated Use Scene#prefilteredCubemaps instead.
+     * @ignore
+     */
+    get skyboxPrefiltered4() {
+        Debug.deprecated('Scene#skyboxPrefiltered4 is deprecated. Use Scene#prefilteredCubemaps instead.');
+        return this._prefilteredCubemaps[5];
+    }
+
+    get models() {
+        this._models ??= [];
+        return this._models;
+    }
+
+    // ---- deprecated block end ----
 }
 
 export { Scene };

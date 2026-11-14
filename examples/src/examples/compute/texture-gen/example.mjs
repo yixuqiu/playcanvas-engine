@@ -1,52 +1,107 @@
-import * as pc from 'playcanvas';
-import { deviceType, rootPath } from '@examples/utils';
-import files from '@examples/files';
+// @config
+// @flag WEBGL_DISABLED
+//
+// A compute shader generates an animated texture every frame, writing it to a storage texture. It
+// reads the PlayCanvas logo from an input texture, and lays it over the pattern. Two instances of the
+// shader generate two variants of the texture, dispatched together in a single compute pass. Each
+// knot is painted with one of them, and the corner shows the textures as generated. The pattern
+// tiles without seams, so it flows along the knots without a visible edge.
 
-const canvas = document.getElementById('application-canvas');
-if (!(canvas instanceof HTMLCanvasElement)) {
-    throw new Error('No canvas found');
-}
+import {
+    ADDRESS_REPEAT,
+    AppBase,
+    AppOptions,
+    Asset,
+    AssetListLoader,
+    BindGroupFormat,
+    BindStorageTextureFormat,
+    BindTextureFormat,
+    BindUniformBufferFormat,
+    CameraComponentSystem,
+    CameraFrame,
+    Color,
+    Compute,
+    ContainerHandler,
+    Entity,
+    FILLMODE_FILL_WINDOW,
+    FILTER_LINEAR,
+    LAYERID_IMMEDIATE,
+    LAYERID_UI,
+    LAYERID_WORLD,
+    LightComponentSystem,
+    MiniStats,
+    Mouse,
+    PIXELFORMAT_RGBA8,
+    RESOLUTION_AUTO,
+    RenderComponentSystem,
+    SHADERLANGUAGE_WGSL,
+    SHADERSTAGE_COMPUTE,
+    ScriptComponentSystem,
+    Shader,
+    StandardMaterial,
+    TEXTUREDIMENSION_2D,
+    TEXTURETYPE_RGBP,
+    TONEMAP_NEUTRAL,
+    Texture,
+    TextureHandler,
+    TextureRenderer,
+    TouchDevice,
+    UNIFORMTYPE_FLOAT,
+    UniformBufferFormat,
+    UniformFormat,
+    Vec2,
+    Vec3,
+    createGraphicsDevice
+} from 'playcanvas';
+import { CameraControls } from 'playcanvas/scripts/esm/camera-controls.mjs';
+
+import { data, deviceType } from 'examples/context';
+
+import computeShaderWgsl from './compute-shader.wgsl';
+
+/**
+ * @import { RenderComponent } from 'playcanvas'
+ */
+
+const canvas = /** @type {HTMLCanvasElement} */ (document.getElementById('application-canvas'));
+window.focus();
 
 const assets = {
-    texture: new pc.Asset('color', 'texture', { url: rootPath + '/static/assets/textures/seaside-rocks01-color.jpg' }),
-    solid: new pc.Asset('solid', 'container', { url: rootPath + '/static/assets/models/icosahedron.glb' }),
-    helipad: new pc.Asset(
-        'helipad-env-atlas',
+    knot: new Asset('knot', 'container', { url: './assets/models/trefoil-knot.glb' }),
+    logo: new Asset('logo', 'texture', { url: './assets/textures/playcanvas-grey.png' }),
+    envAtlas: new Asset(
+        'env-atlas',
         'texture',
-        { url: rootPath + '/static/assets/cubemaps/helipad-env-atlas.png' },
-        { type: pc.TEXTURETYPE_RGBP, mipmaps: false }
+        { url: './assets/cubemaps/product-studio-env-atlas.png' },
+        { type: TEXTURETYPE_RGBP, mipmaps: false }
     )
 };
 
-const gfxOptions = {
-    deviceTypes: [deviceType],
-    glslangUrl: rootPath + '/static/lib/glslang/glslang.js',
-    twgslUrl: rootPath + '/static/lib/twgsl/twgsl.js'
-};
-
-const device = await pc.createGraphicsDevice(canvas, gfxOptions);
+const device = await createGraphicsDevice(canvas, {
+    deviceTypes: [deviceType]
+});
 device.maxPixelRatio = Math.min(window.devicePixelRatio, 2);
-const createOptions = new pc.AppOptions();
+
+const createOptions = new AppOptions();
 createOptions.graphicsDevice = device;
-
+createOptions.mouse = new Mouse(document.body);
+createOptions.touch = new TouchDevice(document.body);
 createOptions.componentSystems = [
-    pc.RenderComponentSystem,
-    pc.CameraComponentSystem,
-    pc.LightComponentSystem,
-    pc.ScriptComponentSystem
+    RenderComponentSystem,
+    CameraComponentSystem,
+    LightComponentSystem,
+    ScriptComponentSystem
 ];
-createOptions.resourceHandlers = [
-    pc.TextureHandler,
-    pc.ContainerHandler
-];
+createOptions.resourceHandlers = [TextureHandler, ContainerHandler];
 
-const app = new pc.AppBase(canvas);
+const app = new AppBase(canvas);
 app.init(createOptions);
-app.start();
+
+const textures = new TextureRenderer(app);
 
 // Set the canvas to fill the window and automatically change resolution to be the same as the canvas size
-app.setCanvasFillMode(pc.FILLMODE_FILL_WINDOW);
-app.setCanvasResolution(pc.RESOLUTION_AUTO);
+app.setCanvasFillMode(FILLMODE_FILL_WINDOW);
+app.setCanvasResolution(RESOLUTION_AUTO);
 
 // Ensure canvas is resized when window changes size
 const resize = () => app.resizeCanvas();
@@ -55,146 +110,206 @@ app.on('destroy', () => {
     window.removeEventListener('resize', resize);
 });
 
-const assetListLoader = new pc.AssetListLoader(Object.values(assets), app.assets);
-assetListLoader.load(() => {
-
-    // set up some general scene rendering properties
-    app.scene.toneMapping = pc.TONEMAP_ACES;
-
-    // setup skydome
-    app.scene.skyboxMip = 1;
-    app.scene.skyboxIntensity = 3;
-    app.scene.envAtlas = assets.helipad.resource;
-
-    // create camera entity
-    const camera = new pc.Entity('camera');
-    camera.addComponent('camera', {
-        clearColor: new pc.Color(0.5, 0.6, 0.9)
-    });
-    app.root.addChild(camera);
-    camera.setPosition(0.6, 0, 5);
-
-    // create directional light entity
-    const light = new pc.Entity('light');
-    light.addComponent('light');
-    app.root.addChild(light);
-    light.setEulerAngles(45, 0, 0);
-
-    // a helper script that rotates the entity
-    const Rotator = pc.createScript('rotator');
-    Rotator.prototype.update = function (/** @type {number} */ dt) {
-        this.entity.rotate(10 * dt, 20 * dt, 30 * dt);
-    };
-
-    // a compute shader that will tint the input texture and write the result to the storage texture
-    const shader = device.supportsCompute ? new pc.Shader(device, {
-        name: 'ComputeShader',
-        shaderLanguage: pc.SHADERLANGUAGE_WGSL,
-        cshader: files['compute-shader.wgsl'],
-
-        computeUniformBufferFormats: {
-            'ub': new pc.UniformBufferFormat(device, [
-                new pc.UniformFormat('tint', pc.UNIFORMTYPE_VEC4),
-                new pc.UniformFormat('offset', pc.UNIFORMTYPE_FLOAT),
-                new pc.UniformFormat('frequency', pc.UNIFORMTYPE_FLOAT)
-            ])
-        },
-
-        // format of a bind group, providing resources for the compute shader
-        computeBindGroupFormat: new pc.BindGroupFormat(device, [
-            // a uniform buffer we provided format for
-            new pc.BindUniformBufferFormat('ub', pc.SHADERSTAGE_COMPUTE),
-            // input textures
-            new pc.BindTextureFormat('inTexture', pc.SHADERSTAGE_COMPUTE, undefined, undefined, false),
-            // output storage textures
-            new pc.BindStorageTextureFormat('outTexture', pc.PIXELFORMAT_RGBA8, pc.TEXTUREDIMENSION_2D)
-        ])
-    }) : null;
-
-    // helper function, which creates a cube entity, and an instance of the compute shader that will
-    // update its texture each frame
-    const createCubeInstance = (/** @type {pc.Vec3} */position) => {
-
-        if (!device.supportsCompute)
-            return null;
-
-        // create a storage texture, that the compute shader will write to. Make it the same dimensions
-        // as the loaded input texture
-        const storageTexture = new pc.Texture(app.graphicsDevice, {
-            name: 'outputTexture',
-            width: assets.texture.resource.width,
-            height: assets.texture.resource.height,
-            format: pc.PIXELFORMAT_RGBA8,
-            mipmaps: false,
-            minFilter: pc.FILTER_LINEAR,
-            magFilter: pc.FILTER_LINEAR,
-            addressU: pc.ADDRESS_CLAMP_TO_EDGE,
-            addressV: pc.ADDRESS_CLAMP_TO_EDGE,
-
-            // this is a storage texture, allowing compute shader to write to it
-            storage: true
-        });
-
-        // create an instance of the compute shader, and set the input and output textures
-        const compute = new pc.Compute(device, shader, 'ComputeModifyTexture');
-        compute.setParameter('inTexture', assets.texture.resource);
-        compute.setParameter('outTexture', storageTexture);
-
-        // add a box in the scene, using the storage texture as a material
-        const material = new pc.StandardMaterial();
-        material.diffuseMap = storageTexture;
-        material.gloss = 0.6;
-        material.metalness = 0.4;
-        material.useMetalness = true;
-        material.update();
-
-        const solid = assets.solid.resource.instantiateRenderEntity();
-        solid.findByName('Object_3').render.meshInstances[0].material = material;
-
-        // add the script to rotate the object
-        solid.addComponent('script');
-        solid.script.create('rotator');
-
-        // place it in the world
-        solid.setLocalPosition(position);
-        solid.setLocalScale(0.25, 0.25, 0.25);
-        app.root.addChild(solid);
-
-        return compute;
-    };
-
-    // create two instances of cube / compute shader
-    const compute1 = createCubeInstance(new pc.Vec3(0, 1, 0));
-    const compute2 = createCubeInstance(new pc.Vec3(0, -1, 0));
-
-    let time = 0;
-    const srcTexture = assets.texture.resource;
-    app.on('update', function (/** @type {number} */ dt) {
-        time += dt;
-
-        if (device.supportsCompute) {
-
-            // set uniform buffer parameters
-            compute1.setParameter('offset', 20 * time);
-            compute1.setParameter('frequency', 0.1);
-            compute1.setParameter('tint', [Math.sin(time) * 0.5 + 0.5, 1, 0, 1]);
-
-            compute2.setParameter('offset', 10 * time);
-            compute2.setParameter('frequency', 0.03);
-            compute2.setParameter('tint', [1, 0, Math.sin(time) * 0.5 + 0.5, 1]);
-
-            // set up both dispatches
-            compute1.setupDispatch(srcTexture.width, srcTexture.height);
-            compute2.setupDispatch(srcTexture.width, srcTexture.height);
-
-            // dispatch both compute shaders in a single compute pass
-            device.computeDispatch([compute1, compute2]);
-
-            // debug render the generated textures
-            app.drawTexture(0.6, 0.5, 0.6, 0.3, compute1.getParameter('outTexture'));
-            app.drawTexture(0.6, -0.5, 0.6, 0.3, compute2.getParameter('outTexture'));
-        }
-    });
+await new Promise((resolve) => {
+    new AssetListLoader(Object.values(assets), app.assets).load(resolve);
 });
 
-export { app };
+app.start();
+
+// The compute dispatches and compute passes of each frame are shown next to the other stats
+const miniStats = new MiniStats(app, MiniStats.getDefaultOptions(['compute']));
+
+data.set('settings', {
+    speed: 1,
+    hue: 0.4
+});
+
+// The studio environment gives the knots their reflections. The camera does not render the skybox
+// layer, so the background is the clear color.
+app.scene.envAtlas = assets.envAtlas.resource;
+app.scene.skyboxIntensity = 0.3;
+
+// ----- The generated textures -----
+
+// The input texture: the white PlayCanvas logo on gray
+const logo = assets.logo.resource;
+
+// a compute shader that generates a texture
+const shader = device.supportsCompute
+    ? new Shader(device, {
+          name: 'ComputeShader',
+          shaderLanguage: SHADERLANGUAGE_WGSL,
+          cshader: computeShaderWgsl,
+
+          computeUniformBufferFormats: {
+              ub: new UniformBufferFormat(device, [
+                  new UniformFormat('time', UNIFORMTYPE_FLOAT),
+                  new UniformFormat('hue', UNIFORMTYPE_FLOAT)
+              ])
+          },
+
+          // Format of a bind group, providing resources for the compute shader
+          computeBindGroupFormat: new BindGroupFormat(device, [
+              // a uniform buffer we provided format for
+              new BindUniformBufferFormat('ub', SHADERSTAGE_COMPUTE),
+              // Input texture, read without filtering
+              new BindTextureFormat('inTexture', SHADERSTAGE_COMPUTE, undefined, undefined, false),
+              // Output storage texture
+              new BindStorageTextureFormat('outTexture', PIXELFORMAT_RGBA8, TEXTUREDIMENSION_2D)
+          ])
+      })
+    : null;
+
+/**
+ * Creates a knot painted with a texture of its own, and an instance of the compute shader which
+ * generates the texture each frame.
+ *
+ * @param {number} x - The position of the knot along the X axis.
+ * @returns {{ knot: Entity, texture: Texture, compute: Compute }} The knot, its texture, and the
+ * compute shader instance generating it.
+ */
+const createKnot = (x) => {
+    // The storage texture the compute shader writes to, the same size as the logo texture, so the
+    // shader reads and writes the same texel. It repeats along the knot.
+    const texture = new Texture(device, {
+        name: 'GeneratedTexture',
+        width: logo.width,
+        height: logo.height,
+        format: PIXELFORMAT_RGBA8,
+        mipmaps: false,
+        minFilter: FILTER_LINEAR,
+        magFilter: FILTER_LINEAR,
+        addressU: ADDRESS_REPEAT,
+        addressV: ADDRESS_REPEAT,
+
+        // This is a storage texture, allowing compute shader to write to it
+        storage: true
+    });
+
+    // Create an instance of the compute shader, and set the input and output textures
+    const compute = new Compute(device, shader, 'ComputeGenerateTexture');
+    compute.setParameter('inTexture', logo);
+    compute.setParameter('outTexture', texture);
+
+    // Glossy paint in the colors of the texture, which also glows a little with them
+    const material = new StandardMaterial();
+    material.diffuseMap = texture;
+    material.emissiveMap = texture;
+    material.emissive = Color.WHITE;
+    material.emissiveIntensity = 1;
+    material.gloss = 0.7;
+    material.useMetalness = true;
+    material.metalness = 0;
+    material.update();
+
+    const knot = assets.knot.resource.instantiateRenderEntity();
+    knot.findComponents('render').forEach((render) => {
+        /** @type {RenderComponent} */ (render).meshInstances[0].material = material;
+    });
+    knot.setLocalPosition(x, 0, 0);
+    knot.setLocalScale(0.6, 0.6, 0.6);
+    app.root.addChild(knot);
+
+    return { knot, texture, compute };
+};
+
+// Two knots, each with a texture generated by its own instance of the compute shader. The second
+// texture uses the opposite colors of the palette, and flows slower.
+const variants = [
+    { ...createKnot(-1.4), hue: 0, speed: 1 },
+    { ...createKnot(1.4), hue: 0.5, speed: 0.6 }
+];
+
+// ----- The camera and the lights -----
+
+const camera = new Entity('Camera');
+// the camera frame treats the clear color as a linear color, so it is converted from sRGB
+camera.addComponent('camera', {
+    clearColor: new Color().fromString('#0c0e14').linear(),
+    layers: [LAYERID_WORLD, LAYERID_IMMEDIATE, LAYERID_UI]
+});
+camera.addComponent('script');
+camera.setLocalPosition(0, 0.5, 6.5);
+app.root.addChild(camera);
+
+const cameraControls = /** @type {CameraControls} */ (camera.script.create(CameraControls));
+cameraControls.focusPoint = Vec3.ZERO;
+cameraControls.enableFly = false;
+cameraControls.pitchRange = new Vec2(-90, 90);
+cameraControls.zoomRange = new Vec2(3, 15);
+
+/**
+ * Creates a directional light.
+ *
+ * @param {string} color - The color, as a hex string.
+ * @param {number} intensity - The intensity.
+ * @param {number[]} angles - The euler angles of the light.
+ */
+function createLight(color, intensity, angles) {
+    const light = new Entity('Light');
+    light.addComponent('light', {
+        type: 'directional',
+        color: new Color().fromString(color),
+        intensity
+    });
+    light.setLocalEulerAngles(angles[0], angles[1], angles[2]);
+    app.root.addChild(light);
+}
+
+// Seen from the starting camera position: a soft key light from the upper left, and two rim lights
+// from behind the knots
+createLight('#fff1e0', 1.2, [45, -35, 0]);
+createLight('#ffffff', 0.8, [-60, 120, 0]);
+createLight('#ffffff', 0.8, [-60, -120, 0]);
+
+// Bloom makes the glowing lines of the texture glow. The neutral tone mapping keeps their colors.
+const cameraFrame = new CameraFrame(app, camera.camera);
+cameraFrame.rendering.samples = 4;
+cameraFrame.rendering.toneMapping = TONEMAP_NEUTRAL;
+cameraFrame.bloom.intensity = 0.03;
+cameraFrame.bloom.blurLevel = 6;
+cameraFrame.vignette.intensity = 0.5;
+cameraFrame.update();
+
+// ----- The texture previews -----
+
+// A caption above the previews of the textures, drawn in the bottom right corner
+const caption = document.createElement('div');
+caption.textContent = 'Generated textures';
+caption.style.cssText = `
+    position: absolute; right: 2.5%; bottom: calc(2.5% + 20vh + 8px); pointer-events: none;
+    font: 600 11px system-ui, sans-serif; letter-spacing: 0.08em; text-transform: uppercase; color: #a7afbd;`;
+document.body.appendChild(caption);
+app.on('destroy', () => caption.remove());
+
+let time = 0;
+app.on('update', (/** @type {number} */ dt) => {
+    const settings = data.get('settings');
+    time += dt * settings.speed;
+
+    // the previews of the textures are square, a fifth of the height of the screen
+    const height = 0.2;
+    const width = (height * canvas.clientHeight) / canvas.clientWidth;
+
+    variants.forEach(({ knot, texture, compute, hue, speed }, i) => {
+        // Set up the dispatch generating the texture, a thread for each texel
+        compute.setParameter('time', time * speed);
+        compute.setParameter('hue', settings.hue + hue);
+        compute.setupDispatchThreads(texture.width, texture.height);
+
+        // slowly turn the knot, the two in opposite directions
+        const direction = i === 0 ? 1 : -1;
+        knot.setLocalEulerAngles(time * 5, direction * time * 12, 0);
+
+        // show the texture in the bottom right corner, side by side
+        textures.draw(texture, 0.975 - (2 - i) * width - (1 - i) * 0.01, 0.775, width, height);
+    });
+
+    // Dispatch both compute shaders in a single compute pass
+    device.computeDispatch(
+        variants.map((variant) => variant.compute),
+        'ComputeGenerateTextureDispatch'
+    );
+});
+
+export { miniStats };

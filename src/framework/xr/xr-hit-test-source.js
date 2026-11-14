@@ -3,14 +3,17 @@ import { Quat } from '../../core/math/quat.js';
 import { Vec3 } from '../../core/math/vec3.js';
 
 /**
+ * @import { XrInputSource } from './xr-input-source.js'
+ * @import { XrManager } from './xr-manager.js'
+ */
+
+/**
  * @type {Vec3[]}
- * @ignore
  */
 const poolVec3 = [];
 
 /**
  * @type {Quat[]}
- * @ignore
  */
 const poolQuat = [];
 
@@ -21,11 +24,11 @@ const poolQuat = [];
  * ```javascript
  * // start a hit test from a viewer origin forward
  * app.xr.hitTest.start({
- *     spaceType: pc.XRSPACE_VIEWER,
- *     callback: function (err, hitTestSource) {
+ *     spaceType: XRSPACE_VIEWER,
+ *     callback: (err, hitTestSource) => {
  *         if (err) return;
  *         // subscribe to hit test results
- *         hitTestSource.on('result', function (position, rotation, inputSource, hitTestResult) {
+ *         hitTestSource.on('result', (position, rotation, inputSource, hitTestResult) => {
  *             // position and rotation of hit test result
  *         });
  *     }
@@ -50,11 +53,12 @@ class XrHitTestSource extends EventHandler {
      * Fired when the hit test source receives new results. It provides transform information that
      * tries to match real world geometry. Callback provides the {@link Vec3} position, the
      * {@link Quat} rotation, the {@link XrInputSource} (if it is a transient hit test source)
-     * and the {@link XRHitTestResult} object that is created by WebXR API.
+     * and the [XRHitTestResult](https://developer.mozilla.org/en-US/docs/Web/API/XRHitTestResult)
+     * object that is created by WebXR API.
      *
      * @event
      * @example
-     * hitTestSource.on('result', (position, rotation, inputSource, hitTestReult) => {
+     * hitTestSource.on('result', (position, rotation, inputSource, hitTestResult) => {
      *     target.setPosition(position);
      *     target.setRotation(rotation);
      * });
@@ -62,7 +66,7 @@ class XrHitTestSource extends EventHandler {
     static EVENT_RESULT = 'result';
 
     /**
-     * @type {import('./xr-manager.js').XrManager}
+     * @type {XrManager}
      * @private
      */
     manager;
@@ -80,7 +84,7 @@ class XrHitTestSource extends EventHandler {
     _transient;
 
     /**
-     * @type {null|import('./xr-input-source.js').XrInputSource}
+     * @type {null|XrInputSource}
      * @private
      */
     _inputSource;
@@ -88,10 +92,10 @@ class XrHitTestSource extends EventHandler {
     /**
      * Create a new XrHitTestSource instance.
      *
-     * @param {import('./xr-manager.js').XrManager} manager - WebXR Manager.
-     * @param {*} xrHitTestSource - XRHitTestSource object that is created by WebXR API.
+     * @param {XrManager} manager - WebXR Manager.
+     * @param {XRHitTestSource} xrHitTestSource - XRHitTestSource object that is created by WebXR API.
      * @param {boolean} transient - True if XRHitTestSource created for input source profile.
-     * @param {null|import('./xr-input-source.js').XrInputSource} inputSource - Input Source for which hit test is created for, or null.
+     * @param {null|XrInputSource} inputSource - Input Source for which hit test is created for, or null.
      * @ignore
      */
     constructor(manager, xrHitTestSource, transient, inputSource = null) {
@@ -107,8 +111,9 @@ class XrHitTestSource extends EventHandler {
      * Stop and remove hit test source.
      */
     remove() {
-        if (!this._xrHitTestSource)
+        if (!this._xrHitTestSource) {
             return;
+        }
 
         const sources = this.manager.hitTest.sources;
         const ind = sources.indexOf(this);
@@ -127,7 +132,7 @@ class XrHitTestSource extends EventHandler {
     }
 
     /**
-     * @param {*} frame - XRFrame from requestAnimationFrame callback.
+     * @param {XRFrame} frame - XRFrame from requestAnimationFrame callback.
      * @ignore
      */
     update(frame) {
@@ -136,20 +141,23 @@ class XrHitTestSource extends EventHandler {
             for (let i = 0; i < transientResults.length; i++) {
                 const transientResult = transientResults[i];
 
-                if (!transientResult.results.length)
+                if (!transientResult.results.length) {
                     continue;
+                }
 
                 let inputSource;
 
-                if (transientResult.inputSource)
+                if (transientResult.inputSource) {
                     inputSource = this.manager.input._getByInputSource(transientResult.inputSource);
+                }
 
                 this.updateHitResults(transientResult.results, inputSource);
             }
         } else {
             const results = frame.getHitTestResults(this._xrHitTestSource);
-            if (!results.length)
+            if (!results.length) {
                 return;
+            }
 
             this.updateHitResults(results);
         }
@@ -157,44 +165,35 @@ class XrHitTestSource extends EventHandler {
 
     /**
      * @param {XRTransientInputHitTestResult[]} results - Hit test results.
-     * @param {null|import('./xr-input-source.js').XrInputSource} inputSource - Input source.
+     * @param {null|XrInputSource} inputSource - Input source.
      * @private
      */
     updateHitResults(results, inputSource) {
-        if (this._inputSource && this._inputSource !== inputSource)
+        if (this._inputSource && this._inputSource !== inputSource) {
             return;
-
-        const origin = poolVec3.pop() ?? new Vec3();
-
-        if (inputSource) {
-            origin.copy(inputSource.getOrigin());
-        } else {
-            origin.copy(this.manager.camera.getPosition());
         }
 
-        let candidateDistance = Infinity;
-        let candidateHitTestResult = null;
+        // the results are sorted by their distance along the ray, so the nearest is the first to
+        // have a pose
+        let pose = null;
+        let hitTestResult = null;
+        for (let i = 0; i < results.length && !pose; i++) {
+            pose = results[i].getPose(this.manager._referenceSpace);
+            hitTestResult = results[i];
+        }
+
+        if (!pose) {
+            return;
+        }
 
         const position = poolVec3.pop() ?? new Vec3();
         const rotation = poolQuat.pop() ?? new Quat();
+        position.copy(pose.transform.position);
+        rotation.copy(pose.transform.orientation);
 
-        for (let i = 0; i < results.length; i++) {
-            const pose = results[i].getPose(this.manager._referenceSpace);
+        this.fire('result', position, rotation, inputSource || this._inputSource, hitTestResult);
+        this.manager.hitTest.fire('result', this, position, rotation, inputSource || this._inputSource, hitTestResult);
 
-            const distance = origin.distance(pose.transform.position);
-            if (distance >= candidateDistance)
-                continue;
-
-            candidateDistance = distance;
-            candidateHitTestResult = results[i];
-            position.copy(pose.transform.position);
-            rotation.copy(pose.transform.orientation);
-        }
-
-        this.fire('result', position, rotation, inputSource || this._inputSource, candidateHitTestResult);
-        this.manager.hitTest.fire('result', this, position, rotation, inputSource || this._inputSource, candidateHitTestResult);
-
-        poolVec3.push(origin);
         poolVec3.push(position);
         poolQuat.push(rotation);
     }

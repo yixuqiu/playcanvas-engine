@@ -1,14 +1,20 @@
 import { now } from '../../../core/time.js';
-
 import { math } from '../../../core/math/math.js';
 import { Color } from '../../../core/math/color.js';
+import { Vec4 } from '../../../core/math/vec4.js';
 
-import { EntityReference } from '../../utils/entity-reference.js';
+import { GraphNode } from '../../../scene/graph-node.js';
 
 import { Component } from '../component.js';
-
 import { BUTTON_TRANSITION_MODE_SPRITE_CHANGE, BUTTON_TRANSITION_MODE_TINT } from './constants.js';
 import { ELEMENTTYPE_GROUP } from '../element/constants.js';
+
+/**
+ * @import { Asset } from '../../../framework/asset/asset.js'
+ * @import { ButtonComponentSystem } from './system.js'
+ * @import { Entity } from '../../entity.js'
+ * @import { EventHandle } from '../../../core/event-handle.js'
+ */
 
 const VisualState = {
     DEFAULT: 'DEFAULT',
@@ -36,9 +42,41 @@ STATES_TO_SPRITE_FRAME_NAMES[VisualState.PRESSED] = 'pressedSpriteFrame';
 STATES_TO_SPRITE_FRAME_NAMES[VisualState.INACTIVE] = 'inactiveSpriteFrame';
 
 /**
- * A ButtonComponent enables a group of entities to behave like a button, with different visual
- * states for hover and press interactions.
+ * The ButtonComponent enables an {@link Entity} to behave like a button, with different visual
+ * states for hover and press interactions. It is designed to be used together with an
+ * {@link ElementComponent} on the same entity, which provides the button's visual appearance and
+ * input hit area. Set {@link imageEntity}, usually to the button's own entity, to choose the
+ * element that is tinted, or has its sprite changed, for each visual state.
  *
+ * You should never need to use the ButtonComponent constructor directly. To add a
+ * ButtonComponent to an {@link Entity}, use {@link Entity#addComponent}:
+ *
+ * ```javascript
+ * const entity = new Entity();
+ * entity.addComponent('element', {
+ *     type: ELEMENTTYPE_IMAGE,
+ *     useInput: true
+ * });
+ * entity.addComponent('button', {
+ *     imageEntity: entity
+ * });
+ * ```
+ *
+ * Once the ButtonComponent is added to the entity, you can access it via the
+ * {@link Entity#button} property:
+ *
+ * ```javascript
+ * entity.button.hoverTint = Color.YELLOW; // Set the hover tint color
+ *
+ * console.log(entity.button.hoverTint);      // Get the hover tint color and print it
+ * ```
+ *
+ * Relevant Engine API examples:
+ *
+ * - [Buttons](https://playcanvas.github.io/#/user-interface/buttons)
+ * - [Toggles and radio groups](https://playcanvas.github.io/#/user-interface/common-widgets)
+ *
+ * @hideconstructor
  * @category User Interface
  */
 class ButtonComponent extends Component {
@@ -239,306 +277,570 @@ class ButtonComponent extends Component {
      */
     static EVENT_PRESSEDEND = 'pressedend';
 
+    /** @private */
+    _active = true;
+
+    /** @private */
+    _hitPadding = new Vec4();
+
+    /** @private */
+    _transitionMode = BUTTON_TRANSITION_MODE_TINT;
+
+    /** @private */
+    _hoverTint = new Color(0.75, 0.75, 0.75);
+
+    /** @private */
+    _pressedTint = new Color(0.5, 0.5, 0.5);
+
+    /** @private */
+    _inactiveTint = new Color(0.25, 0.25, 0.25);
+
+    /** @private */
+    _fadeDuration = 0;
+
+    /**
+     * @type {Asset|null}
+     * @private
+     */
+    _hoverSpriteAsset = null;
+
+    /** @private */
+    _hoverSpriteFrame = 0;
+
+    /**
+     * @type {Asset|null}
+     * @private
+     */
+    _pressedSpriteAsset = null;
+
+    /** @private */
+    _pressedSpriteFrame = 0;
+
+    /**
+     * @type {Asset|null}
+     * @private
+     */
+    _inactiveSpriteAsset = null;
+
+    /** @private */
+    _inactiveSpriteFrame = 0;
+
+    /** @private */
+    _visualState = VisualState.DEFAULT;
+
+    /** @private */
+    _isHovering = false;
+
+    /** @private */
+    _hoveringCounter = 0;
+
+    /** @private */
+    _isPressed = false;
+
+    /** @private */
+    _hasHitElementListeners = false;
+
+    /** @private */
+    _isApplyingTint = false;
+
+    /** @private */
+    _isApplyingSprite = false;
+
+    /**
+     * @type {{startTime: number, from: Color, to: Color, lerpColor: Color}|null}
+     * @private
+     */
+    _tweenInfo = null;
+
+    /** @private */
+    _defaultTint = new Color(1, 1, 1, 1);
+
+    /** @private */
+    _defaultSpriteAsset = null;
+
+    /** @private */
+    _defaultSpriteFrame = 0;
+
+    /**
+     * @type {Entity|null}
+     * @private
+     */
+    _imageEntity = null;
+
+    /**
+     * @type {EventHandle|null}
+     * @private
+     */
+    _evtElementAdd = null;
+
+    /**
+     * @type {EventHandle|null}
+     * @private
+     */
+    _evtImageEntityElementAdd = null;
+
+    /**
+     * @type {EventHandle|null}
+     * @private
+     */
+    _evtImageEntityElementRemove = null;
+
+    /**
+     * @type {EventHandle|null}
+     * @private
+     */
+    _evtImageEntityElementColor = null;
+
+    /**
+     * @type {EventHandle|null}
+     * @private
+     */
+    _evtImageEntityElementOpacity = null;
+
+    /**
+     * @type {EventHandle|null}
+     * @private
+     */
+    _evtImageEntityElementSpriteAsset = null;
+
+    /**
+     * @type {EventHandle|null}
+     * @private
+     */
+    _evtImageEntityElementSpriteFrame = null;
+
     /**
      * Create a new ButtonComponent instance.
      *
-     * @param {import('./system.js').ButtonComponentSystem} system - The ComponentSystem that
-     * created this component.
-     * @param {import('../../entity.js').Entity} entity - The entity that this component is
-     * attached to.
+     * @param {ButtonComponentSystem} system - The ComponentSystem that created this component.
+     * @param {Entity} entity - The entity that this component is attached to.
      */
     constructor(system, entity) {
         super(system, entity);
 
-        this._visualState = VisualState.DEFAULT;
-        this._isHovering = false;
-        this._hoveringCounter = 0;
-        this._isPressed = false;
-
-        this._defaultTint = new Color(1, 1, 1, 1);
-        this._defaultSpriteAsset = null;
-        this._defaultSpriteFrame = 0;
-
-        this._imageReference = new EntityReference(this, 'imageEntity', {
-            'element#gain': this._onImageElementGain,
-            'element#lose': this._onImageElementLose,
-            'element#set:color': this._onSetColor,
-            'element#set:opacity': this._onSetOpacity,
-            'element#set:spriteAsset': this._onSetSpriteAsset,
-            'element#set:spriteFrame': this._onSetSpriteFrame
-        });
-
-        this._toggleLifecycleListeners('on', system);
-    }
-
-    // TODO: Remove this override in upgrading component
-    /**
-     * @type {import('./data.js').ButtonComponentData}
-     * @ignore
-     */
-    get data() {
-        const record = this.system.store[this.entity.getGuid()];
-        return record ? record.data : null;
+        this._evtElementAdd = this.entity.on('element:add', this._onElementComponentAdd, this);
     }
 
     /**
-     * @type {boolean}
-     */
-    set enabled(arg) {
-        this._setValue('enabled', arg);
-    }
-
-    get enabled() {
-        return this.data.enabled;
-    }
-
-    /**
-     * If set to false, the button will be visible but will not respond to hover or touch interactions.
+     * Sets the button's active state. If set to false, the button will be visible but will not
+     * respond to hover or touch interactions. Defaults to true.
      *
      * @type {boolean}
      */
     set active(arg) {
-        this._setValue('active', arg);
-    }
+        if (this._active === arg) {
+            return;
+        }
 
-    get active() {
-        return this.data.active;
+        this._active = arg;
+        this._updateVisualState();
     }
 
     /**
-     * A reference to the entity to be used as the button background. The entity must have an
-     * ImageElement component.
+     * Gets the button's active state.
      *
-     * @type {import('../../../framework/entity.js').Entity}
+     * @type {boolean}
+     */
+    get active() {
+        return this._active;
+    }
+
+    /**
+     * Sets the entity to be used as the button background. The entity must have an
+     * {@link ElementComponent} configured as an image element.
+     *
+     * @type {Entity|string|null}
      */
     set imageEntity(arg) {
-        this._setValue('imageEntity', arg);
-    }
+        let newEntity;
+        if (arg instanceof GraphNode) {
+            newEntity = arg;
+        } else if (typeof arg === 'string') {
+            newEntity = this.system.app.getEntityFromIndex(arg) ?? null;
+        } else {
+            newEntity = null;
+        }
 
-    get imageEntity() {
-        return this.data.imageEntity;
+        if (this._imageEntity === newEntity) {
+            return;
+        }
+
+        if (this._imageEntity) {
+            this._imageEntityUnsubscribe();
+        }
+
+        this._imageEntity = newEntity;
+
+        if (newEntity) {
+            this._imageEntitySubscribe();
+        }
     }
 
     /**
-     * Padding to be used in hit-test calculations. Can be used to expand the bounding box so that
-     * the button is easier to tap.
+     * Gets the entity to be used as the button background.
      *
-     * @type {import('../../../core/math/vec4.js')}
+     * @type {Entity|null}
+     */
+    get imageEntity() {
+        return this._imageEntity;
+    }
+
+    /**
+     * Sets the padding to be used in hit-test calculations. Can be used to expand the bounding box
+     * so that the button is easier to tap. Defaults to `[0, 0, 0, 0]`.
+     *
+     * @param {Vec4|number[]} arg - The padding, as a Vec4 or an array of 4 numbers.
      */
     set hitPadding(arg) {
-        this._setValue('hitPadding', arg);
-    }
-
-    get hitPadding() {
-        return this.data.hitPadding;
+        // Mirror the old schema-driven `type: 'vec4'` conversion in
+        // ComponentSystem.convertValue: pass falsy values through untouched (the
+        // falsy fallback in ElementInput.buildHitCorners relies on this), clone a
+        // Vec4 input so caller mutations do not leak into component state, and
+        // treat anything else as indexable to support `[x, y, z, w]` arrays from
+        // JSON-loaded scenes.
+        if (!arg) {
+            this._hitPadding = arg;
+        } else if (arg instanceof Vec4) {
+            this._hitPadding = arg.clone();
+        } else {
+            this._hitPadding = new Vec4(arg[0], arg[1], arg[2], arg[3]);
+        }
     }
 
     /**
-     * Controls how the button responds when the user hovers over it/presses it.
+     * Gets the padding to be used in hit-test calculations.
+     *
+     * @type {Vec4}
+     */
+    get hitPadding() {
+        return this._hitPadding;
+    }
+
+    /**
+     * Sets the button transition mode. This controls how the button responds when the user hovers
+     * over it/presses it. Can be:
+     *
+     * - {@link BUTTON_TRANSITION_MODE_TINT}
+     * - {@link BUTTON_TRANSITION_MODE_SPRITE_CHANGE}
+     *
+     * Defaults to {@link BUTTON_TRANSITION_MODE_TINT}.
      *
      * @type {number}
      */
     set transitionMode(arg) {
-        this._setValue('transitionMode', arg);
-    }
+        if (this._transitionMode === arg) {
+            return;
+        }
 
-    get transitionMode() {
-        return this.data.transitionMode;
+        const oldMode = this._transitionMode;
+        this._transitionMode = arg;
+
+        this._cancelTween();
+        this._resetToDefaultVisualState(oldMode);
+        this._forceReapplyVisualState();
     }
 
     /**
-     * Color to be used on the button image when the user hovers over it.
+     * Gets the button transition mode.
+     *
+     * @type {number}
+     */
+    get transitionMode() {
+        return this._transitionMode;
+    }
+
+    /**
+     * Sets the tint color to be used on the button image when the user hovers over it. Defaults to
+     * `[0.75, 0.75, 0.75]`.
      *
      * @type {Color}
      */
     set hoverTint(arg) {
-        this._setValue('hoverTint', arg);
-    }
-
-    get hoverTint() {
-        return this.data.hoverTint;
+        this._setTint('_hoverTint', arg);
     }
 
     /**
-     * Color to be used on the button image when the user presses it.
+     * Gets the tint color to be used on the button image when the user hovers over it.
+     *
+     * @type {Color}
+     */
+    get hoverTint() {
+        return this._hoverTint;
+    }
+
+    /**
+     * Sets the tint color to be used on the button image when the user presses it. Defaults to
+     * `[0.5, 0.5, 0.5]`.
      *
      * @type {Color}
      */
     set pressedTint(arg) {
-        this._setValue('pressedTint', arg);
-    }
-
-    get pressedTint() {
-        return this.data.pressedTint;
+        this._setTint('_pressedTint', arg);
     }
 
     /**
-     * Color to be used on the button image when the button is not interactive.
+     * Gets the tint color to be used on the button image when the user presses it.
+     *
+     * @type {Color}
+     */
+    get pressedTint() {
+        return this._pressedTint;
+    }
+
+    /**
+     * Sets the tint color to be used on the button image when the button is not interactive.
+     * Defaults to `[0.25, 0.25, 0.25]`.
      *
      * @type {Color}
      */
     set inactiveTint(arg) {
-        this._setValue('inactiveTint', arg);
-    }
-
-    get inactiveTint() {
-        return this.data.inactiveTint;
+        this._setTint('_inactiveTint', arg);
     }
 
     /**
-     * Duration to be used when fading between tints, in milliseconds.
+     * Gets the tint color to be used on the button image when the button is not interactive.
+     *
+     * @type {Color}
+     */
+    get inactiveTint() {
+        return this._inactiveTint;
+    }
+
+    /**
+     * Sets the duration to be used when fading between tints, in milliseconds. Defaults to 0.
      *
      * @type {number}
      */
     set fadeDuration(arg) {
-        this._setValue('fadeDuration', arg);
-    }
-
-    get fadeDuration() {
-        return this.data.fadeDuration;
+        this._fadeDuration = arg;
     }
 
     /**
-     * Sprite to be used as the button image when the user hovers over it.
+     * Gets the duration to be used when fading between tints, in milliseconds.
      *
-     * @type {import('../../../framework/asset/asset.js').Asset}
+     * @type {number}
+     */
+    get fadeDuration() {
+        return this._fadeDuration;
+    }
+
+    /**
+     * Sets the sprite to be used as the button image when the user hovers over it.
+     *
+     * @type {Asset|null}
      */
     set hoverSpriteAsset(arg) {
-        this._setValue('hoverSpriteAsset', arg);
-    }
-
-    get hoverSpriteAsset() {
-        return this.data.hoverSpriteAsset;
+        this._setTransitionValue('_hoverSpriteAsset', arg);
     }
 
     /**
-     * Frame to be used from the hover sprite.
+     * Gets the sprite to be used as the button image when the user hovers over it.
+     *
+     * @type {Asset|null}
+     */
+    get hoverSpriteAsset() {
+        return this._hoverSpriteAsset;
+    }
+
+    /**
+     * Sets the frame to be used from the hover sprite.
      *
      * @type {number}
      */
     set hoverSpriteFrame(arg) {
-        this._setValue('hoverSpriteFrame', arg);
-    }
-
-    get hoverSpriteFrame() {
-        return this.data.hoverSpriteFrame;
+        this._setTransitionValue('_hoverSpriteFrame', arg);
     }
 
     /**
-     * Sprite to be used as the button image when the user presses it.
+     * Gets the frame to be used from the hover sprite.
      *
-     * @type {import('../../../framework/asset/asset.js').Asset}
+     * @type {number}
+     */
+    get hoverSpriteFrame() {
+        return this._hoverSpriteFrame;
+    }
+
+    /**
+     * Sets the sprite to be used as the button image when the user presses it.
+     *
+     * @type {Asset|null}
      */
     set pressedSpriteAsset(arg) {
-        this._setValue('pressedSpriteAsset', arg);
-    }
-
-    get pressedSpriteAsset() {
-        return this.data.pressedSpriteAsset;
+        this._setTransitionValue('_pressedSpriteAsset', arg);
     }
 
     /**
-     * Frame to be used from the pressed sprite.
+     * Gets the sprite to be used as the button image when the user presses it.
+     *
+     * @type {Asset|null}
+     */
+    get pressedSpriteAsset() {
+        return this._pressedSpriteAsset;
+    }
+
+    /**
+     * Sets the frame to be used from the pressed sprite.
      *
      * @type {number}
      */
     set pressedSpriteFrame(arg) {
-        this._setValue('pressedSpriteFrame', arg);
-    }
-
-    get pressedSpriteFrame() {
-        return this.data.pressedSpriteFrame;
+        this._setTransitionValue('_pressedSpriteFrame', arg);
     }
 
     /**
-     * Sprite to be used as the button image when the button is not interactive.
+     * Gets the frame to be used from the pressed sprite.
      *
-     * @type {import('../../../framework/asset/asset.js').Asset}
+     * @type {number}
+     */
+    get pressedSpriteFrame() {
+        return this._pressedSpriteFrame;
+    }
+
+    /**
+     * Sets the sprite to be used as the button image when the button is not interactive.
+     *
+     * @type {Asset|null}
      */
     set inactiveSpriteAsset(arg) {
-        this._setValue('inactiveSpriteAsset', arg);
-    }
-
-    get inactiveSpriteAsset() {
-        return this.data.inactiveSpriteAsset;
+        this._setTransitionValue('_inactiveSpriteAsset', arg);
     }
 
     /**
-     * Frame to be used from the inactive sprite.
+     * Gets the sprite to be used as the button image when the button is not interactive.
+     *
+     * @type {Asset|null}
+     */
+    get inactiveSpriteAsset() {
+        return this._inactiveSpriteAsset;
+    }
+
+    /**
+     * Sets the frame to be used from the inactive sprite.
      *
      * @type {number}
      */
     set inactiveSpriteFrame(arg) {
-        this._setValue('inactiveSpriteFrame', arg);
+        this._setTransitionValue('_inactiveSpriteFrame', arg);
     }
 
+    /**
+     * Gets the frame to be used from the inactive sprite.
+     *
+     * @type {number}
+     */
     get inactiveSpriteFrame() {
-        return this.data.inactiveSpriteFrame;
+        return this._inactiveSpriteFrame;
     }
 
-    /** @ignore */
-    _setValue(name, value) {
-        const data = this.data;
-        const oldValue = data[name];
-        data[name] = value;
-        this.fire('set', name, oldValue, value);
+    /**
+     * Sets one of the state tint fields, mirroring the old schema-driven `type: 'rgba'`
+     * conversion in ComponentSystem.convertValue: pass falsy values through untouched, clone a
+     * Color input (so caller mutations do not leak into component state), and treat anything else
+     * as indexable to support `[r, g, b, a]` arrays from JSON-loaded scenes. The visual state is
+     * only reapplied when the tint actually changes in value, as reapplying cancels any in-flight
+     * fade tween.
+     *
+     * @param {string} name - The name of the private tint field to set.
+     * @param {Color|number[]|null} arg - The new tint value.
+     * @private
+     */
+    _setTint(name, arg) {
+        const oldValue = this[name];
+
+        let value;
+        if (!arg) {
+            value = arg;
+        } else if (arg instanceof Color) {
+            value = arg.clone();
+        } else {
+            value = new Color(arg[0], arg[1], arg[2], arg[3]);
+        }
+
+        this[name] = value;
+
+        if (oldValue === value || (oldValue instanceof Color && value instanceof Color && oldValue.equals(value))) {
+            return;
+        }
+
+        this._forceReapplyVisualState();
     }
 
-    _toggleLifecycleListeners(onOrOff, system) {
-        this[onOrOff]('set_active', this._onSetActive, this);
-        this[onOrOff]('set_transitionMode', this._onSetTransitionMode, this);
-        this[onOrOff]('set_hoverTint', this._onSetTransitionValue, this);
-        this[onOrOff]('set_pressedTint', this._onSetTransitionValue, this);
-        this[onOrOff]('set_inactiveTint', this._onSetTransitionValue, this);
-        this[onOrOff]('set_hoverSpriteAsset', this._onSetTransitionValue, this);
-        this[onOrOff]('set_hoverSpriteFrame', this._onSetTransitionValue, this);
-        this[onOrOff]('set_pressedSpriteAsset', this._onSetTransitionValue, this);
-        this[onOrOff]('set_pressedSpriteFrame', this._onSetTransitionValue, this);
-        this[onOrOff]('set_inactiveSpriteAsset', this._onSetTransitionValue, this);
-        this[onOrOff]('set_inactiveSpriteFrame', this._onSetTransitionValue, this);
+    /**
+     * Sets one of the state sprite asset/frame fields, reapplying the visual state on change.
+     *
+     * @param {string} name - The name of the private field to set.
+     * @param {Asset|number|null} arg - The new value.
+     * @private
+     */
+    _setTransitionValue(name, arg) {
+        if (this[name] === arg) {
+            return;
+        }
 
-        system.app.systems.element[onOrOff]('add', this._onElementComponentAdd, this);
-        system.app.systems.element[onOrOff]('beforeremove', this._onElementComponentRemove, this);
+        this[name] = arg;
+        this._forceReapplyVisualState();
     }
 
-    _onSetActive(name, oldValue, newValue) {
-        if (oldValue !== newValue) {
-            this._updateVisualState();
+    _imageEntitySubscribe() {
+        this._evtImageEntityElementAdd = this._imageEntity.on('element:add', this._onImageElementGain, this);
+
+        if (this._imageEntity.element) {
+            this._onImageElementGain();
         }
     }
 
-    _onSetTransitionMode(name, oldValue, newValue) {
-        if (oldValue !== newValue) {
-            this._cancelTween();
-            this._resetToDefaultVisualState(oldValue);
-            this._forceReapplyVisualState();
+    _imageEntityUnsubscribe() {
+        this._evtImageEntityElementAdd?.off();
+        this._evtImageEntityElementAdd = null;
+
+        if (this._imageEntity?.element) {
+            this._onImageElementLose();
         }
     }
 
-    _onSetTransitionValue(name, oldValue, newValue) {
-        if (oldValue !== newValue) {
-            this._forceReapplyVisualState();
-        }
+    _imageEntityElementSubscribe() {
+        const element = this._imageEntity.element;
+
+        this._evtImageEntityElementRemove = element.once('beforeremove', this._onImageElementLose, this);
+        this._evtImageEntityElementColor = element.on('set:color', this._onSetColor, this);
+        this._evtImageEntityElementOpacity = element.on('set:opacity', this._onSetOpacity, this);
+        this._evtImageEntityElementSpriteAsset = element.on('set:spriteAsset', this._onSetSpriteAsset, this);
+        this._evtImageEntityElementSpriteFrame = element.on('set:spriteFrame', this._onSetSpriteFrame, this);
     }
 
-    _onElementComponentRemove(entity) {
-        if (this.entity === entity) {
-            this._toggleHitElementListeners('off');
-        }
+    _imageEntityElementUnsubscribe() {
+        this._evtImageEntityElementRemove?.off();
+        this._evtImageEntityElementRemove = null;
+
+        this._evtImageEntityElementColor?.off();
+        this._evtImageEntityElementColor = null;
+
+        this._evtImageEntityElementOpacity?.off();
+        this._evtImageEntityElementOpacity = null;
+
+        this._evtImageEntityElementSpriteAsset?.off();
+        this._evtImageEntityElementSpriteAsset = null;
+
+        this._evtImageEntityElementSpriteFrame?.off();
+        this._evtImageEntityElementSpriteFrame = null;
     }
 
-    _onElementComponentAdd(entity) {
-        if (this.entity === entity) {
-            this._toggleHitElementListeners('on');
-        }
+    _onElementComponentRemove() {
+        this._toggleHitElementListeners('off');
+    }
+
+    _onElementComponentAdd() {
+        this._toggleHitElementListeners('on');
     }
 
     _onImageElementLose() {
+        this._imageEntityElementUnsubscribe();
         this._cancelTween();
         this._resetToDefaultVisualState(this.transitionMode);
     }
 
     _onImageElementGain() {
+        this._imageEntityElementSubscribe();
         this._storeDefaultVisualState();
         this._forceReapplyVisualState();
     }
@@ -552,6 +854,7 @@ class ButtonComponent extends Component {
                 return;
             }
 
+            this.entity.element[onOrOff]('beforeremove', this._onElementComponentRemove, this);
             this.entity.element[onOrOff]('mouseenter', this._onMouseEnter, this);
             this.entity.element[onOrOff]('mouseleave', this._onMouseLeave, this);
             this.entity.element[onOrOff]('mousedown', this._onMouseDown, this);
@@ -572,15 +875,14 @@ class ButtonComponent extends Component {
 
     _storeDefaultVisualState() {
         // If the element is of group type, all it's visual properties are null
-        if (this._imageReference.hasComponent('element')) {
-            const element = this._imageReference.entity.element;
-            if (element.type !== ELEMENTTYPE_GROUP) {
-                this._storeDefaultColor(element.color);
-                this._storeDefaultOpacity(element.opacity);
-                this._storeDefaultSpriteAsset(element.spriteAsset);
-                this._storeDefaultSpriteFrame(element.spriteFrame);
-            }
+        const element = this._imageEntity?.element;
+        if (!element || element.type === ELEMENTTYPE_GROUP) {
+            return;
         }
+        this._storeDefaultColor(element.color);
+        this._storeDefaultOpacity(element.opacity);
+        this._storeDefaultSpriteAsset(element.spriteAsset);
+        this._storeDefaultSpriteFrame(element.spriteFrame);
     }
 
     _storeDefaultColor(color) {
@@ -736,7 +1038,7 @@ class ButtonComponent extends Component {
     }
 
     _fireIfActive(name, event) {
-        if (this.data.active) {
+        if (this._active) {
             this.fire(name, event);
         }
     }
@@ -794,17 +1096,18 @@ class ButtonComponent extends Component {
     // image back to its original tint. Note that this happens immediately, i.e.
     // without any animation.
     _resetToDefaultVisualState(transitionMode) {
-        if (this._imageReference.hasComponent('element')) {
-            switch (transitionMode) {
-                case BUTTON_TRANSITION_MODE_TINT:
-                    this._cancelTween();
-                    this._applyTintImmediately(this._defaultTint);
-                    break;
+        if (!this._imageEntity?.element) {
+            return;
+        }
+        switch (transitionMode) {
+            case BUTTON_TRANSITION_MODE_TINT:
+                this._cancelTween();
+                this._applyTintImmediately(this._defaultTint);
+                break;
 
-                case BUTTON_TRANSITION_MODE_SPRITE_CHANGE:
-                    this._applySprite(this._defaultSpriteAsset, this._defaultSpriteFrame);
-                    break;
-            }
+            case BUTTON_TRANSITION_MODE_SPRITE_CHANGE:
+                this._applySprite(this._defaultSpriteAsset, this._defaultSpriteFrame);
+                break;
         }
     }
 
@@ -821,21 +1124,24 @@ class ButtonComponent extends Component {
     }
 
     _applySprite(spriteAsset, spriteFrame) {
+        const element = this._imageEntity?.element;
+        if (!element) {
+            return;
+        }
+
         spriteFrame = spriteFrame || 0;
 
-        if (this._imageReference.hasComponent('element')) {
-            this._isApplyingSprite = true;
+        this._isApplyingSprite = true;
 
-            if (this._imageReference.entity.element.spriteAsset !== spriteAsset) {
-                this._imageReference.entity.element.spriteAsset = spriteAsset;
-            }
-
-            if (this._imageReference.entity.element.spriteFrame !== spriteFrame) {
-                this._imageReference.entity.element.spriteFrame = spriteFrame;
-            }
-
-            this._isApplyingSprite = false;
+        if (element.spriteAsset !== spriteAsset) {
+            element.spriteAsset = spriteAsset;
         }
+
+        if (element.spriteFrame !== spriteFrame) {
+            element.spriteFrame = spriteFrame;
+        }
+
+        this._isApplyingSprite = false;
     }
 
     _applyTint(tintColor) {
@@ -849,37 +1155,43 @@ class ButtonComponent extends Component {
     }
 
     _applyTintImmediately(tintColor) {
+        const element = this._imageEntity?.element;
         if (
             !tintColor ||
-            !this._imageReference.hasComponent('element') ||
-            this._imageReference.entity.element.type === ELEMENTTYPE_GROUP
-        )
+            !element ||
+            element.type === ELEMENTTYPE_GROUP
+        ) {
             return;
+        }
 
         const color3 = toColor3(tintColor);
 
         this._isApplyingTint = true;
 
-        if (!color3.equals(this._imageReference.entity.element.color))
-            this._imageReference.entity.element.color = color3;
+        if (!color3.equals(element.color)) {
+            element.color = color3;
+        }
 
-        if (this._imageReference.entity.element.opacity !== tintColor.a)
-            this._imageReference.entity.element.opacity = tintColor.a;
+        if (element.opacity !== tintColor.a) {
+            element.opacity = tintColor.a;
+        }
 
         this._isApplyingTint = false;
     }
 
     _applyTintWithTween(tintColor) {
+        const element = this._imageEntity?.element;
         if (
             !tintColor ||
-            !this._imageReference.hasComponent('element') ||
-            this._imageReference.entity.element.type === ELEMENTTYPE_GROUP
-        )
+            !element ||
+            element.type === ELEMENTTYPE_GROUP
+        ) {
             return;
+        }
 
         const color3 = toColor3(tintColor);
-        const color = this._imageReference.entity.element.color;
-        const opacity = this._imageReference.entity.element.opacity;
+        const color = element.color;
+        const opacity = element.opacity;
 
         if (color3.equals(color) && tintColor.a === opacity) return;
 
@@ -909,7 +1221,7 @@ class ButtonComponent extends Component {
     }
 
     _cancelTween() {
-        delete this._tweenInfo;
+        this._tweenInfo = null;
     }
 
     onUpdate() {
@@ -924,7 +1236,6 @@ class ButtonComponent extends Component {
         this._hoveringCounter = 0;
         this._isPressed = false;
 
-        this._imageReference.onParentComponentEnable();
         this._toggleHitElementListeners('on');
         this._forceReapplyVisualState();
     }
@@ -934,9 +1245,19 @@ class ButtonComponent extends Component {
         this._resetToDefaultVisualState(this.transitionMode);
     }
 
-    onRemove() {
-        this._toggleLifecycleListeners('off', this.system);
+    onBeforeRemove() {
+        this._imageEntityUnsubscribe();
+
+        this._evtElementAdd?.off();
+        this._evtElementAdd = null;
+
         this.onDisable();
+    }
+
+    resolveDuplicatedEntityReferenceProperties(oldButton, duplicatedIdsMap) {
+        if (oldButton.imageEntity) {
+            this.imageEntity = duplicatedIdsMap[oldButton.imageEntity.guid];
+        }
     }
 }
 

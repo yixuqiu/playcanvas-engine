@@ -1,24 +1,48 @@
 import { Debug } from '../../../core/debug.js';
-
 import { AnimClip } from '../../anim/evaluator/anim-clip.js';
 import { AnimEvaluator } from '../../anim/evaluator/anim-evaluator.js';
 import { AnimTrack } from '../../anim/evaluator/anim-track.js';
 import { DefaultAnimBinder } from '../../anim/binder/default-anim-binder.js';
-
 import { Skeleton } from '../../../scene/animation/skeleton.js';
-
 import { Asset } from '../../asset/asset.js';
-
 import { Component } from '../component.js';
 
 /**
- * The Animation Component allows an Entity to playback animations on models.
+ * @import { Animation } from '../../../scene/animation/animation.js'
+ * @import { Model } from '../../../scene/model.js'
+ */
+
+/**
+ * The AnimationComponent enables an {@link Entity} to play back skeletal animations on a model.
+ * It is a legacy component that has largely been superseded by {@link AnimComponent}, which
+ * supports more advanced features such as animation state graphs and blending.
  *
- * @category Animation
+ * You should never need to use the AnimationComponent constructor directly. To add an
+ * AnimationComponent to an {@link Entity}, use {@link Entity#addComponent}:
+ *
+ * ```javascript
+ * const entity = new Entity();
+ * entity.addComponent('animation', {
+ *     assets: [animationAsset.id],
+ *     speed: 1
+ * });
+ * ```
+ *
+ * Once the AnimationComponent is added to the entity, you can access it via the
+ * {@link Entity#animation} property:
+ *
+ * ```javascript
+ * entity.animation.speed = 2; // Play the animation at double speed
+ *
+ * console.log(entity.animation.speed); // Get the playback speed and print it
+ * ```
+ *
+ * @hideconstructor
+ * @category Animation (Legacy)
  */
 class AnimationComponent extends Component {
     /**
-     * @type {Object<string, import('../../../scene/animation/animation.js').Animation>}
+     * @type {Object<string, Animation>}
      * @private
      */
     _animations = {};
@@ -39,7 +63,7 @@ class AnimationComponent extends Component {
     animEvaluator = null;
 
     /**
-     * @type {import('../../../scene/model.js').Model|null}
+     * @type {Model|null}
      * @ignore
      */
     model = null;
@@ -71,6 +95,24 @@ class AnimationComponent extends Component {
     animationsIndex = {};
 
     /**
+     * The animation assets this component is subscribed to. Tracked so that the subscriptions can
+     * be removed even when the asset is no longer in the asset registry.
+     *
+     * @type {Set<Asset>}
+     * @private
+     */
+    _boundAssets = new Set();
+
+    /**
+     * The names of the asset registry 'add:[id]' events this component is subscribed to, waiting
+     * for its animation assets to be added to the registry.
+     *
+     * @type {Set<string>}
+     * @private
+     */
+    _pendingAssetAdds = new Set();
+
+    /**
      * @type {string|null}
      * @private
      */
@@ -92,36 +134,20 @@ class AnimationComponent extends Component {
     blendSpeed = 0;
 
     /**
-     * If true the first animation asset will begin playing when the scene is loaded.
-     *
-     * @type {boolean}
+     * If true, the first animation asset will begin playing when the scene is loaded.
      */
     activate = true;
 
     /**
      * Speed multiplier for animation play back. 1 is playback at normal speed and 0 pauses the
      * animation.
-     *
-     * @type {number}
      */
     speed = 1;
 
     /**
-     * Create a new AnimationComponent instance.
+     * Sets the dictionary of animations by name.
      *
-     * @param {import('./system.js').AnimationComponentSystem} system - The {@link ComponentSystem}
-     * that created this component.
-     * @param {import('../../entity.js').Entity} entity - The Entity that this component is
-     * attached to.
-     */
-    constructor(system, entity) { // eslint-disable-line no-useless-constructor
-        super(system, entity);
-    }
-
-    /**
-     * Get or set dictionary of animations by name.
-     *
-     * @type {Object<string, import('../../../scene/animation/animation.js').Animation>}
+     * @type {Object<string, Animation>}
      */
     set animations(value) {
         this._animations = value;
@@ -129,31 +155,38 @@ class AnimationComponent extends Component {
         this.onSetAnimations();
     }
 
+    /**
+     * Gets the dictionary of animations by name.
+     *
+     * @type {Object<string, Animation>}
+     */
     get animations() {
         return this._animations;
     }
 
     /**
-     * The array of animation assets. Can also be an array of asset ids.
+     * Sets the array of animation assets or asset ids.
      *
      * @type {Array.<number|Asset>}
      */
     set assets(value) {
         const assets = this._assets;
 
+        // unsubscribe from the events of the old assets
+        this._unbindAssets();
+
         if (assets && assets.length) {
             for (let i = 0; i < assets.length; i++) {
-                // unsubscribe from change event for old assets
+                // remove the animations of the old assets
                 if (assets[i]) {
-                    const asset = this.system.app.assets.get(assets[i]);
+                    const id = (assets[i] instanceof Asset) ? assets[i].id : assets[i];
+                    const asset = this.system.app.assets.get(id);
                     if (asset) {
-                        asset.off('change', this.onAssetChanged, this);
-                        asset.off('remove', this.onAssetRemoved, this);
-
                         const animName = this.animationsIndex[asset.id];
 
-                        if (this.currAnim === animName)
+                        if (this.currAnim === animName) {
                             this._stopCurrentAnimation();
+                        }
 
                         delete this.animations[animName];
                         delete this.animationsIndex[asset.id];
@@ -171,12 +204,17 @@ class AnimationComponent extends Component {
         this.loadAnimationAssets(assetIds);
     }
 
+    /**
+     * Gets the array of animation assets or asset ids.
+     *
+     * @type {Array.<number|Asset>}
+     */
     get assets() {
         return this._assets;
     }
 
     /**
-     * Get or set the current time position (in seconds) of the animation.
+     * Sets the current time position (in seconds) of the animation.
      *
      * @type {number}
      */
@@ -195,6 +233,11 @@ class AnimationComponent extends Component {
         }
     }
 
+    /**
+     * Gets the current time position (in seconds) of the animation.
+     *
+     * @type {number}
+     */
     get currentTime() {
         if (this.skeleton) {
             return this.skeleton._time;
@@ -213,7 +256,7 @@ class AnimationComponent extends Component {
     }
 
     /**
-     * Get the duration in seconds of the current animation. Returns 0 if no animation is playing.
+     * Gets the duration in seconds of the current animation. Returns 0 if no animation is playing.
      *
      * @type {number}
      */
@@ -222,12 +265,12 @@ class AnimationComponent extends Component {
             return this.animations[this.currAnim].duration;
         }
 
-        Debug.warn(`No animation is playing to get a duration. Returning 0.`);
+        Debug.warn('No animation is playing to get a duration. Returning 0.');
         return 0;
     }
 
     /**
-     * If true the animation will restart from the beginning when it reaches the end.
+     * Sets whether the animation will restart from the beginning when it reaches the end.
      *
      * @type {boolean}
      */
@@ -245,6 +288,11 @@ class AnimationComponent extends Component {
         }
     }
 
+    /**
+     * Gets whether the animation will restart from the beginning when it reaches the end.
+     *
+     * @type {boolean}
+     */
     get loop() {
         return this._loop;
     }
@@ -308,7 +356,9 @@ class AnimationComponent extends Component {
                     this.animEvaluator.removeClips();
                 }
 
-                const clip = new AnimClip(this.animations[this.currAnim], 0, 1.0, true, this.loop);
+                // pass the component as the event handler so any events embedded in the track
+                // fire on this component (consistent with AnimComponent)
+                const clip = new AnimClip(this.animations[this.currAnim], 0, 1.0, true, this.loop, this);
                 clip.name = this.currAnim;
                 clip.blendWeight = this.blending ? 0 : 1;
                 clip.reset();
@@ -323,7 +373,7 @@ class AnimationComponent extends Component {
      * Return an animation.
      *
      * @param {string} name - The name of the animation asset.
-     * @returns {import('../../../scene/animation/animation.js').Animation} An Animation.
+     * @returns {Animation} An Animation.
      */
     getAnimation(name) {
         return this.animations[name];
@@ -332,7 +382,7 @@ class AnimationComponent extends Component {
     /**
      * Set the model driven by this animation component.
      *
-     * @param {import('../../../scene/model.js').Model} model - The model to set.
+     * @param {Model} model - The model to set.
      * @ignore
      */
     setModel(model) {
@@ -414,50 +464,107 @@ class AnimationComponent extends Component {
      * @private
      */
     loadAnimationAssets(ids) {
-        if (!ids || !ids.length)
+        if (!ids || !ids.length) {
             return;
+        }
 
         const assets = this.system.app.assets;
-
-        const onAssetReady = (asset) => {
-            if (asset.resources.length > 1) {
-                for (let i = 0; i < asset.resources.length; i++) {
-                    this.animations[asset.resources[i].name] = asset.resources[i];
-                    this.animationsIndex[asset.id] = asset.resources[i].name;
-                }
-            } else {
-                this.animations[asset.name] = asset.resource;
-                this.animationsIndex[asset.id] = asset.name;
-            }
-            /* eslint-disable no-self-assign */
-            this.animations = this.animations; // assigning ensures set_animations event is fired
-            /* eslint-enable no-self-assign */
-        };
-
-        const onAssetAdd = (asset) => {
-            asset.off('change', this.onAssetChanged, this);
-            asset.on('change', this.onAssetChanged, this);
-
-            asset.off('remove', this.onAssetRemoved, this);
-            asset.on('remove', this.onAssetRemoved, this);
-
-            if (asset.resource) {
-                onAssetReady(asset);
-            } else {
-                asset.once('load', onAssetReady, this);
-                if (this.enabled && this.entity.enabled)
-                    assets.load(asset);
-            }
-        };
 
         for (let i = 0, l = ids.length; i < l; i++) {
             const asset = assets.get(ids[i]);
             if (asset) {
-                onAssetAdd(asset);
+                this._bindAsset(asset);
             } else {
-                assets.on('add:' + ids[i], onAssetAdd);
+                // the asset is not in the registry yet, so wait for it to be added
+                const evtName = `add:${ids[i]}`;
+                if (!this._pendingAssetAdds.has(evtName)) {
+                    this._pendingAssetAdds.add(evtName);
+                    assets.on(evtName, this._onAssetAdded, this);
+                }
             }
         }
+    }
+
+    /**
+     * Subscribe to the events of an animation asset and use its resources when they are available.
+     *
+     * @param {Asset} asset - The animation asset.
+     * @private
+     */
+    _bindAsset(asset) {
+        this._boundAssets.add(asset);
+
+        asset.off('change', this.onAssetChanged, this);
+        asset.on('change', this.onAssetChanged, this);
+
+        asset.off('remove', this.onAssetRemoved, this);
+        asset.on('remove', this.onAssetRemoved, this);
+
+        if (asset.resource) {
+            this._onAssetReady(asset);
+        } else {
+            asset.off('load', this._onAssetReady, this);
+            asset.once('load', this._onAssetReady, this);
+            if (this.enabled && this.entity.enabled) {
+                this.system.app.assets.load(asset);
+            }
+        }
+    }
+
+    /**
+     * Unsubscribe from the events of all animation assets this component is subscribed to, as well
+     * as from any pending asset registry additions.
+     *
+     * @private
+     */
+    _unbindAssets() {
+        const registry = this.system.app.assets;
+
+        this._pendingAssetAdds.forEach((evtName) => {
+            registry.off(evtName, this._onAssetAdded, this);
+        });
+        this._pendingAssetAdds.clear();
+
+        this._boundAssets.forEach((asset) => {
+            asset.off('change', this.onAssetChanged, this);
+            asset.off('remove', this.onAssetRemoved, this);
+            asset.off('load', this._onAssetReady, this);
+        });
+        this._boundAssets.clear();
+    }
+
+    /**
+     * @param {Asset} asset - The animation asset that has been added to the asset registry.
+     * @private
+     */
+    _onAssetAdded(asset) {
+        const evtName = `add:${asset.id}`;
+        this.system.app.assets.off(evtName, this._onAssetAdded, this);
+        this._pendingAssetAdds.delete(evtName);
+
+        this._bindAsset(asset);
+    }
+
+    /**
+     * @param {Asset} asset - The animation asset with loaded resources.
+     * @private
+     */
+    _onAssetReady(asset) {
+        // the dictionary is documented as Animation but also holds the AnimTracks of GLB assets
+        // (see onSetAnimations), so the resources are handled dynamically here
+        const resources = /** @type {any[]} */ (asset.resources);
+        if (resources.length > 1) {
+            for (let i = 0; i < resources.length; i++) {
+                this.animations[resources[i].name] = resources[i];
+                this.animationsIndex[asset.id] = resources[i].name;
+            }
+        } else {
+            this.animations[asset.name] = /** @type {any} */ (asset.resource);
+            this.animationsIndex[asset.id] = asset.name;
+        }
+        /* eslint-disable no-self-assign */
+        this.animations = this.animations; // assigning ensures set_animations event is fired
+        /* eslint-enable no-self-assign */
     }
 
     /**
@@ -554,16 +661,19 @@ class AnimationComponent extends Component {
         asset.off('remove', this.onAssetRemoved, this);
 
         if (this.animations) {
-            if (asset.resources.length > 1) {
-                for (let i = 0; i < asset.resources.length; i++) {
-                    delete this.animations[asset.resources[i].name];
-                    if (this.currAnim === asset.resources[i].name)
+            const resources = /** @type {any[]} */ (asset.resources);
+            if (resources.length > 1) {
+                for (let i = 0; i < resources.length; i++) {
+                    delete this.animations[resources[i].name];
+                    if (this.currAnim === resources[i].name) {
                         this._stopCurrentAnimation();
+                    }
                 }
             } else {
                 delete this.animations[asset.name];
-                if (this.currAnim === asset.name)
+                if (this.currAnim === asset.name) {
                     this._stopCurrentAnimation();
+                }
             }
             delete this.animationsIndex[asset.id];
         }
@@ -596,11 +706,13 @@ class AnimationComponent extends Component {
         if (assets) {
             for (let i = 0, len = assets.length; i < len; i++) {
                 let asset = assets[i];
-                if (!(asset instanceof Asset))
+                if (!(asset instanceof Asset)) {
                     asset = registry.get(asset);
+                }
 
-                if (asset && !asset.resource)
+                if (asset && !asset.resource) {
                     registry.load(asset);
+                }
             }
         }
 
@@ -613,19 +725,7 @@ class AnimationComponent extends Component {
     }
 
     onBeforeRemove() {
-        for (let i = 0; i < this.assets.length; i++) {
-
-            // this.assets can be an array of pc.Assets or an array of numbers (assetIds)
-            let asset = this.assets[i];
-            if (typeof asset ===  'number') {
-                asset = this.system.app.assets.get(asset);
-            }
-
-            if (!asset) continue;
-
-            asset.off('change', this.onAssetChanged, this);
-            asset.off('remove', this.onAssetRemoved, this);
-        }
+        this._unbindAssets();
 
         this.skeleton = null;
         this.fromSkel = null;

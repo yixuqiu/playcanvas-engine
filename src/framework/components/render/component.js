@@ -1,34 +1,77 @@
 import { Debug } from '../../../core/debug.js';
-import { LAYERID_WORLD, RENDERSTYLE_SOLID } from '../../../scene/constants.js';
+import { LAYERID_WORLD, RENDERSTYLE_SOLID, SHADOW_CASCADE_ALL } from '../../../scene/constants.js';
 import { BatchGroup } from '../../../scene/batching/batch-group.js';
+import { ClipPlanes, MAX_CLIP_PLANES } from '../../../scene/clip-planes.js';
 import { MeshInstance } from '../../../scene/mesh-instance.js';
 import { MorphInstance } from '../../../scene/morph-instance.js';
 import { getShapePrimitive } from '../../graphics/primitive-cache.js';
 import { GraphNode } from '../../../scene/graph-node.js';
 import { SkinInstanceCache } from '../../../scene/skin-instance-cache.js';
-
 import { Asset } from '../../asset/asset.js';
 import { AssetReference } from '../../asset/asset-reference.js';
-
 import { Component } from '../component.js';
 
-import { EntityReference } from '../../utils/entity-reference.js';
+/**
+ * @import { BoundingBox } from '../../../core/shape/bounding-box.js'
+ * @import { Entity } from '../../entity.js'
+ * @import { EventHandle } from '../../../core/event-handle.js'
+ * @import { Material } from '../../../scene/materials/material.js'
+ * @import { Plane } from '../../../core/shape/plane.js'
+ * @import { RenderComponentSystem } from './system.js'
+ */
 
 /**
- * Enables an Entity to render a {@link Mesh} or a primitive shape. This component attaches
- * {@link MeshInstance} geometry to the Entity.
+ * The RenderComponent enables an {@link Entity} to render 3D meshes. The {@link type} property can
+ * be set to one of several predefined shapes (such as `box`, `sphere`, `cone` and so on).
+ * Alternatively, the component can be configured to manage an arbitrary array of
+ * {@link MeshInstance}s. These can either be created programmatically or loaded from an
+ * {@link Asset}.
  *
- * @property {import('../../entity.js').Entity} rootBone A reference to the entity to be used as
- * the root bone for any skinned meshes that are rendered by this component.
+ * The {@link MeshInstance}s managed by this component are positioned, rotated, and scaled in world
+ * space by the world transformation matrix of the owner {@link Entity}. This world matrix is
+ * derived by combining the entity's local transformation (position, rotation, and scale) with the
+ * world transformation matrix of its parent entity in the scene hierarchy.
  *
+ * You should never need to use the RenderComponent constructor directly. To add a RenderComponent
+ * to an Entity, use {@link Entity#addComponent}:
+ *
+ * ```javascript
+ * const entity = new Entity();
+ * entity.addComponent('render', {
+ *     type: 'box'
+ * });
+ * ```
+ *
+ * Once the RenderComponent is added to the entity, you can access it via the {@link Entity#render}
+ * property:
+ *
+ * ```javascript
+ * entity.render.type = 'capsule';  // Set the render component's type
+ *
+ * console.log(entity.render.type); // Get the render component's type and print it
+ * ```
+ *
+ * Relevant Engine API examples:
+ *
+ * - [Loading Render Assets](https://playcanvas.github.io/#/graphics/render-asset)
+ * - [Primitive Shapes](https://playcanvas.github.io/#/graphics/shapes)
+ * - [Spinning Cube](https://playcanvas.github.io/#/misc/hello-world)
+ *
+ * @hideconstructor
  * @category Graphics
  */
 class RenderComponent extends Component {
-    /** @private */
+    /**
+     * @type {'asset'|'box'|'capsule'|'cone'|'cylinder'|'plane'|'sphere'|'torus'}
+     * @private
+     */
     _type = 'asset';
 
     /** @private */
     _castShadows = true;
+
+    /** @private */
+    _shadowCascadeMask = SHADOW_CASCADE_ALL;
 
     /** @private */
     _receiveShadows = true;
@@ -44,8 +87,6 @@ class RenderComponent extends Component {
 
     /**
      * Mark meshes as non-movable (optimization).
-     *
-     * @type {boolean}
      */
     isStatic = false;
 
@@ -59,13 +100,22 @@ class RenderComponent extends Component {
     _renderStyle = RENDERSTYLE_SOLID;
 
     /**
+     * The clipping of the component, see {@link RenderComponent#clippingPlanes}, which is given to
+     * the mesh instances, including those created later. Created on first use.
+     *
+     * @type {ClipPlanes|null}
+     * @ignore
+     */
+    _clipPlanes = null;
+
+    /**
      * @type {MeshInstance[]}
      * @private
      */
     _meshInstances = [];
 
     /**
-     * @type {import('../../../core/shape/bounding-box.js').BoundingBox|null}
+     * @type {BoundingBox|null}
      * @private
      */
     _customAabb = null;
@@ -94,31 +144,54 @@ class RenderComponent extends Component {
      * Material used to render meshes other than asset type. It gets priority when set to
      * something else than defaultMaterial, otherwise materialASsets[0] is used.
      *
-     * @type {import('../../../scene/materials/material.js').Material}
+     * @type {Material}
      * @private
      */
     _material;
 
     /**
-     * @type {EntityReference}
+     * A reference to the entity to be used as the root bone for any skinned meshes that
+     * are rendered by this component.
+     *
+     * @type {Entity|null}
      * @private
      */
-    _rootBone;
+    _rootBone = null;
+
+    /**
+     * @type {EventHandle|null}
+     * @private
+     */
+    _evtLayersChanged = null;
+
+    /**
+     * @type {EventHandle|null}
+     * @private
+     */
+    _evtLayerAdded = null;
+
+    /**
+     * @type {EventHandle|null}
+     * @private
+     */
+    _evtLayerRemoved = null;
+
+    /**
+     * @type {EventHandle|null}
+     * @private
+     */
+    _evtSetMeshes = null;
 
     /**
      * Create a new RenderComponent.
      *
-     * @param {import('./system.js').RenderComponentSystem} system - The ComponentSystem that
-     * created this Component.
-     * @param {import('../../entity.js').Entity} entity - The Entity that this Component is
-     * attached to.
+     * @param {RenderComponentSystem} system - The ComponentSystem that created this Component.
+     * @param {Entity} entity - The Entity that this Component is attached to.
      */
     constructor(system, entity) {
         super(system, entity);
 
         // the entity that represents the root bone if this render component has skinned meshes
-        this._rootBone = new EntityReference(this, 'rootBone');
-        this._rootBone.on('set:entity', this._onSetRootBone, this);
 
         // render asset reference
         this._assetReference = new AssetReference(
@@ -144,7 +217,7 @@ class RenderComponent extends Component {
     }
 
     /**
-     * Set rendering of all {@link MeshInstance}s to the specified render style. Can be:
+     * Sets the render style of this component's {@link MeshInstance}s. Can be:
      *
      * - {@link RENDERSTYLE_SOLID}
      * - {@link RENDERSTYLE_WIREFRAME}
@@ -161,17 +234,22 @@ class RenderComponent extends Component {
         }
     }
 
+    /**
+     * Gets the render style of this component's {@link MeshInstance}s.
+     *
+     * @type {number}
+     */
     get renderStyle() {
         return this._renderStyle;
     }
 
     /**
-     * If set, the object space bounding box is used as a bounding box for visibility culling of
-     * attached mesh instances. This is an optimization, allowing oversized bounding box to be
-     * specified for skinned characters in order to avoid per frame bounding box computations based
-     * on bone positions.
+     * Sets the custom object space bounding box that is used for visibility culling of attached
+     * mesh instances. This is an optimization, allowing an oversized bounding box to be specified
+     * for skinned characters in order to avoid per frame bounding box computations based on bone
+     * positions.
      *
-     * @type {import('../../../core/shape/bounding-box.js').BoundingBox}
+     * @type {BoundingBox|null}
      */
     set customAabb(value) {
         this._customAabb = value;
@@ -185,26 +263,49 @@ class RenderComponent extends Component {
         }
     }
 
+    /**
+     * Gets the custom object space bounding box that is used for visibility culling of attached
+     * mesh instances.
+     *
+     * @type {BoundingBox|null}
+     */
     get customAabb() {
         return this._customAabb;
     }
 
     /**
-     * The type of the render. Can be one of the following:
+     * Sets the type of the component, determining the source of the geometry to be rendered.
+     * The geometry, whether it's a primitive shape or originates from an asset, is rendered
+     * using the owning entity's final world transform. This world transform is calculated by
+     * concatenating (multiplying) the local transforms (position, rotation, scale) of the
+     * entity and all its ancestors in the scene hierarchy. This process positions, orientates,
+     * and scales the geometry in world space.
      *
-     * - "asset": The component will render a render asset
-     * - "box": The component will render a box (1 unit in each dimension)
-     * - "capsule": The component will render a capsule (radius 0.5, height 2)
-     * - "cone": The component will render a cone (radius 0.5, height 1)
-     * - "cylinder": The component will render a cylinder (radius 0.5, height 1)
-     * - "plane": The component will render a plane (1 unit in each dimension)
-     * - "sphere": The component will render a sphere (radius 0.5)
-     * - "torus": The component will render a torus (tubeRadius: 0.2, ringRadius: 0.3)
+     * Can be one of the following values:
      *
-     * @type {string}
+     * - **"asset"**: Renders geometry defined in an {@link Asset} of type `render`. This asset,
+     *   assigned to the {@link asset} property, contains one or more {@link MeshInstance}s.
+     *   Alternatively, {@link meshInstances} can be set programmatically.
+     * - **"box"**: A unit cube (sides of length 1) centered at the local space origin.
+     * - **"capsule"**: A shape composed of a cylinder and two hemispherical caps that is aligned
+     *   with the local Y-axis. It is centered at the local space origin and has an unscaled height
+     *   of 2 and a radius of 0.5.
+     * - **"cone"**: A cone aligned with the local Y-axis. It is centered at the local space
+     *   origin, with its base in the local XZ plane at Y = -0.5 and its tip at Y = +0.5. It has
+     *   an unscaled height of 1 and a base radius of 0.5.
+     * - **"cylinder"**: A cylinder aligned with the local Y-axis. It is centered at the local
+     *   space origin with an unscaled height of 1 and a radius of 0.5.
+     * - **"plane"**: A flat plane in the local XZ plane at Y = 0 (normal along +Y). It is
+     *   centered at the local space origin with unscaled dimensions of 1x1 units along local X and
+     *   Z axes.
+     * - **"sphere"**: A sphere with a radius of 0.5. It is centered at the local space origin and
+     *   has poles at Y = -0.5 and Y = +0.5.
+     * - **"torus"**: A doughnut shape lying in the local XZ plane at Y = 0. It is centered at
+     *   the local space origin with a tube radius of 0.2 and a ring radius of 0.3.
+     *
+     * @type {'asset'|'box'|'capsule'|'cone'|'cylinder'|'plane'|'sphere'|'torus'}
      */
     set type(value) {
-
         if (this._type !== value) {
             this._area = null;
             this._type = value;
@@ -226,20 +327,25 @@ class RenderComponent extends Component {
         }
     }
 
+    /**
+     * Gets the type of the component.
+     *
+     * @type {'asset'|'box'|'capsule'|'cone'|'cylinder'|'plane'|'sphere'|'torus'}
+     */
     get type() {
         return this._type;
     }
 
     /**
-     * An array of meshInstances contained in the component. If meshes are not set or loaded for
-     * component it will return null.
+     * Sets the array of meshInstances contained in the component.
      *
      * @type {MeshInstance[]}
      */
     set meshInstances(value) {
+        Debug.assert(Array.isArray(value), 'MeshInstances set to a Render component must be an array.');
 
-        Debug.assert(Array.isArray(value), `MeshInstances set to a Render component must be an array.`);
-        this.destroyMeshInstances();
+        // don't notify yet, the change is announced once the new mesh instances are in place
+        this._destroyMeshInstances();
 
         this._meshInstances = value;
 
@@ -253,25 +359,38 @@ class RenderComponent extends Component {
                     mi[i].node = this.entity;
                 }
 
-                mi[i].castShadow = this._castShadows;
-                mi[i].receiveShadow = this._receiveShadows;
+                mi[i].castShadows = this._castShadows;
+                mi[i].shadowCascadeMask = this._shadowCascadeMask;
+                mi[i].receiveShadows = this._receiveShadows;
                 mi[i].renderStyle = this._renderStyle;
                 mi[i].setLightmapped(this._lightmapped);
                 mi[i].setCustomAabb(this._customAabb);
+
+                // the clipping of the component replaces that of the mesh instance
+                mi[i]._setClipPlanes(this._clipPlanes);
             }
 
             if (this.enabled && this.entity.enabled) {
                 this.addToLayers();
             }
         }
+
+        this._onMeshInstancesChanged();
     }
 
+    /**
+     * Gets the array of meshInstances contained in the component. Use the setter to replace the
+     * array; do not mutate the returned array.
+     *
+     * @type {ReadonlyArray<MeshInstance>}
+     */
     get meshInstances() {
         return this._meshInstances;
     }
 
     /**
-     * If true, the meshes will be lightmapped after using lightmapper.bake().
+     * Sets whether the component is affected by the runtime lightmapper. If true, the meshes will
+     * be lightmapped after using lightmapper.bake().
      *
      * @type {boolean}
      */
@@ -288,12 +407,17 @@ class RenderComponent extends Component {
         }
     }
 
+    /**
+     * Gets whether the component is affected by the runtime lightmapper.
+     *
+     * @type {boolean}
+     */
     get lightmapped() {
         return this._lightmapped;
     }
 
     /**
-     * If true, attached meshes will cast shadows for lights that have shadow casting enabled.
+     * Sets whether attached meshes will cast shadows for lights that have shadow casting enabled.
      *
      * @type {boolean}
      */
@@ -315,7 +439,7 @@ class RenderComponent extends Component {
                 }
 
                 for (let i = 0; i < mi.length; i++) {
-                    mi[i].castShadow = value;
+                    mi[i].castShadows = value;
                 }
 
                 if (!this._castShadows && value) {
@@ -332,12 +456,55 @@ class RenderComponent extends Component {
         }
     }
 
+    /**
+     * Gets whether attached meshes will cast shadows for lights that have shadow casting enabled.
+     *
+     * @type {boolean}
+     */
     get castShadows() {
         return this._castShadows;
     }
 
     /**
-     * If true, shadows will be cast on attached meshes.
+     * Sets a bitmask that controls which shadow cascades the attached meshes contribute to when
+     * rendered with a {@link LIGHTTYPE_DIRECTIONAL} light source. Combine the
+     * {@link SHADOW_CASCADE_0} .. {@link SHADOW_CASCADE_3} flags to select individual cascades.
+     * This is only effective when {@link castShadows} is enabled. Defaults to
+     * {@link SHADOW_CASCADE_ALL}, which contributes to all available cascades.
+     *
+     * Note that this filters the meshes per cascade at render time, it does not remove them from
+     * the shadow casters of the {@link Layer} - use {@link castShadows} to disable shadow casting
+     * completely.
+     *
+     * @type {number}
+     * @example
+     * // only cast shadows into the two cascades closest to the camera
+     * entity.render.shadowCascadeMask = SHADOW_CASCADE_0 | SHADOW_CASCADE_1;
+     */
+    set shadowCascadeMask(value) {
+        if (this._shadowCascadeMask !== value) {
+            this._shadowCascadeMask = value;
+
+            const mi = this._meshInstances;
+            if (mi) {
+                for (let i = 0; i < mi.length; i++) {
+                    mi[i].shadowCascadeMask = value;
+                }
+            }
+        }
+    }
+
+    /**
+     * Gets the bitmask that controls which shadow cascades the attached meshes contribute to.
+     *
+     * @type {number}
+     */
+    get shadowCascadeMask() {
+        return this._shadowCascadeMask;
+    }
+
+    /**
+     * Sets whether shadows will be cast on attached meshes.
      *
      * @type {boolean}
      */
@@ -349,18 +516,119 @@ class RenderComponent extends Component {
             const mi = this._meshInstances;
             if (mi) {
                 for (let i = 0; i < mi.length; i++) {
-                    mi[i].receiveShadow = value;
+                    mi[i].receiveShadows = value;
                 }
             }
         }
     }
 
+    /**
+     * Gets whether shadows will be cast on attached meshes.
+     *
+     * @type {boolean}
+     */
     get receiveShadows() {
         return this._receiveShadows;
     }
 
     /**
-     * If true, the meshes will cast shadows when rendering lightmaps.
+     * Sets the planes that clip the attached meshes, in world space. The parts of the meshes behind
+     * any of the planes - on the side opposite to the plane normal - are not rendered, which cuts
+     * the meshes open along the planes. Use {@link clipIntersection} to clip only the parts behind
+     * all of the planes instead. Up to 8 planes are supported, and any more are ignored. Defaults
+     * to an empty array.
+     *
+     * The planes are given to the mesh instances of the component together with
+     * {@link clipIntersection}, also to ones it gets later, and replace their own, even when the
+     * component has none. Planes assigned to a mesh instance directly last until the component next
+     * gives it its clipping. The planes are copied, so changing a plane after the assignment has no
+     * effect until the array is assigned again. To clip an entity together with its descendants,
+     * such as an entity instantiated from a {@link ContainerResource}, assign the planes to all of
+     * their render components. To clip everything a camera renders, see
+     * {@link CameraComponent#clippingPlanes} instead. Meshes with clipping planes are excluded from
+     * batching. See {@link MeshInstance#clippingPlanes} for more details.
+     *
+     * @type {Plane[]}
+     * @example
+     * // cut away the parts of an entity and its descendants where x is positive
+     * const plane = new Plane().setFromPointNormal(Vec3.ZERO, Vec3.LEFT);
+     * for (const render of entity.findComponents('render')) {
+     *     render.clippingPlanes = [plane];
+     * }
+     */
+    set clippingPlanes(value) {
+        Debug.assert(!value || value.length <= MAX_CLIP_PLANES,
+            `RenderComponent#clippingPlanes supports up to ${MAX_CLIP_PLANES} planes, the rest ` +
+            'are ignored.');
+
+        // the assigned planes can be the ones the getter returned, changed since. Without planes
+        // assigned before or now, the component has none to keep
+        if (this._clipPlanes || value?.length) {
+            (this._clipPlanes ??= new ClipPlanes()).set(value);
+        }
+        this._updateClipPlanes();
+    }
+
+    /**
+     * Gets the planes that clip the attached meshes, in world space. These are copies of the
+     * assigned planes, and changing them has no effect until the array is assigned again.
+     *
+     * @type {Plane[]}
+     */
+    get clippingPlanes() {
+        return (this._clipPlanes ??= new ClipPlanes()).returned;
+    }
+
+    /**
+     * Sets whether only the parts of the attached meshes behind all of the {@link clippingPlanes}
+     * are clipped, instead of the parts behind any of them. With two planes this cuts a wedge out
+     * of the meshes, and with three a corner, as a cutaway does. As with {@link clippingPlanes},
+     * the mesh instances are given the planes and the mode together. Defaults to false.
+     *
+     * @type {boolean}
+     */
+    set clipIntersection(value) {
+        if (this._clipPlanes || value) {
+            (this._clipPlanes ??= new ClipPlanes()).intersection = value;
+        }
+        this._updateClipPlanes();
+    }
+
+    /**
+     * Gets whether only the parts of the attached meshes behind all of the {@link clippingPlanes}
+     * are clipped.
+     *
+     * @type {boolean}
+     */
+    get clipIntersection() {
+        return this._clipPlanes?.intersection ?? false;
+    }
+
+    /**
+     * Gives the mesh instances the clipping of the component, its planes and mode together,
+     * replacing theirs, and rebuilds the batch group when that changes whether they are clipped.
+     *
+     * @private
+     */
+    _updateClipPlanes() {
+        // whether the mesh instances are clipped, also by planes assigned to them directly
+        const mi = this._meshInstances;
+        let wasClipped = false;
+        for (let i = 0; i < mi.length; i++) {
+            wasClipped ||= mi[i].clipped;
+            mi[i]._setClipPlanes(this._clipPlanes);
+        }
+
+        // clipped meshes are excluded from batching, so the batch is rebuilt without them, or with
+        // them once they are no longer clipped
+        const clipped = (this._clipPlanes?.assigned.length ?? 0) > 0;
+        if (this._batchGroupId >= 0 && wasClipped !== clipped) {
+            this.system.app.batcher?.markGroupDirty(this._batchGroupId);
+        }
+    }
+
+    /**
+     * Sets whether meshes instances will cast shadows when rendering lightmaps.
      *
      * @type {boolean}
      */
@@ -368,12 +636,17 @@ class RenderComponent extends Component {
         this._castShadowsLightmap = value;
     }
 
+    /**
+     * Gets whether meshes instances will cast shadows when rendering lightmaps.
+     *
+     * @type {boolean}
+     */
     get castShadowsLightmap() {
         return this._castShadowsLightmap;
     }
 
     /**
-     * Lightmap resolution multiplier.
+     * Sets the lightmap resolution multiplier.
      *
      * @type {number}
      */
@@ -381,13 +654,18 @@ class RenderComponent extends Component {
         this._lightmapSizeMultiplier = value;
     }
 
+    /**
+     * Gets the lightmap resolution multiplier.
+     *
+     * @type {number}
+     */
     get lightmapSizeMultiplier() {
         return this._lightmapSizeMultiplier;
     }
 
     /**
-     * An array of layer IDs ({@link Layer#id}) to which the meshes should belong. Don't push, pop,
-     * splice or modify this array, if you want to change it - set a new one instead.
+     * Sets the array of layer IDs ({@link Layer#id}) to which the mesh instances belong. Don't
+     * push, pop, splice or modify this array. If you want to change it, set a new one instead.
      *
      * @type {number[]}
      */
@@ -423,22 +701,29 @@ class RenderComponent extends Component {
         }
     }
 
+    /**
+     * Gets the array of layer IDs ({@link Layer#id}) to which the mesh instances belong.
+     *
+     * @type {ReadonlyArray<number>}
+     */
     get layers() {
         return this._layers;
     }
 
     /**
-     * Assign meshes to a specific batch group (see {@link BatchGroup}). Default is -1 (no group).
+     * Sets the batch group for the mesh instances in this component (see {@link BatchGroup}).
+     * Default is -1 (no group).
      *
      * @type {number}
      */
     set batchGroupId(value) {
         if (this._batchGroupId !== value) {
 
-            if (this.entity.enabled && this._batchGroupId >= 0) {
+            // a disabled component is not in its batch group, onEnable inserts it
+            if (this.enabled && this.entity.enabled && this._batchGroupId >= 0) {
                 this.system.app.batcher?.remove(BatchGroup.RENDER, this.batchGroupId, this.entity);
             }
-            if (this.entity.enabled && value >= 0) {
+            if (this.enabled && this.entity.enabled && value >= 0) {
                 this.system.app.batcher?.insert(BatchGroup.RENDER, value, this.entity);
             }
 
@@ -451,15 +736,23 @@ class RenderComponent extends Component {
         }
     }
 
+    /**
+     * Gets the batch group for the mesh instances in this component (see {@link BatchGroup}).
+     *
+     * @type {number}
+     */
     get batchGroupId() {
         return this._batchGroupId;
     }
 
     /**
-     * The material {@link Material} that will be used to render the meshes (not used on renders of
-     * type 'asset').
+     * Sets the material {@link Material} that will be used to render the component. The material
+     * is ignored for renders of type 'asset' — which is the type every entity produced by
+     * `instantiateRenderEntity` carries, so this setter has no effect on models loaded from a
+     * container. For those, assign `material` on each entry of
+     * {@link RenderComponent#meshInstances} instead.
      *
-     * @type {import('../../../scene/materials/material.js').Material}
+     * @type {Material}
      */
     set material(value) {
         if (this._material !== value) {
@@ -473,13 +766,18 @@ class RenderComponent extends Component {
         }
     }
 
+    /**
+     * Gets the material {@link Material} that will be used to render the component.
+     *
+     * @type {Material}
+     */
     get material() {
         return this._material;
     }
 
     /**
-     * The material assets that will be used to render the meshes. Each material corresponds to the
-     * respective mesh instance.
+     * Sets the material assets that will be used to render the component. Each material
+     * corresponds to the respective mesh instance.
      *
      * @type {Asset[]|number[]}
      */
@@ -527,17 +825,22 @@ class RenderComponent extends Component {
         }
     }
 
+    /**
+     * Gets the material assets that will be used to render the component.
+     *
+     * @type {Asset[]|number[]}
+     */
     get materialAssets() {
-        return this._materialReferences.map(function (ref) {
+        return this._materialReferences.map((ref) => {
             return ref.id;
         });
     }
 
     /**
-     * The render asset for the render component (only applies to type 'asset') - can also be an
-     * asset id.
+     * Sets the render asset (or asset id) for the render component. This only applies to render components with
+     * type 'asset'.
      *
-     * @type {Asset|number}
+     * @type {Asset|number|null}
      */
     set asset(value) {
         const id = value instanceof Asset ? value.id : value;
@@ -554,6 +857,11 @@ class RenderComponent extends Component {
         }
     }
 
+    /**
+     * Gets the render asset id for the render component.
+     *
+     * @type {number|null}
+     */
     get asset() {
         return this._assetReference.id;
     }
@@ -571,27 +879,60 @@ class RenderComponent extends Component {
     }
 
     /**
-     * @param {import('../../entity.js').Entity} entity - The entity set as the root bone.
-     * @private
+     * Sets the root bone entity (or entity guid) for the render component.
+     *
+     * @type {Entity|string|null}
      */
-    _onSetRootBone(entity) {
-        if (entity) {
-            this._onRootBoneChanged();
+    set rootBone(value) {
+        if (this._rootBone !== value) {
+            const isString = typeof value === 'string';
+            if (this._rootBone && isString && this._rootBone.guid === value) {
+                return;
+            }
+
+            if (this._rootBone) {
+                this._clearSkinInstances();
+            }
+
+            if (value instanceof GraphNode) {
+                this._rootBone = value;
+            } else if (isString) {
+                this._rootBone = this.system.app.getEntityFromIndex(value) || null;
+                if (!this._rootBone) {
+                    Debug.warn('Failed to find rootBone Entity by GUID');
+                }
+            } else {
+                this._rootBone = null;
+            }
+
+            if (this._rootBone) {
+                this._cloneSkinInstances();
+            }
         }
     }
 
-    /** @private */
-    _onRootBoneChanged() {
-        // remove existing skin instances and create new ones, connected to new root bone
-        this._clearSkinInstances();
-        if (this.enabled && this.entity.enabled) {
-            this._cloneSkinInstances();
-        }
+    /**
+     * Gets the root bone entity for the render component.
+     *
+     * @type {Entity|null}
+     */
+    get rootBone() {
+        return this._rootBone;
     }
 
     /** @private */
     destroyMeshInstances() {
+        this._destroyMeshInstances();
+        this._onMeshInstancesChanged();
+    }
 
+    /**
+     * Destroys the mesh instances without firing a change notification. Used by the meshInstances
+     * setter, which notifies once the replacement mesh instances are in place.
+     *
+     * @private
+     */
+    _destroyMeshInstances() {
         const meshInstances = this._meshInstances;
         if (meshInstances) {
             this.removeFromLayers();
@@ -603,6 +944,30 @@ class RenderComponent extends Component {
                 meshInstances[i].destroy();
             }
             this._meshInstances.length = 0;
+        }
+    }
+
+    /**
+     * Fires a notification that the set of mesh instances has changed, so that systems which
+     * reference them can re-resolve. An anim component binds morph target weights and animated
+     * material textures to specific mesh instances, and unlike a model component - which owns its
+     * mesh instances on a private graph node hierarchy under its own entity - a render hierarchy is
+     * a public entity hierarchy, so the anim component driving these mesh instances can live on any
+     * ancestor entity. The notification is therefore broadcast rather than delivered directly. See
+     * #5225.
+     *
+     * @private
+     */
+    _onMeshInstancesChanged() {
+        // the batches of the batch group hold the replaced mesh instances, so they are built again
+        if (this._batchGroupId >= 0 && this.enabled && this.entity.enabled) {
+            this.system.app.batcher?.markGroupDirty(this._batchGroupId);
+        }
+
+        if (!this.entity._destroying) {
+            // the systems registry is torn down before assets are unloaded when the app is
+            // destroyed, and by then there is nothing left to notify
+            this.system.app.systems?.fire('meshInstancesChange', this);
         }
     }
 
@@ -641,7 +1006,12 @@ class RenderComponent extends Component {
         }
     }
 
-    onRemove() {
+    onBeforeRemove() {
+        // removing a component does not disable it first, so undo what onEnable set up
+        if (this.enabled && this.entity.enabled) {
+            this.onDisable();
+        }
+
         this.destroyMeshInstances();
 
         this.asset = null;
@@ -654,15 +1024,19 @@ class RenderComponent extends Component {
         }
 
         this.entity.off('remove', this.onRemoveChild, this);
+        this.entity.off('removehierarchy', this.onRemoveChild, this);
         this.entity.off('insert', this.onInsertChild, this);
+        this.entity.off('inserthierarchy', this.onInsertChild, this);
     }
 
     onLayersChanged(oldComp, newComp) {
         this.addToLayers();
-        oldComp.off('add', this.onLayerAdded, this);
-        oldComp.off('remove', this.onLayerRemoved, this);
-        newComp.on('add', this.onLayerAdded, this);
-        newComp.on('remove', this.onLayerRemoved, this);
+
+        // store the new handles, so that onDisable can unsubscribe from the current composition
+        this._evtLayerAdded?.off();
+        this._evtLayerAdded = newComp.on('add', this.onLayerAdded, this);
+        this._evtLayerRemoved?.off();
+        this._evtLayerRemoved = newComp.on('remove', this.onLayerRemoved, this);
     }
 
     onLayerAdded(layer) {
@@ -680,15 +1054,17 @@ class RenderComponent extends Component {
     onEnable() {
         const app = this.system.app;
         const scene = app.scene;
+        const layers = scene.layers;
 
-        this._rootBone.onParentComponentEnable();
+        if (this._rootBone) {
+            this._cloneSkinInstances();
+        }
 
-        this._cloneSkinInstances();
+        this._evtLayersChanged = scene.on('set:layers', this.onLayersChanged, this);
 
-        scene.on('set:layers', this.onLayersChanged, this);
-        if (scene.layers) {
-            scene.layers.on('add', this.onLayerAdded, this);
-            scene.layers.on('remove', this.onLayerRemoved, this);
+        if (layers) {
+            this._evtLayerAdded = layers.on('add', this.onLayerAdded, this);
+            this._evtLayerRemoved = layers.on('remove', this.onLayerRemoved, this);
         }
 
         const isAsset = (this._type === 'asset');
@@ -713,11 +1089,20 @@ class RenderComponent extends Component {
     onDisable() {
         const app = this.system.app;
         const scene = app.scene;
+        const layers = scene.layers;
 
-        scene.off('set:layers', this.onLayersChanged, this);
-        if (scene.layers) {
-            scene.layers.off('add', this.onLayerAdded, this);
-            scene.layers.off('remove', this.onLayerRemoved, this);
+        this._evtLayersChanged?.off();
+        this._evtLayersChanged = null;
+
+        if (this._rootBone) {
+            this._clearSkinInstances();
+        }
+
+        if (layers) {
+            this._evtLayerAdded?.off();
+            this._evtLayerAdded = null;
+            this._evtLayerRemoved?.off();
+            this._evtLayerRemoved = null;
         }
 
         if (this._batchGroupId >= 0) {
@@ -742,9 +1127,8 @@ class RenderComponent extends Component {
     }
 
     /**
-     * Enable rendering of the component's {@link MeshInstance}s if hidden using
-     * {@link RenderComponent#hide}. This method sets the {@link MeshInstance#visible} property on
-     * all mesh instances to true.
+     * Enable rendering of the component's {@link MeshInstance}s if hidden using {@link hide}. This
+     * method sets the {@link MeshInstance#visible} property on all mesh instances to true.
      */
     show() {
         if (this._meshInstances) {
@@ -765,14 +1149,13 @@ class RenderComponent extends Component {
     }
 
     _onRenderAssetLoad() {
-
         // remove existing instances
         this.destroyMeshInstances();
 
         if (this._assetReference.asset) {
             const render = this._assetReference.asset.resource;
-            render.off('set:meshes', this._onSetMeshes, this);
-            render.on('set:meshes', this._onSetMeshes, this);
+            this._evtSetMeshes?.off();
+            this._evtSetMeshes = render.on('set:meshes', this._onSetMeshes, this);
             if (render.meshes) {
                 this._onSetMeshes(render.meshes);
             }
@@ -784,7 +1167,6 @@ class RenderComponent extends Component {
     }
 
     _clearSkinInstances() {
-
         for (let i = 0; i < this._meshInstances.length; i++) {
             const meshInstance = this._meshInstances[i];
 
@@ -795,23 +1177,20 @@ class RenderComponent extends Component {
     }
 
     _cloneSkinInstances() {
-
-        if (this._meshInstances.length && this._rootBone.entity instanceof GraphNode) {
-
+        if (this._meshInstances.length && this._rootBone instanceof GraphNode) {
             for (let i = 0; i < this._meshInstances.length; i++) {
                 const meshInstance = this._meshInstances[i];
                 const mesh = meshInstance.mesh;
 
                 // if skinned but does not have instance created yet
                 if (mesh.skin && !meshInstance.skinInstance) {
-                    meshInstance.skinInstance = SkinInstanceCache.createCachedSkinInstance(mesh.skin, this._rootBone.entity, this.entity);
+                    meshInstance.skinInstance = SkinInstanceCache.createCachedSkinInstance(mesh.skin, this._rootBone, this.entity);
                 }
             }
         }
     }
 
     _cloneMeshes(meshes) {
-
         if (meshes && meshes.length) {
 
             // cloned mesh instances
@@ -847,9 +1226,8 @@ class RenderComponent extends Component {
     }
 
     _onRenderAssetRemove() {
-        if (this._assetReference.asset && this._assetReference.asset.resource) {
-            this._assetReference.asset.resource.off('set:meshes', this._onSetMeshes, this);
-        }
+        this._evtSetMeshes?.off();
+        this._evtSetMeshes = null;
 
         this._onRenderAssetUnload();
     }
@@ -893,10 +1271,9 @@ class RenderComponent extends Component {
     }
 
     resolveDuplicatedEntityReferenceProperties(oldRender, duplicatedIdsMap) {
-        if (oldRender.rootBone && duplicatedIdsMap[oldRender.rootBone]) {
-            this.rootBone = duplicatedIdsMap[oldRender.rootBone];
+        if (oldRender.rootBone) {
+            this.rootBone = duplicatedIdsMap[oldRender.rootBone.guid];
         }
-        this._clearSkinInstances();
     }
 }
 
